@@ -26,9 +26,9 @@ jobs:
         shell: pwsh
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
 
@@ -109,7 +109,7 @@ jobs:
           # (Windows PowerShell 5.1 だと化けるので shell: pwsh を外さないこと)
           Compress-Archive -Path dist/GlossPop -DestinationPath 'dist/${{ steps.version.outputs.zip }}'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.version.outputs.zip }}
           path: dist/${{ steps.version.outputs.zip }}
