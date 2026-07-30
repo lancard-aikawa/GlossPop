@@ -59,14 +59,8 @@ jobs:
           uv sync --all-groups
           uv run pytest -q
 
-      - name: ビルド
-        run: ./packaging/build.ps1 -NoSeed
-
-      - name: サンプル content を入れる (data は入れない)
-        run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force dist/GlossPop/content | Out-Null
-          Copy-Item content/* dist/GlossPop/content/ -Recurse
+      - name: ビルド (配布用: サンプル辞書入り / 個人の辞書は入れない)
+        run: ./packaging/build.ps1 -Seed dist
 
       - name: exe を起動して確認する
         run: |
@@ -89,6 +83,10 @@ jobs:
             if ($health.version -ne '${{ steps.version.outputs.version }}') {
               throw "exe が返すバージョン ($($health.version)) が想定と違います"
             }
+            # 配布物にはサンプル辞書が入っていること (空だと自動リンクを体験できない)
+            if ($health.entry_count -lt 1) {
+              throw "サンプル辞書が読めていません (entry_count = $($health.entry_count))"
+            }
             # 静的ファイルと自動リンクまで通しで見る (凍結すると壊れるのはここ)
             if ((Invoke-WebRequest http://127.0.0.1:8766/static/base.js -TimeoutSec 5).StatusCode -ne 200) {
               throw "静的ファイルが配信されていません"
@@ -100,8 +98,6 @@ jobs:
           finally {
             Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           }
-          # 起動時に作られた空の data/ は配布物に含めない
-          Remove-Item dist/GlossPop/data -Recurse -Force -ErrorAction SilentlyContinue
 
       - name: zip を作る
         run: |

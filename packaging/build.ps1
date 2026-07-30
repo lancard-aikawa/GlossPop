@@ -7,12 +7,17 @@
   content/ と data/ を配置する (辞書は exe の隣に読み書きされる)。
   そのフォルダごと配布・移動できる。
 
-.PARAMETER NoSeed
-  リポジトリの content/ data/ をコピーしない (空の状態で配る場合)。
+.PARAMETER Seed
+  exe の隣に何を置くか。
+
+    dev  (既定) リポジトリの content/ と data/ をそのまま入れる。手元での確認用
+    dist        content/ と packaging/sample-data/ を入れる。配布用 (個人の辞書は入れない)
+    none        何も入れない (初回起動時に空で作られる)
 #>
 [CmdletBinding()]
 param(
-    [switch]$NoSeed
+    [ValidateSet('dev', 'dist', 'none')]
+    [string]$Seed = 'dev'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,14 +40,18 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $out = Join-Path $root 'dist/GlossPop'
 
-if (-not $NoSeed) {
-    foreach ($name in 'content', 'data') {
-        $src = Join-Path $root $name
-        $dst = Join-Path $out $name
-        if ((Test-Path $src) -and (-not (Test-Path $dst))) {
-            Copy-Item $src $dst -Recurse
-            Write-Host "seeded: $name"
-        }
+# 置くもの: 表示元 (content) と辞書 (data) の組み合わせをモードで決める
+$seeds = switch ($Seed) {
+    'dev'  { @{ content = 'content'; data = 'data' } }
+    'dist' { @{ content = 'content'; data = 'packaging/sample-data' } }
+    'none' { @{} }
+}
+foreach ($name in $seeds.Keys) {
+    $src = Join-Path $root $seeds[$name]
+    $dst = Join-Path $out $name
+    if ((Test-Path $src) -and (-not (Test-Path $dst))) {
+        Copy-Item $src $dst -Recurse
+        Write-Host "seeded: $name <- $($seeds[$name])"
     }
 }
 

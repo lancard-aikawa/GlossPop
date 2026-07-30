@@ -1,0 +1,10 @@
+categories:
+- name: プログラミング
+  subcategories:
+  - 基礎
+  - API
+  description: 開発で出てくる言葉
+- name: 料理
+  subcategories:
+  - 調味料
+  description: 同じ表記が別分野にもある例
