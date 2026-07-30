@@ -247,3 +247,9 @@ glosspop/
 ```powershell
 uv run pytest
 ```
+
+## そのほかの資料
+
+- [CLAUDE.md](CLAUDE.md) — 開発時の落とし穴と、壊しやすい不変条件
+- [docs/design-notes.md](docs/design-notes.md) — 設計判断と、採らなかった案
+- [docs/open-questions.md](docs/open-questions.md) — 未解決・保留中のもの
