@@ -5,7 +5,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-from glosspop import categories, config
+from glosspop import ai, categories, config
 from glosspop.app import app
 
 
@@ -291,3 +291,32 @@ class TestContentRoot:
 
         res = client.post("/api/content-root", json={"path": str(root)}).json()
         assert [f["path"] for f in res["files"]] == ["読む.md"]
+
+
+class TestAIExtract:
+    """候補抽出のエンドポイント。claude CLI は差し替える。"""
+
+    def test_returns_filtered_candidates(self, client, monkeypatch, add_entry):
+        add_entry("冪等", category="プログラミング")
+        text = "この API は結果整合性を前提にしている。冪等な操作は安全。"
+
+        def fake_run(prompt: str) -> str:
+            assert "冪等" in prompt  # 登録済みの語は除外指示として渡っている
+            return '[{"term": "結果整合性"}, {"term": "冪等"}, {"term": "無い語"}]'
+
+        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+        res = client.post("/api/ai/extract", json={"text": text}).json()
+        assert [c["term"] for c in res["candidates"]] == ["結果整合性"]
+        reasons = {d["term"]: d["reason"] for d in res["dropped"]}
+        assert "登録済み" in reasons["冪等"]
+        assert "見つからない" in reasons["無い語"]
+
+    def test_without_claude_returns_503(self, client, monkeypatch):
+        monkeypatch.setattr(config, "CLAUDE_BIN", "")
+        assert client.post("/api/ai/extract", json={"text": "x"}).status_code == 503
+
+    def test_empty_text_is_rejected(self, client, monkeypatch):
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+        assert client.post("/api/ai/extract", json={"text": "  "}).status_code == 502

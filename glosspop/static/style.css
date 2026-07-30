@@ -134,6 +134,10 @@ main.doc-wrap { padding: 28px 40px 120px; }
 
 /* ---------------------------------------------------------------- controls */
 
+/* button などに display を指定しているので、UA スタイルの [hidden] が負ける。
+   これが無いと JS 側の `node.hidden = true` が効かず、要素が出たままになる */
+[hidden] { display: none !important; }
+
 button, .btn {
   font: inherit;
   font-size: 13px;
@@ -476,6 +480,17 @@ dialog.sheet footer .spacer { flex: 1; }
   color: var(--fg-dim);
 }
 .notice[hidden] { display: none; }
+
+/* まとめて登録ダイアログの候補一覧 */
+.cand-list { list-style: none; margin: 0 0 12px; padding: 0; }
+.cand-list li {
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.cand-list li:last-child { border-bottom: 0; }
+.cand-list .term { font-weight: 600; }
+.cand-list .hint { margin: 2px 0 0 22px; }
+.cand-list .status { flex: 0 1 auto; text-align: right; }
 
 .ctx-quote {
   font-size: 12px;

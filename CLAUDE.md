@@ -104,6 +104,15 @@ CLAUDE.md と `gloss-add` スキルを拾い、「重複を確認するため CL
 （音楽用語を「プログラミング」に入れる、他カテゴリのサブカテゴリを流用する、
 といった失敗を実際に踏んだ）。
 
+**まとめて登録は「抽出 1 回 + 下書き N 回」。** `extract_terms()` は候補語だけを 1 回で
+挙げさせ、本文の生成は選ばれた語について `/api/ai/draft` を語数ぶん呼ぶ（クライアント側で
+逐次）。ここを 1 回のプロンプトで N 語ぶんの本文まで作らせる形にすると、出力が長くなって
+品質が落ちる。サーバに進捗の状態は持たせていない。
+
+**AI が挙げた候補はそのまま使わない。** `filter_candidates()` が、登録済みの語と
+**文書中にその表記で現れない語**を落とす。後者を通すと「登録したのに本文でリンクにならない」
+エントリができる（AI は平気で原形や言い換えを返す）。落とした語は理由つきで UI に出す。
+
 ## Windows ビルド（`packaging/`）
 
 `.\packaging\build.ps1` で PyInstaller の onedir ビルド（`dist\GlossPop\`）を作る。
@@ -136,8 +145,15 @@ CLAUDE.md と `gloss-add` スキルを拾い、「重複を確認するため CL
 
 - `base.js` — API 呼び出し、DOM ヘルパ、URL 判定
 - `select-add.js` — 選択 →「＋ 辞書に登録」。ビューアと辞書ページで共用
+- `extract.js` — 「✨ 用語を抽出」→ 候補選択 → 下書き → まとめて保存
 - `popup.js` / `editor.js` — 吹き出し・登録ダイアログ。どのページからも使える
 - `viewer.js` / `glossary.js` / `entry.js` — 各ページ
+
+**`node.hidden = true` はそれだけでは効かない。** `button` などに `display` を
+指定しているので UA スタイルの `[hidden]` が負ける。`style.css` の先頭近くで
+`[hidden] { display: none !important; }` を当てて打ち消している。**要素ごとに
+`.foo[hidden] { display: none }` を足す書き方を増やさないこと**（この規則より前は
+そうなっていて、新しい UI を足すたびに「hidden にしたのに出たまま」を踏む）。
 
 **`prompt()` / `alert()` を入力 UI に使わない。** 一度使って作り直した。値の入力は
 インラインの `<input>`/`<select>` にする（`confirm()` は削除確認にだけ使っている）。

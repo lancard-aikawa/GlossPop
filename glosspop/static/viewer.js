@@ -1,5 +1,6 @@
 // ビューア: ソース読み込み → レンダリング → テキスト選択で辞書登録。
 import { api, el, esc, externalLink, paintEntryCount, setStatus } from "./base.js";
+import { openExtractDialog } from "./extract.js";
 import { installGlossPopup } from "./popup.js";
 import { installSelectionAdd } from "./select-add.js";
 
@@ -169,6 +170,18 @@ $("showPaste").addEventListener("click", () => {
 });
 
 $("firstOnly").addEventListener("change", renderCurrent);
+
+// 表示中の文書から候補を挙げて、選んだ語をまとめて登録する
+$("extract").addEventListener("click", async () => {
+  if (!source) return;
+  $("extract").disabled = true;
+  try {
+    const saved = await openExtractDialog({ text: source.text, source: sourceLabel() });
+    if (saved) await Promise.all([renderCurrent(), paintEntryCount($("count"))]);
+  } finally {
+    $("extract").disabled = false;
+  }
+});
 
 // URL を開く (取得はサーバ側。CORS を踏まないため)
 async function openUrl(url) {

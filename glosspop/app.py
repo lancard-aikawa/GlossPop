@@ -79,6 +79,12 @@ class FetchRequest(BaseModel):
     url: str
 
 
+class ExtractRequest(BaseModel):
+    text: str = ""
+    source: str = ""
+    limit: int = 12
+
+
 class CategoryRequest(BaseModel):
     name: str
     subcategories: list[str] = []
@@ -434,6 +440,23 @@ async def fetch_url(req: FetchRequest) -> dict:
 # --------------------------------------------------------------------------- #
 # API: AI 下書き
 # --------------------------------------------------------------------------- #
+
+@app.post("/api/ai/extract")
+async def ai_extract(req: ExtractRequest) -> dict:
+    """表示中の文書から候補語を挙げる（1 回の呼び出しで済ませる）。
+
+    ここでは登録も下書き生成もしない。選ばれた語について
+    ``/api/ai/draft`` を語数ぶん呼ぶのはクライアント側の仕事。
+    """
+    if not ai.available():
+        raise HTTPException(503, "claude CLI が見つかりません。手動入力で登録してください。")
+    try:
+        return await ai.extract_terms(
+            req.text, source=req.source, limit=max(1, min(req.limit, 30))
+        )
+    except ai.AIError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
 
 @app.post("/api/ai/draft")
 async def ai_draft(req: DraftRequest) -> dict:
