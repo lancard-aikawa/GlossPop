@@ -85,6 +85,27 @@ CLAUDE.md と `gloss-add` スキルを拾い、「重複を確認するため CL
 （音楽用語を「プログラミング」に入れる、他カテゴリのサブカテゴリを流用する、
 といった失敗を実際に踏んだ）。
 
+## Windows ビルド（`packaging/`）
+
+`.\packaging\build.ps1` で PyInstaller の onedir ビルド（`dist\GlossPop\`）を作る。
+手順は README にある。ここには**壊しやすい点**だけ:
+
+**凍結すると `__file__` は一時展開先（`_internal`）を指す。** そのため
+`config.DATA_ROOT` は `sys.frozen` のとき `sys.executable` の親を基準にする。
+ここを `PACKAGE_DIR` 基準に戻すと、**保存した辞書が起動ごとの一時ディレクトリに
+書かれて消える**（サーバは正常に動いて見えるので気付きにくい）。逆に `STATIC_DIR` は
+`_internal` 側で正しいので `PACKAGE_DIR` 基準のまま。
+
+**文字列 import は凍結後に解決できない。** `cmd_serve()` は `--reload` のときだけ
+`"glosspop.app:app"` を渡し、通常は app オブジェクトを直接渡す。ここを文字列に
+戻すと exe が `Could not import module "glosspop.app"` で即死する。
+
+**動的に読むものを足したら spec に足す。** 静的解析で追えないものは
+`packaging/glosspop.spec` の `hiddenimports` / `datas` に書く必要がある
+（`glosspop.*` は `collect_submodules` でまとめて入れてある）。新しい依存を
+`pyproject.toml` に足したときは、**ビルドして exe を起動するところまで確認する**
+——`uv run` では動いても凍結すると落ちる、という差が出るのはここだけ。
+
 ## フロントエンド
 
 依存ゼロの ES モジュール。ビルド工程は無い。`static/` を編集したら
@@ -118,3 +139,5 @@ CLAUDE.md と `gloss-add` スキルを拾い、「重複を確認するため CL
 | 辞書のスキーマ / CLI 引数 | `.claude/skills/gloss-add/SKILL.md` |
 | 自動リンクの規則 | README.md の「自動リンクの規則」、`content/ようこそ.md` |
 | カテゴリ名の制約 | `models.normalize_category()`、README、SKILL.md、`ai.build_prompt()` |
+| 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
+| バージョン | `pyproject.toml` と `glosspop/__init__.py` の**両方**（タグと不一致だと release ワークフローが落ちる） |

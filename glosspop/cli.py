@@ -55,17 +55,30 @@ def _emit(data: object) -> None:
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
+    reload = args.reload
+    if reload and config.FROZEN:
+        # 凍結後はソースが _internal に展開されているだけなので監視しても意味が無く、
+        # reloader の再起動で exe が二重起動する
+        print("--reload は exe 版では使えません。無視します。", file=sys.stderr)
+        reload = False
+
     config.ensure_dirs()
     print(f"GlossPop: http://{args.host}:{args.port}/", file=sys.stderr)
     print(f"  辞書   : {config.GLOSSARY_DIR}", file=sys.stderr)
     print(f"  カテゴリ: {config.CATEGORIES_FILE}", file=sys.stderr)
     print(f"  content: {config.CONTENT_DIR}", file=sys.stderr)
     print(f"  claude : {config.CLAUDE_BIN or '(見つかりません — AI 下書きは無効)'}", file=sys.stderr)
+
+    if reload:
+        target = "glosspop.app:app"   # reloader はプロセスを作り直すので文字列でないと渡せない
+    else:
+        from .app import app as target  # 文字列 import は exe 版で解決できない
+
     uvicorn.run(
-        "glosspop.app:app",
+        target,
         host=args.host,
         port=args.port,
-        reload=args.reload,
+        reload=reload,
         log_level=args.log_level,
     )
     return 0

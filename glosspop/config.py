@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -13,18 +14,28 @@ def _env_path(name: str, default: Path) -> Path:
     return Path(raw).expanduser().resolve() if raw else default
 
 
-#: プロジェクトルート (このファイルの 2 つ上)
+#: PyInstaller で固めた exe から動いているか
+FROZEN = bool(getattr(sys, "frozen", False))
+
+#: パッケージの場所。凍結時は一時展開先 (_internal) を指す
 PACKAGE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = PACKAGE_DIR.parent
+
+#: 書き込むデータ (辞書・content) の基準ディレクトリ。
+#: 凍結時に PACKAGE_DIR を基準にすると、保存した辞書が一時展開先に書かれて
+#: 終了時に消える。exe の隣を基準にする。
+DATA_ROOT = Path(sys.executable).resolve().parent if FROZEN else PACKAGE_DIR.parent
+
+#: 後方互換 (開発時は従来どおりリポジトリルート)
+PROJECT_ROOT = DATA_ROOT
 
 #: 辞書 Markdown の置き場所 (data/glossary/<カテゴリ>/<slug>.md)
-GLOSSARY_DIR = _env_path("GLOSSPOP_GLOSSARY_DIR", PROJECT_ROOT / "data" / "glossary")
+GLOSSARY_DIR = _env_path("GLOSSPOP_GLOSSARY_DIR", DATA_ROOT / "data" / "glossary")
 
 #: カテゴリマスター
 CATEGORIES_FILE = _env_path("GLOSSPOP_CATEGORIES_FILE", GLOSSARY_DIR.parent / "categories.yaml")
 
 #: ビューアがブラウズできる .md / .txt の置き場所
-CONTENT_DIR = _env_path("GLOSSPOP_CONTENT_DIR", PROJECT_ROOT / "content")
+CONTENT_DIR = _env_path("GLOSSPOP_CONTENT_DIR", DATA_ROOT / "content")
 
 #: 静的ファイル
 STATIC_DIR = PACKAGE_DIR / "static"

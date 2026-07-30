@@ -1,0 +1,125 @@
+name: release
+
+# タグを打つ = リリース。バージョンはタグが正で、コード側 (pyproject.toml /
+# glosspop/__init__.py) と食い違っていたらビルドせずに落とす。
+#   git tag v0.1.1 && git push origin v0.1.1
+#
+# workflow_dispatch で手動実行するとビルドと検証だけ行い、成果物は
+# Actions の artifact に置く (Release は作らない)。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: バージョンを決める (タグとコードの一致を検査)
+        id: version
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $init = (Select-String -Path glosspop/__init__.py -Pattern '^__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $proj = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          Write-Host "__init__.py : $init"
+          Write-Host "pyproject   : $proj"
+          if ($init -ne $proj) {
+            throw "pyproject.toml ($proj) と glosspop/__init__.py ($init) のバージョンが違います"
+          }
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $tag = '${{ github.ref_name }}'
+            $want = $tag -replace '^v', ''
+            if ($want -ne $init) {
+              throw "タグ $tag はバージョン $want を意味しますが、コードは $init です。両方バンプしてからタグを打ち直してください"
+            }
+          }
+          "version=$init" >> $env:GITHUB_OUTPUT
+          "zip=GlossPop-$init-win-x64.zip" >> $env:GITHUB_OUTPUT
+
+      - name: テスト
+        run: |
+          uv sync --all-groups
+          uv run pytest -q
+
+      - name: ビルド
+        run: ./packaging/build.ps1 -NoSeed
+
+      - name: サンプル content を入れる (data は入れない)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force dist/GlossPop/content | Out-Null
+          Copy-Item content/* dist/GlossPop/content/ -Recurse
+
+      - name: exe を起動して確認する
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $PWD 'dist/GlossPop/glosspop.exe'
+          $p = Start-Process $exe -ArgumentList 'serve', '--port', '8766' -PassThru `
+                 -RedirectStandardError "$env:RUNNER_TEMP/gp-err.txt" `
+                 -RedirectStandardOutput "$env:RUNNER_TEMP/gp-out.txt"
+          try {
+            $health = $null
+            foreach ($i in 1..60) {
+              try { $health = Invoke-RestMethod http://127.0.0.1:8766/api/health -TimeoutSec 2; break }
+              catch { Start-Sleep -Milliseconds 500 }
+            }
+            if (-not $health) {
+              Get-Content "$env:RUNNER_TEMP/gp-err.txt" -Encoding utf8 | Write-Host
+              throw "exe が起動しませんでした"
+            }
+            Write-Host "health: $($health | ConvertTo-Json -Compress)"
+            if ($health.version -ne '${{ steps.version.outputs.version }}') {
+              throw "exe が返すバージョン ($($health.version)) が想定と違います"
+            }
+            # 静的ファイルと自動リンクまで通しで見る (凍結すると壊れるのはここ)
+            if ((Invoke-WebRequest http://127.0.0.1:8766/static/base.js -TimeoutSec 5).StatusCode -ne 200) {
+              throw "静的ファイルが配信されていません"
+            }
+            $body = @{ text = 'テスト'; kind = 'markdown' } | ConvertTo-Json
+            Invoke-RestMethod http://127.0.0.1:8766/api/render -Method Post `
+              -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json' | Out-Null
+          }
+          finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+          # 起動時に作られた空の data/ は配布物に含めない
+          Remove-Item dist/GlossPop/data -Recurse -Force -ErrorAction SilentlyContinue
+
+      - name: zip を作る
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # pwsh の Compress-Archive は日本語ファイル名を UTF-8 で書く
+          # (Windows PowerShell 5.1 だと化けるので shell: pwsh を外さないこと)
+          Compress-Archive -Path dist/GlossPop -DestinationPath 'dist/${{ steps.version.outputs.zip }}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.zip }}
+          path: dist/${{ steps.version.outputs.zip }}
+
+      - name: Release を作る (ドラフト)
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ github.ref_name }}' 'dist/${{ steps.version.outputs.zip }}' `
+            --title 'GlossPop ${{ steps.version.outputs.version }}' `
+            --notes-file packaging/release-notes.md `
+            --draft

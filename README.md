@@ -240,7 +240,58 @@ glosspop/
     popup.js       吹き出し
     editor.js      登録 / 編集ダイアログ
 .claude/skills/gloss-add/   Claude Code 用スキル
+packaging/                  Windows 向け PyInstaller ビルド
+  build.ps1     ビルド実行 (dist/GlossPop/ を作る)
+  glosspop.spec PyInstaller の定義
+  entry.py      exe のエントリスクリプト
 ```
+
+## Windows 向けビルド
+
+Python も uv も入っていない PC で動かすなら、PyInstaller で onedir 形式に固める。
+
+```powershell
+.\packaging\build.ps1
+```
+
+`dist\GlossPop\` ができる。**このフォルダごと**コピーすれば動く（`glosspop.exe` 単体では
+動かない。`_internal\` に依存関係が入っている）。
+
+```
+dist\GlossPop\
+  glosspop.exe    引数なしで起動 = serve
+  _internal\      Python ランタイムと依存 (触らない)
+  data\glossary\  辞書        ← exe の隣に読み書きされる
+  content\        ビューアで開く .md / .txt
+```
+
+`glosspop.exe` は CLI もそのまま使える（`glosspop.exe list`、`glosspop.exe add --json -` など）。
+辞書と content の場所は環境変数で変えられる（[設定](#設定環境変数)）。既定は exe の隣なので、
+`Program Files` のような書き込めない場所に置く場合は `GLOSSPOP_GLOSSARY_DIR` を指定すること。
+
+`build.ps1 -NoSeed` にすると、リポジトリの `content/` `data/` をコピーせず空の状態で作る。
+配布用にはこちら（個人の辞書を配らないため）。
+
+### リリース
+
+タグを push すると [GitHub Actions](.github/workflows/release.yml) がビルドし、
+zip を付けた**ドラフト**の Release を作る（内容を確認して手で publish する）。
+
+```powershell
+# バージョンを 2 箇所とも上げてからタグを打つ
+#   pyproject.toml の version
+#   glosspop/__init__.py の __version__
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+タグとコードのバージョンが食い違っていると、ビルドせずに失敗する。
+Actions は手動実行（workflow_dispatch）もでき、その場合は Release を作らず
+artifact に zip を置くだけなので、リリース前の確認に使える。
+
+
+AI 下書きはビルドに含まれない外部の `claude` CLI を使うので、配布先の PATH に `claude` が
+無ければその機能だけ無効になる（登録は手入力でできる）。
 
 ## テスト
 
