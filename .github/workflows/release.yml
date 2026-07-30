@@ -28,7 +28,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v9
+      # setup-uv は v9 の浮動タグをまだ打っていないので完全なタグで指定する
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           enable-cache: true
 
