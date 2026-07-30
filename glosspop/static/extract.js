@@ -27,6 +27,7 @@ function build() {
       <footer>
         <button type="button" class="ghost" data-ref="toggle" hidden>全解除</button>
         <select data-ref="scope" class="auto-width" title="保存先" aria-label="保存先">
+          <option value="auto">保存先は AI が選ぶ</option>
           <option value="global">全体の辞書へ</option>
           <option value="local">このフォルダだけ</option>
         </select>
@@ -87,8 +88,8 @@ function selected(rows) {
 export async function openExtractDialog({ text = "", source = "", folder = false } = {}) {
   build();
   refs.title.textContent = folder ? "フォルダから用語をまとめて登録" : "用語をまとめて登録";
-  // フォルダ全体から拾うときは、そのフォルダ固有の語であることが多い
-  refs.scope.value = folder ? "local" : "global";
+  // 既定は AI におまかせ (語ごとに全体 / このフォルダを選ばせる)
+  refs.scope.value = "auto";
   refs.spoiler.value = await defaultSpoiler();
   refs.spoiler.onchange = () => {
     rememberSpoiler(refs.spoiler.value);
@@ -173,7 +174,9 @@ export async function openExtractDialog({ text = "", source = "", folder = false
         const first = res.draft.first_locator
           ? `初出 ${res.draft.first_file} ${res.draft.first_locator}`
           : "";
-        setStatus(row.state, label || "カテゴリ未定");
+        // どちらの辞書に入るかは語ごとに変わるので、行ごとに見せる
+        const mark = res.draft.scope === "local" ? "📁 " : "";
+        setStatus(row.state, mark + (label || "カテゴリ未定"));
         row.li.querySelector(".hint").textContent =
           [res.draft.summary, first].filter(Boolean).join(" — ");
         row.edit.hidden = false;
@@ -211,7 +214,11 @@ export async function openExtractDialog({ text = "", source = "", folder = false
       try {
         row.saved = await api("/api/entries", {
           method: "POST",
-          body: { ...row.draft, scope: refs.scope.value },
+          // 「AI が選ぶ」なら下書きに入っている保存先をそのまま使う
+          body: {
+            ...row.draft,
+            scope: refs.scope.value === "auto" ? row.draft.scope || "global" : refs.scope.value,
+          },
         });
         saved++;
         setStatus(row.state, `保存しました (${row.saved.path_label})`);

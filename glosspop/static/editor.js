@@ -46,6 +46,7 @@ function build() {
         </div>
         <label class="field"><span>保存先</span>
           <select data-ref="scope">
+            <option value="auto">自動（AI が選ぶ）</option>
             <option value="global">全体の辞書（どの文書でも有効）</option>
             <option value="local">このフォルダだけ</option>
           </select>
@@ -103,9 +104,10 @@ function build() {
   return dialog;
 }
 
-/** 保存先 (全体 / このフォルダ) の選択肢を整える。編集中は動かせない。 */
+/** 保存先 (自動 / 全体 / このフォルダ) の選択肢を整える。編集中は動かせない。 */
 async function paintScope(selected, editing) {
-  refs.scope.value = selected === "local" ? "local" : "global";
+  // 編集中は実際の保存先を出す。新規は既定で AI に選ばせる
+  refs.scope.value = editing ? (selected === "local" ? "local" : "global") : (selected || "auto");
   refs.scope.disabled = editing;
   try {
     const health = await api("/api/health");
@@ -179,7 +181,9 @@ function readForm() {
     ...firstSeen,
     term: refs.term.value.trim(),
     reading: refs.reading.value.trim(),
-    scope: refs.scope.value,
+    // 「自動」のまま保存されることもある (AI を使わずに手で書いた場合)。
+    // サーバに auto は無いので、その場合は全体の辞書にする
+    scope: refs.scope.value === "auto" ? "global" : refs.scope.value,
     category: currentCategory(),
     subcategory: refs.subcategory.value.trim(),
     summary: refs.summary.value.trim(),
@@ -301,6 +305,14 @@ export async function openEntryEditor({
         merged.summary = res.draft.summary || merged.summary;
         merged.definition = res.draft.definition || merged.definition;
         writeForm(merged);
+        // AI が選んだ保存先を見せる (以後はそれが選択値になる)
+        if (refs.scope.value === "auto" && res.draft.scope) {
+          refs.scope.value = res.draft.scope;
+          refs.scopeHint.textContent =
+            res.draft.scope === "local"
+              ? "AI の判断: この資料の中だけで通じる語 → このフォルダだけ"
+              : "AI の判断: ほかの文書でも通じる語 → 全体の辞書";
+        }
         // AI が新しいカテゴリを提案していればマスターに登録済みなので読み直す。
         // 自分でカテゴリを選んでいた場合だけ、その選択を優先する
         await loadCategories(

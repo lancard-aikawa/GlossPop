@@ -24,7 +24,7 @@ from . import (
     store,
 )
 from .linker import Linker, entry_url
-from .models import LOCAL_SCOPE, CategoryNameError, Entry, EntryDraft
+from .models import GLOBAL_SCOPE, LOCAL_SCOPE, CategoryNameError, Entry, EntryDraft
 
 CONTENT_SUFFIXES = {
     ".md", ".markdown", ".mdown", ".txt",
@@ -42,6 +42,9 @@ SKIP_DIRS = frozenset({
 
 #: 一覧の上限。超えたぶんは切って ``truncated`` で知らせる
 MAX_CONTENT_FILES = 2000
+
+#: 保存先を AI に選ばせるときの指定値
+AUTO_SCOPE = "auto"
 
 
 @asynccontextmanager
@@ -91,8 +94,9 @@ class DraftRequest(BaseModel):
     spoiler: str = ""
     #: 初出ファイル（content ルートからの相対パス）。spoiler=first のとき文脈を作るのに使う
     file: str = ""
-    #: どちらの辞書に入れるつもりか。カテゴリマスターを触るかの判断に使う
-    scope: str = "global"
+    #: どちらの辞書に入れるか。"auto" なら AI に選ばせる。
+    #: カテゴリマスターを触るかの判断にも使う
+    scope: str = AUTO_SCOPE
 
 
 class FetchRequest(BaseModel):
@@ -586,6 +590,8 @@ async def ai_draft(req: DraftRequest) -> dict:
             # それ以降の展開は渡さない。初出の場面だけに差し替える
             context = first_context or req.context
 
+    auto_scope = req.scope == AUTO_SCOPE
+
     if spoiler == "position":
         # AI を呼ばない。初出位置だけ埋めて、本文はユーザーが書く
         draft = EntryDraft(
@@ -593,6 +599,8 @@ async def ai_draft(req: DraftRequest) -> dict:
             source=req.source,
             first_file=req.file,
             first_locator=locator,
+            # 保存先を選ぶ材料が無いので、聞かれていれば全体の辞書にしておく
+            scope=GLOBAL_SCOPE if auto_scope else req.scope,
         )
         return {
             "draft": draft.model_dump(),
@@ -607,19 +615,28 @@ async def ai_draft(req: DraftRequest) -> dict:
         )
     try:
         draft = await ai.draft_entry(
-            req.term, context, source=req.source, spoiler=spoiler
+            req.term,
+            context,
+            source=req.source,
+            spoiler=spoiler,
+            # 自動のときだけ保存先も選ばせる。フォルダ名が判断材料になる
+            scope_folder=config.content_dir().name if auto_scope else None,
         )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc
     draft.first_file = req.file
     draft.first_locator = locator
+    if not auto_scope:
+        draft.scope = req.scope          # 指定されていれば AI の答えより優先する
+    if draft.scope == LOCAL_SCOPE and not store.local_available():
+        draft.scope = GLOBAL_SCOPE       # フォルダが無ければローカルには置けない
 
     # 下書き段階でカテゴリをマスターに登録しておく (保存されず空振りでも残す)。
     # ただしローカル辞書に入れるつもりの下書きは登録しない —— マスターは
     # グローバル辞書のものなので、フォルダ固有のカテゴリで汚さない (store.save と同じ判断)
     registered = None
     warning = ""
-    if draft.category and req.scope != LOCAL_SCOPE:
+    if draft.category and draft.scope != LOCAL_SCOPE:
         try:
             registered = categories.ensure(draft.category, subcategory=draft.subcategory).name
         except CategoryNameError as exc:

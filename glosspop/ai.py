@@ -47,6 +47,8 @@ def available() -> bool:
 # プロンプト
 # --------------------------------------------------------------------------- #
 
+_SCOPE_FIELD = '  "scope": "global または local (下の「保存先」を参照)",\n'
+
 _SCHEMA_HINT = """{
   "term": "見出し語 (選択テキストを正規化したもの)",
   "reading": "日本語の読み (かな)。不要なら空文字",
@@ -100,8 +102,30 @@ def context_up_to_first(
     return text[start:end]
 
 
+def build_scope_block(folder: str) -> str:
+    """保存先（全体 / このフォルダだけ）を AI に選ばせるための説明。"""
+    where = f"「{folder}」" if folder else "いま開いているフォルダ"
+    return "\n".join([
+        "## 保存先 (scope)",
+        f"この用語を、全体の辞書と {where} だけの辞書のどちらに入れるべきか選んでください。",
+        "",
+        "- `global` … 分野の一般的な用語。**この文書を離れても同じ意味で通じる**もの"
+        "（技術用語、一般名詞、広く使われる略語）",
+        "- `local` … **この資料の中でしか通じない固有のもの**"
+        "（作品の登場人物・地名・造語、その現場や製品だけの呼び名・社内用語）",
+        "",
+        "迷ったら「ほかの文書で同じ意味で出てきたら嬉しいか」で決めてください。"
+        "嬉しいなら `global`、この資料の中だけの話なら `local` です。",
+    ])
+
+
 def build_prompt(
-    term: str, context: str = "", *, source: str = "", spoiler: str = "full"
+    term: str,
+    context: str = "",
+    *,
+    source: str = "",
+    spoiler: str = "full",
+    scope_folder: str | None = None,
 ) -> str:
     tree = store.category_tree()
     if tree:
@@ -149,15 +173,20 @@ def build_prompt(
         ]
     if source.strip():
         parts += ["", f"## 出典\n{source.strip()[:200]}"]
+    parts += ["", "## カテゴリ", category_block]
+
+    schema = _SCHEMA_HINT
+    if scope_folder is not None:
+        parts += ["", build_scope_block(scope_folder)]
+        # 保存先を選ばせるときだけスキーマに足す（使わないなら聞かない）
+        schema = _SCHEMA_HINT.replace("{\n", "{\n" + _SCOPE_FIELD, 1)
+
     parts += [
-        "",
-        "## カテゴリ",
-        category_block,
         "",
         "## 出力形式",
         "次の JSON オブジェクトだけを出力してください。前置き・後置きの文章、",
         "コードフェンス以外の説明は一切書かないこと。値は日本語で書く。",
-        _SCHEMA_HINT,
+        schema,
     ]
     return "\n".join(parts)
 
@@ -491,13 +520,23 @@ async def extract_terms_from_documents(
 
 
 async def draft_entry(
-    term: str, context: str = "", *, source: str = "", spoiler: str = "full"
+    term: str,
+    context: str = "",
+    *,
+    source: str = "",
+    spoiler: str = "full",
+    scope_folder: str | None = None,
 ) -> EntryDraft:
-    """選択テキストから辞書エントリの下書きを作る。保存はしない。"""
+    """選択テキストから辞書エントリの下書きを作る。保存はしない。
+
+    ``scope_folder`` を渡すと、保存先（全体 / そのフォルダだけ）も選ばせる。
+    """
     term = term.strip()
     if not term:
         raise AIError("用語が空です")
-    prompt = build_prompt(term, context, source=source, spoiler=spoiler)
+    prompt = build_prompt(
+        term, context, source=source, spoiler=spoiler, scope_folder=scope_folder
+    )
     raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
     data = parse_draft(raw)
     data.setdefault("term", term)

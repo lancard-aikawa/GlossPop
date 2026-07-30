@@ -234,3 +234,63 @@ class TestSharedAcrossVolumes:
         listing = client.get("/api/content").json()
         assert listing["local_is_ancestor"] is True
         assert listing["local_dir"] == str(series / ".glosspop" / "glossary")
+
+
+class TestAutoScope:
+    """保存先を AI に選ばせる（scope="auto"）。"""
+
+    def _ai(self, monkeypatch, response: str, seen: dict | None = None):
+        from glosspop import ai, config as cfg
+
+        def fake_run(prompt: str) -> str:
+            if seen is not None:
+                seen["prompt"] = prompt
+            return response
+
+        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(cfg, "CLAUDE_BIN", "claude")
+
+    def test_ai_choice_is_used(self, client, monkeypatch):
+        seen = {}
+        self._ai(monkeypatch, '{"term": "カムパネルラ", "category": "登場人物", "scope": "local"}', seen)
+        res = client.post("/api/ai/draft", json={"term": "カムパネルラ", "spoiler": "full"}).json()
+        assert res["draft"]["scope"] == "local"
+        # 保存先を選ばせるときだけプロンプトに説明が入る
+        assert "保存先 (scope)" in seen["prompt"]
+
+    def test_explicit_scope_overrides_the_ai(self, client, monkeypatch):
+        seen = {}
+        self._ai(monkeypatch, '{"term": "冪等", "category": "プログラミング", "scope": "local"}', seen)
+        res = client.post(
+            "/api/ai/draft", json={"term": "冪等", "spoiler": "full", "scope": "global"}
+        ).json()
+        assert res["draft"]["scope"] == "global"
+        assert "保存先 (scope)" not in seen["prompt"]   # 選ばせないなら聞かない
+
+    def test_local_choice_registers_no_category(self, client, monkeypatch):
+        from glosspop import categories
+
+        self._ai(monkeypatch, '{"term": "ザネリ", "category": "登場人物", "scope": "local"}')
+        res = client.post("/api/ai/draft", json={"term": "ザネリ", "spoiler": "full"}).json()
+        assert res["registered_category"] is None
+        assert "登場人物" not in categories.names()
+
+    def test_global_choice_registers_the_category(self, client, monkeypatch):
+        from glosspop import categories
+
+        self._ai(monkeypatch, '{"term": "冪等", "category": "プログラミング", "scope": "global"}')
+        res = client.post("/api/ai/draft", json={"term": "冪等", "spoiler": "full"}).json()
+        assert res["registered_category"] == "プログラミング"
+        assert "プログラミング" in categories.names()
+
+    def test_missing_answer_falls_back_to_global(self, client, monkeypatch):
+        self._ai(monkeypatch, '{"term": "冪等", "category": "プログラミング"}')
+        res = client.post("/api/ai/draft", json={"term": "冪等", "spoiler": "full"}).json()
+        assert res["draft"]["scope"] == "global"
+
+    def test_position_only_does_not_ask_the_ai(self, client, monkeypatch):
+        from glosspop import config as cfg
+
+        monkeypatch.setattr(cfg, "CLAUDE_BIN", "")
+        res = client.post("/api/ai/draft", json={"term": "ザネリ", "spoiler": "position"}).json()
+        assert res["draft"]["scope"] == "global"   # 判断材料が無いので全体に置く
