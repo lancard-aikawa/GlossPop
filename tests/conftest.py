@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from glosspop import config, store
+from glosspop import categories, config, store
 
 
 @pytest.fixture(autouse=True)
@@ -14,9 +14,13 @@ def isolated_dirs(tmp_path, monkeypatch):
     content.mkdir()
     monkeypatch.setattr(config, "GLOSSARY_DIR", glossary)
     monkeypatch.setattr(config, "CONTENT_DIR", content)
+    monkeypatch.setattr(config, "CATEGORIES_FILE", tmp_path / "categories.yaml")
+    monkeypatch.setattr(store, "_ready", False)
     store.invalidate()
+    categories.invalidate()
     yield tmp_path
     store.invalidate()
+    categories.invalidate()
 
 
 @pytest.fixture
@@ -24,6 +28,7 @@ def add_entry():
     from glosspop.models import EntryDraft
 
     def _add(term: str, **kwargs):
+        kwargs.setdefault("category", "テスト")
         return store.save(EntryDraft(term=term, **kwargs))
 
     return _add

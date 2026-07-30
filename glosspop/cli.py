@@ -12,8 +12,19 @@ import argparse
 import json
 import sys
 
-from . import config, store
-from .models import EntryDraft
+from . import categories, config, store
+from .models import CategoryNameError, EntryDraft
+
+
+def _resolve(target: str):
+    """slug / ref / 用語名のどれでもエントリを引けるようにする。"""
+    entry = store.get(target)
+    if entry is not None:
+        return [entry]
+    hits = store.find_by_surface(target)
+    if hits:
+        return hits
+    return [e for e in store.load_all() if e.slug == target]
 
 
 def _split(value: str | None) -> list[str]:
@@ -47,6 +58,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     config.ensure_dirs()
     print(f"GlossPop: http://{args.host}:{args.port}/", file=sys.stderr)
     print(f"  辞書   : {config.GLOSSARY_DIR}", file=sys.stderr)
+    print(f"  カテゴリ: {config.CATEGORIES_FILE}", file=sys.stderr)
     print(f"  content: {config.CONTENT_DIR}", file=sys.stderr)
     print(f"  claude : {config.CLAUDE_BIN or '(見つかりません — AI 下書きは無効)'}", file=sys.stderr)
     uvicorn.run(
@@ -84,27 +96,34 @@ def cmd_add(args: argparse.Namespace) -> int:
         }
 
     draft = EntryDraft.model_validate(data)
-    existing = store.find_by_surface(draft.term)
+    category = draft.category or "未分類"
+    # 同名でもカテゴリが違えば別エントリ。衝突判定は同一カテゴリ内だけ
+    existing = store.find_in_category(category, draft.term)
 
     if existing is not None and not args.update:
+        others = [e for e in store.find_by_surface(draft.term) if e.ref != existing.ref]
+        hint = (
+            f"（別カテゴリの同名: {', '.join(e.ref for e in others)}）" if others else ""
+        )
         print(
-            f"「{draft.term}」は既に登録されています (slug: {existing.slug})。"
-            "上書きするなら --update を付けてください。",
+            f"「{draft.term}」はカテゴリ「{category}」に既に登録されています {hint}。"
+            "上書きするなら --update を、別カテゴリに入れるなら --category を変えてください。",
             file=sys.stderr,
         )
-        _emit({"status": "exists", "slug": existing.slug, "path": str(store.path_for(existing.slug))})
+        _emit({"status": "exists", "ref": existing.ref, "path": str(store.path_for_ref(existing.ref))})
         return 1
 
-    entry = store.save(draft, slug=existing.slug if existing is not None else None)
+    entry = store.save(draft, ref=existing.ref if existing is not None else None)
     _emit(
         {
             "status": "updated" if existing is not None else "created",
+            "ref": entry.ref,
             "slug": entry.slug,
             "term": entry.term,
             "category": entry.category,
             "subcategory": entry.subcategory,
-            "path": str(store.path_for(entry.slug)),
-            "url": f"/glossary/{entry.slug}",
+            "path": str(store.path_for_ref(entry.ref)),
+            "url": f"/glossary/{entry.ref}",
         }
     )
     return 0
@@ -118,6 +137,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         _emit(
             [
                 {
+                    "ref": e.ref,
                     "slug": e.slug,
                     "term": e.term,
                     "aliases": e.aliases,
@@ -138,28 +158,65 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pick_one(target: str, category: str | None) -> object | None:
+    hits = _resolve(target)
+    if category:
+        hits = [e for e in hits if e.category == category]
+    if not hits:
+        print(f"見つかりません: {target}", file=sys.stderr)
+        return None
+    if len(hits) > 1:
+        print(
+            f"「{target}」は {len(hits)} 件あります。--category で絞ってください: "
+            + ", ".join(e.ref for e in hits),
+            file=sys.stderr,
+        )
+        return None
+    return hits[0]
+
+
 def cmd_show(args: argparse.Namespace) -> int:
-    entry = store.get(args.target) or store.find_by_surface(args.target)
+    entry = _pick_one(args.target, args.category)
     if entry is None:
-        print(f"見つかりません: {args.target}", file=sys.stderr)
         return 1
     if args.json:
-        _emit(entry.model_dump())
+        _emit({**entry.model_dump(), "ref": entry.ref})
     else:
-        sys.stdout.write(store.path_for(entry.slug).read_text(encoding="utf-8"))
+        sys.stdout.write(store.path_for_ref(entry.ref).read_text(encoding="utf-8"))
     return 0
 
 
 def cmd_rm(args: argparse.Namespace) -> int:
-    entry = store.get(args.target) or store.find_by_surface(args.target)
-    if entry is None or not store.delete(entry.slug):
-        print(f"見つかりません: {args.target}", file=sys.stderr)
+    entry = _pick_one(args.target, args.category)
+    if entry is None or not store.delete(entry.ref):
         return 1
-    _emit({"status": "deleted", "slug": entry.slug, "term": entry.term})
+    _emit({"status": "deleted", "ref": entry.ref, "term": entry.term})
     return 0
 
 
-def cmd_categories(_args: argparse.Namespace) -> int:
+def cmd_move(args: argparse.Namespace) -> int:
+    entry = _pick_one(args.target, args.category)
+    if entry is None:
+        return 1
+    moved = store.move(entry.ref, args.to)
+    _emit({"status": "moved", "from": entry.ref, "ref": moved.ref, "path": str(store.path_for_ref(moved.ref))})
+    return 0
+
+
+def cmd_categories(args: argparse.Namespace) -> int:
+    if args.add:
+        category = categories.ensure(args.add, description=args.description or "")
+        _emit({"status": "ensured", **category.model_dump()})
+        return 0
+    if args.rename:
+        old, new = args.rename
+        moved = store.rename_category(old, new)
+        _emit({"status": "renamed", "from": old, "to": new, "moved_entries": moved})
+        return 0
+    if args.remove:
+        store.delete_category(args.remove)
+        _emit({"status": "deleted", "name": args.remove})
+        return 0
     _emit(store.category_tree())
     return 0
 
@@ -201,15 +258,27 @@ def build_parser() -> argparse.ArgumentParser:
     l.set_defaults(func=cmd_list)
 
     sh = sub.add_parser("show", help="用語の Markdown を表示する")
-    sh.add_argument("target", help="slug または用語名")
+    sh.add_argument("target", help="用語名 / slug / カテゴリ/slug")
+    sh.add_argument("--category", help="同名が複数あるときの絞り込み")
     sh.add_argument("--json", action="store_true")
     sh.set_defaults(func=cmd_show)
 
     r = sub.add_parser("rm", help="用語を削除する")
-    r.add_argument("target", help="slug または用語名")
+    r.add_argument("target", help="用語名 / slug / カテゴリ/slug")
+    r.add_argument("--category", help="同名が複数あるときの絞り込み")
     r.set_defaults(func=cmd_rm)
 
-    c = sub.add_parser("categories", help="カテゴリ構成を JSON で出す")
+    mv = sub.add_parser("move", help="用語を別カテゴリへ移す")
+    mv.add_argument("target", help="用語名 / slug / カテゴリ/slug")
+    mv.add_argument("--to", required=True, help="移動先カテゴリ")
+    mv.add_argument("--category", help="同名が複数あるときの絞り込み (移動元)")
+    mv.set_defaults(func=cmd_move)
+
+    c = sub.add_parser("categories", help="カテゴリマスターを見る / 編集する")
+    c.add_argument("--add", metavar="NAME", help="カテゴリを登録する (用語ゼロでも可)")
+    c.add_argument("--description", help="--add に付ける説明")
+    c.add_argument("--rename", nargs=2, metavar=("OLD", "NEW"), help="カテゴリ名を変える")
+    c.add_argument("--remove", metavar="NAME", help="空のカテゴリを削除する")
     c.set_defaults(func=cmd_categories)
 
     return p
@@ -218,8 +287,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        for line in store.ensure_ready():
+            print(f"旧レイアウトを移行しました: {line}", file=sys.stderr)
         return args.func(args)
-    except store.StoreError as exc:
+    except (store.StoreError, CategoryNameError) as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         return 1
     except json.JSONDecodeError as exc:

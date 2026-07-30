@@ -21,6 +21,38 @@ _WIN_RESERVED = {
     *(f"LPT{i}" for i in range(1, 10)),
 }
 
+#: カテゴリ名はディレクトリ名になるので、どの OS でも作れる文字だけに絞る。
+#: FS で禁止 (< > : " / \ | ? *)、制御文字、URL で意味を持つ (# %) を弾く。
+_CATEGORY_FORBIDDEN = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
+CATEGORY_MAX_LEN = 40
+
+
+class CategoryNameError(ValueError):
+    """カテゴリ名がディレクトリ名として使えない。"""
+
+
+def normalize_category(name: str) -> str:
+    """カテゴリ名を検証して正規化する。
+
+    Windows / macOS / Linux のどれでもディレクトリを作れて、URL に載せても
+    壊れない形だけを通す。macOS が NFD で返してくる濁点を揃えるため NFC 正規化する。
+    """
+    name = unicodedata.normalize("NFC", name or "").strip()
+    if not name:
+        raise CategoryNameError("カテゴリ名を入力してください")
+    if len(name) > CATEGORY_MAX_LEN:
+        raise CategoryNameError(f"カテゴリ名は {CATEGORY_MAX_LEN} 文字までです（{len(name)} 文字）")
+
+    bad = sorted(set(_CATEGORY_FORBIDDEN.findall(name)))
+    if bad:
+        shown = " ".join(c if c.isprintable() else f"U+{ord(c):04X}" for c in bad)
+        raise CategoryNameError(f"カテゴリ名に使えない文字が含まれています: {shown}")
+    if name.startswith(".") or name.endswith("."):
+        raise CategoryNameError("カテゴリ名の先頭と末尾に「.」は使えません")
+    if name.upper().split(".")[0] in _WIN_RESERVED:
+        raise CategoryNameError(f"「{name}」は Windows の予約名なので使えません")
+    return name
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -90,11 +122,21 @@ class EntryDraft(EntryBase):
 
 
 class Entry(EntryBase):
-    """保存済みエントリ。slug はファイル名が正。"""
+    """保存済みエントリ。
+
+    保存先は ``data/glossary/<category>/<slug>.md``。ディレクトリ名が
+    ``category``、ファイル名が ``slug`` の正であり、frontmatter には書かない。
+    同じ用語名でもカテゴリが違えば別エントリとして併存できる。
+    """
 
     slug: str = ""
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
+
+    @property
+    def ref(self) -> str:
+        """エントリを一意に指す ID。URL でもそのまま使う (``カテゴリ/slug``)。"""
+        return f"{self.category}/{self.slug}"
 
     @property
     def surfaces(self) -> list[str]:
@@ -104,3 +146,11 @@ class Entry(EntryBase):
     @property
     def path_label(self) -> str:
         return f"{self.category} / {self.subcategory}" if self.subcategory else self.category
+
+
+def split_ref(ref: str) -> tuple[str, str]:
+    """``カテゴリ/slug`` を分解する。区切りが無ければ ``CategoryNameError``。"""
+    category, sep, slug = (ref or "").rpartition("/")
+    if not sep or not category or not slug:
+        raise CategoryNameError(f"不正な参照です: {ref!r}（「カテゴリ/slug」の形で指定してください）")
+    return category, slug

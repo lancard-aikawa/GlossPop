@@ -5,9 +5,12 @@ description: GlossPop の用語辞書に用語を登録・更新する。ユー�
 
 # gloss-add — GlossPop 辞書への登録
 
-GlossPop の辞書は `data/glossary/<slug>.md`（1 用語 = 1 ファイル、YAML frontmatter + 本文）
-として保存される。ここに書いた用語は、ビューアでテキストを表示したときに自動リンクになり、
-ホバーで吹き出しが出る。
+GlossPop の辞書は `data/glossary/<カテゴリ>/<slug>.md`（1 用語 = 1 ファイル、
+YAML frontmatter + 本文）として保存される。**ディレクトリ名がカテゴリ、ファイル名が
+slug の正**で、frontmatter には書かない。ここに書いた用語は、ビューアでテキストを
+表示したときに自動リンクになり、ホバーで吹き出しが出る。
+
+一意キーは **カテゴリ + 用語**。同じ「ソース」をプログラミングと料理の両方に持てる。
 
 ## 手順
 
@@ -17,9 +20,12 @@ GlossPop の辞書は `data/glossary/<slug>.md`（1 用語 = 1 ファイル、YA
 
 ```bash
 uv run glosspop list --json
-uv run glosspop categories
-uv run glosspop show "<用語名>"      # あれば内容が出る。無ければ exit 1
+uv run glosspop categories                 # マスター（用語 0 件のカテゴリも出る）
+uv run glosspop show "<用語名>"             # あれば内容が出る。無ければ exit 1
 ```
+
+同名が複数カテゴリにあると `show` / `rm` / `move` は「複数あります」と言って止まるので、
+`--category` で絞る。
 
 ### 2. 内容を組み立てる
 
@@ -30,8 +36,8 @@ uv run glosspop show "<用語名>"      # あれば内容が出る。無けれ�
 | `term` | ✓ | 見出し語。表記は本文中に実際に現れる形に合わせる |
 | `reading` | | 日本語の読み（かな）。ソート順に使う。英語のみの語なら空 |
 | `aliases` | | 表記ゆれ・略称・英語表記。**本文中で自動リンクの対象になる**ので、同義でない語は入れない |
-| `category` | ✓ | 大分類。既存カテゴリを優先して再利用する |
-| `subcategory` | | 小分類。不要なら省略 |
+| `category` | ✓ | 大分類 = ディレクトリ名。分野が合う既存カテゴリがあれば使い、無ければ新設する |
+| `subcategory` | | 小分類。**選んだカテゴリの下にあるものだけ**から選ぶ。不要なら省略 |
 | `summary` | ✓ | 吹き出しに出る 1〜2 文（120 字以内）。ここだけで意味が分かるように書く |
 | `definition` | ✓ | 辞書ページ本文。Markdown。背景と使いどころを 3〜6 文 |
 | `examples` | | 使用例（文字列の配列） |
@@ -43,8 +49,22 @@ uv run glosspop show "<用語名>"      # あれば内容が出る。無けれ�
 
 - **`aliases` は慎重に。** 自動リンクは本文の部分文字列にマッチするので、
   一般的すぎる語（「処理」「設定」など）を別名に入れると本文がリンクだらけになる。
-- カテゴリを新設するのは、既存のどれにも入らないときだけ。`未分類` は使わない。
+- **分野が合わないカテゴリに無理に寄せない。** 音楽の用語を「プログラミング」に
+  入れるくらいなら新設する。`未分類` は使わない。
 - `definition` に長いコードブロックを入れない（吹き出しでは非表示になる）。
+- `definition` は 1 文ごとに改行し、話題が変わるところで空行を入れる
+  （保存時にも自動で 1 文 1 行に整形される）。
+
+### カテゴリ名の制約
+
+ディレクトリ名になるので、どの OS でも作れる文字だけを使う。破ると 422 で弾かれる。
+
+- 使えない文字: `< > : " / \ | ? * # %` と制御文字
+- 先頭・末尾に `.` や空白を置かない
+- Windows 予約名は不可: `CON` `PRN` `AUX` `NUL` `COM1`〜`COM9` `LPT1`〜`LPT9`
+- 40 文字以内
+
+日本語・空白・`+` `・` などは使える。
 
 ### 3. 登録する
 
@@ -76,10 +96,14 @@ JSON の例:
 ```
 
 出力は JSON で返る。`status` が `created` なら新規、`exists` なら既存（exit 1）。
+`ref`（= `カテゴリ/slug`）が保存先の ID。
+
+**衝突判定は同一カテゴリ内だけ。** 別カテゴリに同名があっても `created` になる
+（それが狙いの機能）。`exists` が返るのは、そのカテゴリに既に同じ用語があるとき。
 
 ### 4. 既存を上書きするとき
 
-`--update` を付ける。`term` が既存エントリの `term` か `aliases` に一致するものを更新する。
+`--update` を付ける。JSON の `category` と `term` の組で対象を探して更新する。
 
 ```bash
 uv run glosspop add --json @/tmp/gloss-entry.json --update
@@ -91,10 +115,14 @@ uv run glosspop add --json @/tmp/gloss-entry.json --update
 ## そのほかのコマンド
 
 ```bash
-uv run glosspop list                    # 人が読む形式で一覧
+uv run glosspop list                            # 人が読む形式で一覧
 uv run glosspop list --category "プログラミング"
-uv run glosspop rm "<用語名 or slug>"    # 削除
-uv run glosspop serve                   # ビューアを起動 (http://127.0.0.1:8765/)
+uv run glosspop move ソース --to 料理             # カテゴリ移動（ファイルごと動く）
+uv run glosspop rm ソース --category 料理         # 削除
+uv run glosspop categories --add 音楽            # 用語 0 件でもカテゴリを作れる
+uv run glosspop categories --rename 旧名 新名     # ディレクトリごと改名
+uv run glosspop categories --remove 音楽         # 空のカテゴリだけ削除できる
+uv run glosspop serve                           # ビューアを起動 (http://127.0.0.1:8765/)
 ```
 
 ## 保存先を変える
@@ -104,6 +132,9 @@ uv run glosspop serve                   # ビューアを起動 (http://127.0.0.
 
 ## 直接ファイルを編集してもよい
 
-`data/glossary/*.md` を Edit で直接書き換えても反映される（サーバは mtime を見て
-読み直す）。frontmatter のキー名は上の表と同じ。ただし `slug` はファイル名が正なので
-frontmatter には書かない。
+`data/glossary/<カテゴリ>/*.md` を Edit で直接書き換えても反映される（サーバは mtime を
+見て読み直す）。frontmatter のキー名は上の表と同じ。ただし **`category` と `slug` は
+書かない** — ディレクトリ名とファイル名が正なので、frontmatter に書いても無視される。
+
+`mkdir` でカテゴリのディレクトリを作っただけでも、次の読み込み時に
+`data/categories.yaml` へ自動で取り込まれる。

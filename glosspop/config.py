@@ -17,8 +17,11 @@ def _env_path(name: str, default: Path) -> Path:
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 
-#: 辞書 Markdown の置き場所 (1 用語 = 1 ファイル)
+#: 辞書 Markdown の置き場所 (data/glossary/<カテゴリ>/<slug>.md)
 GLOSSARY_DIR = _env_path("GLOSSPOP_GLOSSARY_DIR", PROJECT_ROOT / "data" / "glossary")
+
+#: カテゴリマスター
+CATEGORIES_FILE = _env_path("GLOSSPOP_CATEGORIES_FILE", GLOSSARY_DIR.parent / "categories.yaml")
 
 #: ビューアがブラウズできる .md / .txt の置き場所
 CONTENT_DIR = _env_path("GLOSSPOP_CONTENT_DIR", PROJECT_ROOT / "content")
@@ -35,7 +38,16 @@ CLAUDE_EXTRA_ARGS = shlex.split(os.environ.get("GLOSSPOP_CLAUDE_ARGS", "--model 
 #: claude CLI のタイムアウト秒
 CLAUDE_TIMEOUT = int(os.environ.get("GLOSSPOP_CLAUDE_TIMEOUT", "180"))
 
+#: URL 読み込みの上限とタイムアウト
+FETCH_TIMEOUT = float(os.environ.get("GLOSSPOP_FETCH_TIMEOUT", "20"))
+FETCH_MAX_BYTES = int(os.environ.get("GLOSSPOP_FETCH_MAX_BYTES", str(8 * 1024 * 1024)))
+FETCH_MAX_REDIRECTS = int(os.environ.get("GLOSSPOP_FETCH_MAX_REDIRECTS", "5"))
+FETCH_USER_AGENT = os.environ.get(
+    "GLOSSPOP_FETCH_USER_AGENT", "GlossPop/0.1 (+local reader)"
+)
+
 
 def ensure_dirs() -> None:
     GLOSSARY_DIR.mkdir(parents=True, exist_ok=True)
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)
+    CATEGORIES_FILE.parent.mkdir(parents=True, exist_ok=True)

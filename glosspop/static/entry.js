@@ -1,16 +1,18 @@
-// 辞書の 1 語ページ。
-import { api, el, esc, paintEntryCount } from "./base.js";
+// 辞書の 1 語ページ。URL は /glossary/<カテゴリ>/<slug>
+import { api, el, esc, paintEntryCount, setStatus, sourceNode } from "./base.js";
 import { installGlossPopup, invalidatePopupCache } from "./popup.js";
 import { installSelectionAdd } from "./select-add.js";
-import { openEntryEditor } from "./editor.js";
+import { openEntryEditor, encodePath } from "./editor.js";
 
 const root = document.getElementById("root");
 const countNode = document.getElementById("count");
-const slug = decodeURIComponent(location.pathname.replace(/^\/glossary\/?/, "").replace(/\/$/, ""));
+const initialRef = decodeURIComponent(
+  location.pathname.replace(/^\/glossary\/?/, "").replace(/\/$/, "")
+);
 
 installGlossPopup();
 
-/** term / alias -> slug の索引。関連語をリンクにするために使う。 */
+/** 表記 -> [{ref, path_label}] の索引。関連語をリンクにするために使う。 */
 let index = new Map();
 /** 表示中のエントリ。 */
 let current = null;
@@ -31,7 +33,11 @@ async function loadIndex() {
     const entries = await api("/api/entries");
     index = new Map();
     for (const e of entries) {
-      for (const s of [e.term, ...(e.aliases || [])]) index.set(s.toLowerCase(), e.slug);
+      for (const s of [e.term, ...(e.aliases || [])]) {
+        const key = s.toLowerCase();
+        if (!index.has(key)) index.set(key, []);
+        index.get(key).push(e);
+      }
     }
   } catch { /* 索引が無くてもページは出す */ }
 }
@@ -42,6 +48,14 @@ function chip(text, href) {
 
 function section(title, children) {
   return el("section", { class: "entry-section" }, [el("h2", { text: title }), ...[].concat(children)]);
+}
+
+function relatedChip(name) {
+  const hits = index.get(name.toLowerCase()) || [];
+  if (hits.length === 1) return chip(name, hits[0].url);
+  // 同名が複数カテゴリにある / 未登録 → 検索に飛ばす
+  const label = hits.length > 1 ? `${name} (${hits.length})` : name;
+  return chip(label, `/glossary?q=${encodeURIComponent(name)}`);
 }
 
 function render(entry) {
@@ -64,6 +78,18 @@ function render(entry) {
 
   const parts = [head];
 
+  // 同じ表記が別カテゴリにもあるなら案内する
+  const siblings = (index.get(entry.term.toLowerCase()) || []).filter((e) => e.ref !== entry.ref);
+  if (siblings.length) {
+    parts.push(el("p", { class: "notice" }, [
+      el("span", { text: `「${entry.term}」は他のカテゴリにもあります: ` }),
+      ...siblings.flatMap((e, i) => [
+        i ? el("span", { text: "、" }) : null,
+        el("a", { href: e.url, text: e.path_label }),
+      ].filter(Boolean)),
+    ]));
+  }
+
   if (entry.definition_html) {
     parts.push(el("article", { class: "doc", html: entry.definition_html }));
   } else {
@@ -75,52 +101,132 @@ function render(entry) {
   }
 
   if (entry.related?.length) {
-    parts.push(section("関連語", el("div", { class: "chips" }, entry.related.map((r) => {
-      const target = index.get(r.toLowerCase());
-      return chip(r, target ? `/glossary/${encodeURIComponent(target)}` : `/glossary?q=${encodeURIComponent(r)}`);
-    }))));
+    parts.push(section("関連語", el("div", { class: "chips" }, entry.related.map(relatedChip))));
   }
 
+  const movePanel = el("div", { class: "move-panel", hidden: true });
   parts.push(el("div", { class: "toolbar entry-actions" }, [
     el("button", { type: "button", text: "編集", onclick: () => edit(entry) }),
+    el("button", {
+      type: "button",
+      text: "カテゴリを移動",
+      onclick: () => toggleMovePanel(entry, movePanel),
+    }),
     el("button", { type: "button", class: "danger", text: "削除", onclick: () => remove(entry) }),
     el("a", { class: "btn", href: "/glossary", text: "一覧へ戻る" }),
   ]));
+  parts.push(movePanel);
 
-  const meta = [`slug: ${entry.slug}`];
-  if (entry.source) meta.push(`出典: ${entry.source}`);
-  meta.push(`作成 ${entry.created_at}`, `更新 ${entry.updated_at}`);
-  parts.push(el("p", { class: "entry-meta", text: meta.join("  ·  ") }));
+  const meta = el("p", { class: "entry-meta" });
+  const bits = [
+    el("span", { text: `保存先: data/glossary/${entry.category}/${entry.slug}.md` }),
+    sourceNode(entry.source),
+    el("span", { text: `作成 ${entry.created_at}` }),
+    el("span", { text: `更新 ${entry.updated_at}` }),
+  ].filter(Boolean);
+  bits.forEach((node, i) => {
+    if (i) meta.append(el("span", { class: "sep", text: "·" }));
+    meta.append(node);
+  });
+  parts.push(meta);
 
   root.replaceChildren(...parts);
   document.title = `${entry.term} — GlossPop`;
 }
 
 /** サーバから引き直して描き直す (本文の自動リンクを最新にするため)。 */
-async function reload() {
-  const target = current?.slug || slug;
-  render(await api(`/api/entries/${encodeURIComponent(target)}`));
+async function reload(ref) {
+  const target = ref || current?.ref || initialRef;
+  const entry = await api(`/api/entries/${encodePath(target)}`);
+  render(entry);
+  return entry;
+}
+
+function goTo(ref) {
+  location.href = `/glossary/${encodePath(ref)}`;
 }
 
 async function edit(entry) {
-  const saved = await openEntryEditor({ slug: entry.slug, entry });
+  const saved = await openEntryEditor({ ref: entry.ref, entry });
   if (!saved) return;
   invalidatePopupCache();
   selection.hide();
-  if (saved.slug !== entry.slug) {
-    location.href = `/glossary/${encodeURIComponent(saved.slug)}`;
-    return;
-  }
+  if (saved.ref !== entry.ref) return goTo(saved.ref); // カテゴリ移動 / slug 変更
   await loadIndex();
   render(saved);
   paintEntryCount(countNode);
 }
 
+const NEW_CATEGORY = "/new";  // "/" はカテゴリ名で禁止なので実名と衝突しない番兵
+
+async function toggleMovePanel(entry, panel) {
+  if (!panel.hidden) {
+    panel.hidden = true;
+    return;
+  }
+  const tree = await api("/api/categories").catch(() => []);
+  const others = tree.map((n) => n.category).filter((n) => n !== entry.category);
+
+  const select = el("select", { class: "auto-width", "aria-label": "移動先カテゴリ" }, [
+    ...others.map((n) => el("option", { value: n, text: n })),
+    el("option", { value: NEW_CATEGORY, text: "＋ 新しいカテゴリ…" }),
+  ]);
+  const input = el("input", {
+    type: "text",
+    placeholder: "新しいカテゴリ名",
+    "aria-label": "新しいカテゴリ名",
+    hidden: others.length > 0,
+  });
+  if (!others.length) select.value = NEW_CATEGORY;
+  select.addEventListener("change", () => {
+    input.hidden = select.value !== NEW_CATEGORY;
+    if (!input.hidden) input.focus();
+  });
+
+  const status = el("span", { class: "status" });
+  const go = el("button", {
+    type: "button",
+    class: "primary",
+    text: "移動",
+    onclick: async () => {
+      const target = (select.value === NEW_CATEGORY ? input.value : select.value).trim();
+      if (!target) {
+        setStatus(status, "移動先を選んでください", "error");
+        return;
+      }
+      go.disabled = true;
+      setStatus(status, "移動中", "busy");
+      try {
+        const moved = await api(`/api/move/${encodePath(entry.ref)}`, {
+          method: "POST",
+          body: { category: target },
+        });
+        invalidatePopupCache();
+        goTo(moved.ref);
+      } catch (err) {
+        setStatus(status, err.message, "error");
+        go.disabled = false;
+      }
+    },
+  });
+
+  panel.replaceChildren(
+    el("span", { class: "hint", text: `現在: ${entry.category} →` }),
+    select,
+    input,
+    go,
+    el("button", { type: "button", text: "やめる", onclick: () => { panel.hidden = true; } }),
+    status,
+  );
+  panel.hidden = false;
+  select.focus();
+}
+
 async function remove(entry) {
-  if (!confirm(`「${entry.term}」を辞書から削除します。よろしいですか？`)) return;
+  if (!confirm(`「${entry.term}」（${entry.path_label}）を辞書から削除します。よろしいですか？`)) return;
   try {
-    await api(`/api/entries/${encodeURIComponent(entry.slug)}`, { method: "DELETE" });
-    invalidatePopupCache(entry.slug);
+    await api(`/api/entries/${encodePath(entry.ref)}`, { method: "DELETE" });
+    invalidatePopupCache();
     location.href = "/glossary";
   } catch (err) {
     alert(`削除できません: ${err.message}`);
@@ -136,6 +242,7 @@ async function main() {
     root.replaceChildren(
       el("h1", { text: "見つかりません" }),
       el("p", { class: "status error", text: err.message }),
+      el("p", { class: "hint", text: `参照: ${initialRef}` }),
       el("p", {}, [el("a", { class: "btn", href: "/glossary", text: "辞書一覧へ" })]),
     );
   }

@@ -1,0 +1,10 @@
+categories:
+- name: プログラミング
+  subcategories:
+  - 基礎
+  - 設計
+  - UI
+  - ランタイム
+- name: 料理
+  subcategories:
+  - 調味料

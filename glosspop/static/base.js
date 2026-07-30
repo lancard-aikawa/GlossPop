@@ -47,28 +47,40 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+//: http(s) の URL だけをリンクにする。javascript: などは href に載せない
+const HTTP_URL = /^https?:\/\/[^\s<>"]+$/i;
+
+export function isHttpUrl(value) {
+  return HTTP_URL.test(String(value ?? "").trim());
+}
+
+/** 別タブで開く外部リンク。opener を渡さない。 */
+export function externalLink(href, text) {
+  return el("a", {
+    class: "ext-link",
+    href,
+    target: "_blank",
+    rel: "noreferrer noopener",
+    title: href,
+    text: text ?? href,
+  });
+}
+
+/**
+ * 出典を表示する要素を返す。URL なら別タブで開くリンク、それ以外はただの文字列。
+ * ファイル名や「辞書: 冪等」のような出典もあるので、URL のときだけリンクにする。
+ */
+export function sourceNode(source, { label = "出典: " } = {}) {
+  const value = String(source ?? "").trim();
+  if (!value) return null;
+  if (!isHttpUrl(value)) return el("span", { text: `${label}${value}` });
+  return el("span", {}, [el("span", { text: label }), externalLink(value)]);
+}
+
 export function setStatus(node, message, kind = "") {
   if (!node) return;
   node.textContent = message || "";
   node.className = `status${kind ? " " + kind : ""}`;
-}
-
-/** カテゴリ / サブカテゴリ入力の datalist を辞書の実データで埋める。 */
-export async function fillCategoryDatalists(catList, subList) {
-  const tree = await api("/api/categories");
-  const cats = [];
-  const subs = [];
-  for (const node of tree) {
-    cats.push(node.category);
-    for (const s of node.subcategories) if (s.name) subs.push(s.name);
-  }
-  const paint = (list, values) => {
-    if (!list) return;
-    list.replaceChildren(...[...new Set(values)].map((v) => el("option", { value: v })));
-  };
-  paint(catList, cats);
-  paint(subList, subs);
-  return tree;
 }
 
 export async function paintEntryCount(node) {

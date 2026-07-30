@@ -1,5 +1,5 @@
 // ビューア: ソース読み込み → レンダリング → テキスト選択で辞書登録。
-import { api, el, esc, paintEntryCount } from "./base.js";
+import { api, el, esc, externalLink, paintEntryCount, setStatus } from "./base.js";
 import { installGlossPopup } from "./popup.js";
 import { installSelectionAdd } from "./select-add.js";
 
@@ -17,7 +17,7 @@ installGlossPopup();
 
 const selection = installSelectionAdd({
   root: doc,
-  source: () => source?.contentPath || source?.filename || "",
+  source: () => source?.url || source?.contentPath || source?.filename || "",
   onSaved: () => Promise.all([renderCurrent(), paintEntryCount($("count"))]),
 });
 
@@ -33,20 +33,36 @@ async function renderCurrent() {
         text: source.text,
         kind: source.kind || "auto",
         filename: source.filename || null,
+        base_url: source.url || "",
+        title: source.title || "",
         first_only: $("firstOnly").checked,
       },
     });
     doc.innerHTML = res.html || '<p class="empty">(空のドキュメント)</p>';
     docHead.hidden = false;
-    const chars = source.text.length.toLocaleString("ja-JP");
-    docMeta.textContent =
-      `${source.filename || "貼り付けたテキスト"} — ${chars} 文字 / ${res.terms.length} 語ヒット`;
+    paintDocMeta(res);
     paintTerms(res.terms);
-    document.title = `${res.title || source.filename || "テキスト"} — GlossPop`;
+    document.title = `${res.title || sourceLabel() || "テキスト"} — GlossPop`;
   } catch (err) {
     doc.innerHTML = `<p class="status error">表示できません: ${esc(err.message)}</p>`;
   } finally {
     doc.removeAttribute("aria-busy");
+  }
+}
+
+function sourceLabel() {
+  if (!source) return "";
+  return source.url || source.contentPath || source.filename || "貼り付けたテキスト";
+}
+
+function paintDocMeta(res) {
+  const chars = source.text.length.toLocaleString("ja-JP");
+  const tail = ` — ${chars} 文字 / ${res.terms.length} 語ヒット`;
+  docMeta.replaceChildren();
+  if (source.url) {
+    docMeta.append(externalLink(source.url), document.createTextNode(tail));
+  } else {
+    docMeta.textContent = sourceLabel() + tail;
   }
 }
 
@@ -58,7 +74,7 @@ function paintTerms(terms) {
   termsList.replaceChildren(
     ...terms.map((t) =>
       el("li", {}, [
-        el("a", { href: `/glossary/${encodeURIComponent(t.slug)}` }, [
+        el("a", { href: t.url }, [
           el("span", { text: t.term }),
           el("span", { class: "cat", text: t.path_label }),
         ]),
@@ -96,6 +112,32 @@ $("showPaste").addEventListener("click", () => {
 });
 
 $("firstOnly").addEventListener("change", renderCurrent);
+
+// URL を開く (取得はサーバ側。CORS を踏まないため)
+$("urlForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const url = $("url").value.trim();
+  if (!url) return $("url").focus();
+  $("urlGo").disabled = true;
+  setStatus($("urlStatus"), "読み込み中", "busy");
+  try {
+    const res = await api("/api/fetch", { method: "POST", body: { url } });
+    setSource({
+      text: res.text,
+      kind: res.kind,
+      filename: null,
+      url: res.url,
+      title: res.title,
+    });
+    markCurrentFile(null);
+    $("url").value = res.url;
+    setStatus($("urlStatus"), res.title || res.url);
+  } catch (err) {
+    setStatus($("urlStatus"), err.message, "error");
+  } finally {
+    $("urlGo").disabled = false;
+  }
+});
 
 async function loadFileList() {
   filesList.replaceChildren(el("li", { class: "empty", text: "読み込み中…" }));

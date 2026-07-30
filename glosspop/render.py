@@ -134,11 +134,21 @@ def plain_to_html(text: str) -> str:
     return "\n".join(blocks)
 
 
-def render_source(text: str, *, kind: str = "auto", filename: str | None = None) -> str:
-    """``kind`` は ``markdown`` / ``text`` / ``auto``。auto は拡張子で判定する。"""
+def render_source(
+    text: str, *, kind: str = "auto", filename: str | None = None, base_url: str = ""
+) -> str:
+    """``kind`` は ``markdown`` / ``text`` / ``html`` / ``auto``。
+
+    ``html`` は取得済みの Web ページ。クライアント経由で戻ってくるので、
+    表示前にもう一度サニタイザを通す。
+    """
     if kind == "auto":
         name = (filename or "").lower()
         kind = "markdown" if name.endswith((".md", ".markdown", ".mdown")) else "text"
+    if kind == "html":
+        from .htmlclean import clean_fragment  # 循環 import を避けて遅延読み込み
+
+        return clean_fragment(text or "", base_url=base_url)
     return md_to_html(text) if kind == "markdown" else plain_to_html(text)
 
 

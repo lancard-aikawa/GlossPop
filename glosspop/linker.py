@@ -1,8 +1,19 @@
 """レンダリング済み HTML に辞書リンクを差し込む。
 
-タグと属性は触らず、テキストノードだけを書き換える。
-``<a> <code> <pre> <script> <style> <textarea> <kbd> <samp>`` の中は無視する
-(コードサンプルや既存リンクを壊さないため)。
+タグと属性は触らず、テキストだけを書き換える。
+``<pre>`` (コードブロック) と ``<a>`` (既存リンク) の中は無視する。
+
+インラインの ``<code>`` は対象にする。日本語の技術文書では ```用語``` を
+コードではなく強調のつもりで書くことが多く、そこがリンクにならないと
+「登録したのにリンクされない」という見え方になるため。
+コードそのものを載せるのは ``<pre>`` のほうなので、区別できる。
+
+照合は「読者に見えるテキスト」に対して行う。``**冪**等`` のように強調で語が
+分断されていても、インライン要素をまたいで一致させ、断片ごとにリンクを張る。
+ブロック要素と ``<br>`` はまたがない (段落をまたいだ偶然の一致を防ぐため)。
+
+同じ表記がカテゴリ違いで複数登録されていることがあるので、リンクは
+「表記」を持たせておき、吹き出し側が表記から全件を引く。
 """
 
 from __future__ import annotations
@@ -17,13 +28,30 @@ from .models import Entry
 _TAG_RE = re.compile(r"<[^>]*>", re.S)
 _TAG_NAME_RE = re.compile(r"^<\s*(/?)\s*([A-Za-z][A-Za-z0-9]*)")
 
-#: この要素の内側ではリンクを作らない
-SKIP_TAGS = frozenset({"a", "code", "pre", "script", "style", "textarea", "kbd", "samp"})
+#: この要素の内側ではリンクを作らない。
+#: ``<pre>`` はコードブロック全体を覆うので、``<pre><code>`` の中も自動的に外れる。
+SKIP_TAGS = frozenset({"a", "pre", "script", "style", "textarea"})
+
+#: この要素をまたぐテキストは「つながっている」とみなす。
+#: ``<br>`` は視覚的な改行なので意図的に外している。
+INLINE_TAGS = frozenset({
+    "a", "abbr", "b", "bdi", "bdo", "big", "cite", "code", "data", "dfn", "del",
+    "em", "font", "i", "ins", "kbd", "mark", "q", "rp", "rt", "ruby", "s", "samp",
+    "small", "span", "strong", "sub", "sup", "time", "tt", "u", "var", "wbr",
+})
 
 #: 前後の境界チェックが必要な文字クラス (英数字と _)
 _WORDISH = re.compile(r"[0-9A-Za-z_]")
 _LOOKBEHIND = r"(?<![0-9A-Za-z_])"
 _LOOKAHEAD = r"(?![0-9A-Za-z_])"
+
+# セグメントの種類
+_TEXT = "text"
+_TAG = "tag"
+
+
+def entry_url(entry: Entry) -> str:
+    return f"/glossary/{quote(entry.category)}/{quote(entry.slug)}"
 
 
 def _tag_info(tag: str) -> tuple[str | None, bool, bool]:
@@ -56,24 +84,103 @@ def _pattern_for(variant: str) -> str:
     return pat
 
 
+class _Segment:
+    """HTML を「タグ」と「テキスト」に切ったときの 1 片。"""
+
+    __slots__ = ("kind", "text", "linkable", "name")
+
+    def __init__(self, kind: str, text: str, *, linkable: bool = False, name: str | None = None) -> None:
+        self.kind = kind
+        self.text = text
+        self.linkable = linkable
+        self.name = name
+
+
+def _tokenize(html: str) -> list[_Segment]:
+    segments: list[_Segment] = []
+    skip_depth = 0
+    pos = 0
+    for m in _TAG_RE.finditer(html):
+        chunk = html[pos:m.start()]
+        if chunk:
+            segments.append(_Segment(_TEXT, chunk, linkable=skip_depth == 0))
+        tag = m.group(0)
+        name, closing, selfclose = _tag_info(tag)
+        segments.append(_Segment(_TAG, tag, name=name))
+        if name in SKIP_TAGS and not selfclose:
+            skip_depth = max(0, skip_depth - 1) if closing else skip_depth + 1
+        pos = m.end()
+    tail = html[pos:]
+    if tail:
+        segments.append(_Segment(_TEXT, tail, linkable=skip_depth == 0))
+    return segments
+
+
+def _runs(segments: Sequence[_Segment]) -> list[list[int]]:
+    """連続して「読者に見えるテキスト」になるセグメント番号のまとまりを返す。
+
+    インライン要素はまたぐが、ブロック要素・``<br>``・リンク不可テキストで切る。
+    """
+    runs: list[list[int]] = []
+    current: list[int] = []
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            runs.append(current)
+            current = []
+
+    for i, seg in enumerate(segments):
+        if seg.kind == _TEXT:
+            if seg.linkable:
+                current.append(i)
+            else:
+                flush()
+        elif seg.name is None or seg.name not in INLINE_TAGS:
+            # コメント・DOCTYPE・ブロック要素・<br> はすべて区切り
+            flush()
+    flush()
+    return runs
+
+
+class _Group:
+    """ひとつの表記に紐づくエントリ群。"""
+
+    __slots__ = ("surface", "entries", "_refs")
+
+    def __init__(self, surface: str) -> None:
+        self.surface = surface
+        self.entries: list[Entry] = []
+        self._refs: set[str] = set()
+
+    def add(self, entry: Entry) -> None:
+        if entry.ref not in self._refs:
+            self._refs.add(entry.ref)
+            self.entries.append(entry)
+
+    def remaining(self, skip: frozenset[str]) -> list[Entry]:
+        return [e for e in self.entries if e.ref not in skip]
+
+
 class Linker:
     """辞書エントリ集合から自動リンカを組み立てる。"""
 
     def __init__(self, entries: Sequence[Entry]) -> None:
-        self._by_slug: dict[str, Entry] = {e.slug: e for e in entries}
-        self._lookup: dict[str, Entry] = {}
+        self._groups: dict[str, _Group] = {}
         variants: list[str] = []
         for entry in entries:
             for surface in entry.surfaces:
                 for variant in _variants(surface):
                     if not variant:
                         continue
-                    keys = {variant.casefold(), variant.lower()}
-                    if any(k in self._lookup for k in keys):
-                        continue  # 先に登録されたエントリを優先 (先勝ち)
-                    for k in keys:
-                        self._lookup[k] = entry
-                    variants.append(variant)
+                    key = variant.casefold()
+                    group = self._groups.get(key)
+                    if group is None:
+                        group = _Group(surface)
+                        self._groups[key] = group
+                        self._groups.setdefault(variant.lower(), group)
+                        variants.append(variant)
+                    group.add(entry)
         # 最長一致優先: 同じ開始位置では長い表記が勝つ
         variants.sort(key=len, reverse=True)
         self._re = re.compile("|".join(_pattern_for(v) for v in variants), re.IGNORECASE) if variants else None
@@ -86,55 +193,99 @@ class Linker:
         html: str,
         *,
         first_only: bool = False,
-        skip_slugs: Iterable[str] = (),
+        skip_refs: Iterable[str] = (),
     ) -> tuple[str, list[Entry]]:
         """HTML にリンクを差し込み (書き換え後 HTML, 出現したエントリ) を返す。
 
-        エントリは初出順。``first_only`` なら各用語の最初の出現だけをリンクする。
-        ``skip_slugs`` は無視するエントリ (辞書ページで自分自身を貼らない用)。
+        エントリは初出順。``first_only`` なら各表記の最初の出現だけをリンクする。
+        ``skip_refs`` は無視するエントリ (辞書ページで自分自身を貼らない用)。
         """
         if self._re is None or not html:
             return html, []
 
-        skip = frozenset(skip_slugs)
-        hits: dict[str, int] = {}
-        parts: list[str] = []
-        skip_depth = 0
-        pos = 0
+        skip = frozenset(skip_refs)
+        segments = _tokenize(html)
+        hits: dict[str, Entry] = {}
+        seen_surfaces: set[str] = set()
+        # セグメント番号 -> [(開始, 終了, 開始タグ)]
+        inserts: dict[int, list[tuple[int, int, str]]] = {}
 
-        for m in _TAG_RE.finditer(html):
-            chunk = html[pos:m.start()]
-            if chunk:
-                parts.append(chunk if skip_depth else self._sub(chunk, hits, first_only, skip))
-            tag = m.group(0)
-            parts.append(tag)
-            name, closing, selfclose = _tag_info(tag)
-            if name in SKIP_TAGS and not selfclose:
-                skip_depth = max(0, skip_depth - 1) if closing else skip_depth + 1
-            pos = m.end()
+        for run in _runs(segments):
+            flat = "".join(segments[i].text for i in run)
+            if not flat.strip():
+                continue
+            # (flat 上の開始位置, セグメント番号, 長さ)
+            layout: list[tuple[int, int, int]] = []
+            cursor = 0
+            for i in run:
+                length = len(segments[i].text)
+                layout.append((cursor, i, length))
+                cursor += length
 
-        tail = html[pos:]
-        if tail:
-            parts.append(tail if skip_depth else self._sub(tail, hits, first_only, skip))
+            for m in self._re.finditer(flat):
+                matched = m.group(0)
+                group = self._groups.get(matched.casefold()) or self._groups.get(matched.lower())
+                if group is None:
+                    continue
+                entries = group.remaining(skip)
+                if not entries:
+                    continue
+                if first_only and group.surface in seen_surfaces:
+                    continue
 
-        entries = [self._by_slug[s] for s in hits if s in self._by_slug]
-        return "".join(parts), entries
+                start, end = m.start(), m.end()
+                pieces = [
+                    (base, idx, length)
+                    for base, idx, length in layout
+                    if base < end and base + length > start
+                ]
+                if not pieces:
+                    continue
+                seen_surfaces.add(group.surface)
+                for e in entries:
+                    hits.setdefault(e.ref, e)
+
+                open_tag = self._open_tag(group, entries, split=len(pieces) > 1)
+                for base, idx, length in pieces:
+                    lo = max(start, base) - base
+                    hi = min(end, base + length) - base
+                    inserts.setdefault(idx, []).append((lo, hi, open_tag))
+
+        return self._rebuild(segments, inserts), list(hits.values())
 
     # ------------------------------------------------------------------ #
 
-    def _sub(self, text: str, hits: dict[str, int], first_only: bool, skip: frozenset[str]) -> str:
-        def repl(m: re.Match[str]) -> str:
-            surface = m.group(0)
-            entry = self._lookup.get(surface.casefold()) or self._lookup.get(surface.lower())
-            if entry is None or entry.slug in skip:
-                return surface
-            if first_only and entry.slug in hits:
-                return surface
-            hits[entry.slug] = hits.get(entry.slug, 0) + 1
-            return (
-                f'<a class="gloss-link" href="/glossary/{quote(entry.slug)}"'
-                f' data-gloss="{escape(entry.slug)}"'
-                f' data-term="{escape(entry.term)}">{surface}</a>'
-            )
+    def _open_tag(self, group: _Group, entries: list[Entry], *, split: bool) -> str:
+        href = entry_url(entries[0]) if len(entries) == 1 else f"/glossary?q={quote(group.surface)}"
+        # 分断された断片は左右の余白を消して、見た目を 1 続きに保つ
+        classes = "gloss-link gloss-split" if split else "gloss-link"
+        attrs = [
+            f'class="{classes}"',
+            f'href="{href}"',
+            f'data-gloss="{escape(group.surface)}"',
+            f'data-count="{len(entries)}"',
+        ]
+        if len(entries) > 1:
+            attrs.append(f'title="{escape(group.surface)} — {len(entries)} 件の意味があります"')
+        return f"<a {' '.join(attrs)}>"
 
-        return self._re.sub(repl, text)  # type: ignore[union-attr]
+    @staticmethod
+    def _rebuild(segments: Sequence[_Segment], inserts: dict[int, list[tuple[int, int, str]]]) -> str:
+        out: list[str] = []
+        for i, seg in enumerate(segments):
+            spans = inserts.get(i)
+            if seg.kind != _TEXT or not spans:
+                out.append(seg.text)
+                continue
+            text = seg.text
+            cursor = 0
+            for lo, hi, open_tag in sorted(spans):
+                if lo < cursor:
+                    continue  # 重なり (正規表現は非重複なので通常起きない)
+                out.append(text[cursor:lo])
+                out.append(open_tag)
+                out.append(text[lo:hi])
+                out.append("</a>")
+                cursor = hi
+            out.append(text[cursor:])
+        return "".join(out)

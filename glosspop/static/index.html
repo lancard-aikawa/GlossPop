@@ -27,6 +27,14 @@
     <input type="file" id="file" accept=".md,.markdown,.mdown,.txt,text/plain,text/markdown" hidden>
     <p class="hint">.md / .txt をウィンドウにドロップしても開けます。</p>
 
+    <h2>URL を開く</h2>
+    <form id="urlForm" class="check-row">
+      <input type="url" id="url" placeholder="https://example.com/doc" autocomplete="off"
+             title="開く URL" aria-label="開く URL">
+      <button type="submit" id="urlGo">開く</button>
+    </form>
+    <p class="hint" id="urlStatus"></p>
+
     <h2>content フォルダ
       <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"
               aria-label="ファイル一覧を再読み込み">↻</button>

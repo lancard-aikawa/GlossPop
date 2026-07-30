@@ -314,6 +314,8 @@ a.gloss-link:hover, a.gloss-link:focus-visible {
   border-bottom-style: solid;
   outline: none;
 }
+/* 強調などで語が分断されたときの断片。余白を消して 1 続きに見せる */
+a.gloss-link.gloss-split { padding: 0; }
 
 /* ---------------------------------------------------------------- popup */
 
@@ -344,6 +346,47 @@ a.gloss-link:hover, a.gloss-link:focus-visible {
   display: inline-block;
 }
 .gloss-pop .pop-term { font-size: 15px; font-weight: 700; margin: 6px 0 0; }
+.gloss-pop .pop-count {
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  vertical-align: 2px;
+}
+
+/* 同名が複数あるときのアコーディオン */
+.gloss-pop .pop-item { border-top: 1px solid var(--border); }
+.gloss-pop .pop-item:first-of-type { margin-top: 8px; }
+.gloss-pop .pop-item > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 7px 0 7px 16px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.gloss-pop .pop-item > summary::-webkit-details-marker { display: none; }
+.gloss-pop .pop-item > summary::before {
+  content: "▶";
+  position: absolute;
+  left: 0;
+  font-size: 9px;
+  color: var(--fg-faint);
+  transition: transform .12s ease;
+}
+.gloss-pop .pop-item[open] > summary::before { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) {
+  .gloss-pop .pop-item > summary::before { transition: none; }
+}
+.gloss-pop .pop-item > summary:hover { background: var(--panel-2); }
+.gloss-pop .pop-item-body { padding: 0 0 10px 16px; }
+.gloss-pop .pop-item-body .pop-summary { margin-top: 0; }
+.gloss-pop .pop-item-link { margin: 8px 0 0; }
+.gloss-pop .pop-item-link a { font-size: 12px; font-weight: 600; text-decoration: none; }
 .gloss-pop .pop-reading { font-size: 11px; color: var(--fg-faint); font-weight: 400; margin-left: 6px; }
 .gloss-pop .pop-summary { margin: 6px 0 0; }
 .gloss-pop .pop-body { margin: 8px 0 0; color: var(--fg-dim); border-top: 1px solid var(--border); padding-top: 8px; }
@@ -420,6 +463,19 @@ dialog.sheet footer .spacer { flex: 1; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .status.busy::after { animation: none; } }
+
+.notice {
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0 0 12px;
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  background: var(--panel-2);
+  color: var(--fg-dim);
+}
+.notice[hidden] { display: none; }
 
 .ctx-quote {
   font-size: 12px;
@@ -513,7 +569,38 @@ dialog.sheet footer .spacer { flex: 1; }
 }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
 
+.cat-group.empty-cat > h2 { color: var(--fg-faint); font-weight: 500; }
+
+/* カテゴリ管理ダイアログ */
+dialog.sheet .cat-manager { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
+dialog.sheet .cat-manager .body { padding: 8px 18px; overflow: auto; }
+dialog.sheet .cat-manager footer { flex-wrap: wrap; }
+.cat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.cat-row:last-child { border-bottom: 0; }
+.cat-row-main { flex: 1; min-width: 0; }
+.cat-row-name { font-size: 14px; font-weight: 600; }
+.cat-row-meta { font-size: 11px; color: var(--fg-faint); overflow-wrap: anywhere; }
+
 .entry-actions { margin: 28px 0 0; }
+.move-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.move-panel[hidden] { display: none; }
+.move-panel input { width: auto; }
 .entry-section { margin-top: 26px; }
 .entry-section > h2 {
   font-size: 11px;
@@ -522,4 +609,16 @@ dialog.sheet footer .spacer { flex: 1; }
   color: var(--fg-faint);
   margin: 0 0 8px;
 }
-.entry-meta { font-size: 11px; color: var(--fg-faint); margin-top: 30px; }
+.entry-meta { font-size: 11px; color: var(--fg-faint); margin-top: 30px; overflow-wrap: anywhere; }
+.entry-meta .sep { margin: 0 8px; opacity: .6; }
+
+/* 別タブで開く外部リンク */
+.ext-link { text-decoration: none; border-bottom: 1px solid currentColor; }
+.ext-link::after {
+  content: "↗";
+  font-size: .85em;
+  margin-left: 3px;
+  vertical-align: 1px;
+  border-bottom: 0;
+}
+.ext-link[hidden] { display: none; }

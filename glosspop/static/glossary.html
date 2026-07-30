@@ -31,12 +31,32 @@
         <option value="">すべてのカテゴリ</option>
       </select>
       <span class="spacer"></span>
+      <button type="button" id="manageCats">カテゴリ管理</button>
       <button type="button" class="primary" id="add">＋ 新規登録</button>
     </div>
 
     <div id="list"></div>
   </div>
 </div>
+
+<dialog class="sheet" id="catDialog">
+  <div class="cat-manager">
+    <header>
+      <h2>カテゴリ管理</h2>
+      <div class="spacer"></div>
+      <button type="button" class="ghost" data-ref="catClose" aria-label="閉じる">✕</button>
+    </header>
+    <div class="body" data-ref="catBody"></div>
+    <footer>
+      <input type="text" data-ref="catNew" class="auto-width" placeholder="新しいカテゴリ名"
+             title="新しいカテゴリ名" aria-label="新しいカテゴリ名" autocomplete="off">
+      <button type="button" data-ref="catAdd">＋ 追加</button>
+      <span class="status" data-ref="catStatus"></span>
+      <span class="spacer"></span>
+      <span class="hint">用語 0 件のカテゴリも登録できます。削除できるのは空のカテゴリだけです。</span>
+    </footer>
+  </div>
+</dialog>
 
 <script type="module" src="/static/glossary.js"></script>
 </body>

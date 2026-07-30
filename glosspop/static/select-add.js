@@ -32,9 +32,9 @@ function selectionContext(range) {
 async function lookup(term) {
   try {
     const res = await api(`/api/lookup?term=${encodeURIComponent(term)}`);
-    return res.found ? res.entry : null;
+    return res.entries || [];
   } catch {
-    return null; // 引けなくても新規登録として続行する
+    return []; // 引けなくても新規登録として続行する
   }
 }
 
@@ -105,11 +105,12 @@ export function installSelectionAdd({ root, source = () => "", onSaved = () => {
     hide();
     window.getSelection()?.removeAllRanges();
 
-    // すでに登録済みの語なら 409 で弾くのではなく編集モードで開く
+    // 1 件だけ登録済みならその編集、複数カテゴリにあるなら新規扱い
+    // (どれを編集したいかは決められないので、ユーザーがカテゴリを選ぶ)
     const existing = await lookup(term);
     const saved = await openEntryEditor(
-      existing
-        ? { slug: existing.slug, entry: existing, context }
+      existing.length === 1
+        ? { ref: existing[0].ref, entry: existing[0], context }
         : { term, context, source: source() }
     );
     if (saved) onSaved(saved);

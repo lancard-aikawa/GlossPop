@@ -5,7 +5,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-from glosspop import config
+from glosspop import categories, config
 from glosspop.app import app
 
 
@@ -26,6 +26,10 @@ ENTRY = {
 }
 
 
+def ref_path(ref: str) -> str:
+    return "/".join(quote(part) for part in ref.split("/"))
+
+
 def test_health(client):
     res = client.get("/api/health")
     assert res.status_code == 200
@@ -35,16 +39,16 @@ def test_health(client):
 def test_create_then_render_adds_links(client):
     created = client.post("/api/entries", json=ENTRY)
     assert created.status_code == 201, created.text
-    slug = created.json()["slug"]
+    ref = created.json()["ref"]
+    assert ref == "プログラミング/冪等"
 
     res = client.post("/api/render", json={"text": "# メモ\n\nこの操作は冪等です。", "kind": "markdown"})
     assert res.status_code == 200
     body = res.json()
-    # href は percent-encode される。参照用の slug は data-gloss に生のまま入る
-    assert f'href="/glossary/{quote(slug)}"' in body["html"]
-    assert f'data-gloss="{slug}"' in body["html"]
+    assert f'href="/glossary/{ref_path(ref)}"' in body["html"]
+    assert 'data-gloss="冪等"' in body["html"]
     assert body["title"] == "メモ"
-    assert [t["slug"] for t in body["terms"]] == [slug]
+    assert [t["ref"] for t in body["terms"]] == [ref]
 
 
 def test_alias_also_links(client):
@@ -53,54 +57,114 @@ def test_alias_also_links(client):
     assert 'class="gloss-link"' in res.json()["html"]
 
 
-def test_duplicate_returns_409(client):
+def test_duplicate_in_same_category_returns_409(client):
     assert client.post("/api/entries", json=ENTRY).status_code == 201
     dup = client.post("/api/entries", json=ENTRY)
     assert dup.status_code == 409
     assert "既に登録" in dup.json()["detail"]
 
 
+def test_same_term_other_category_is_allowed(client):
+    client.post("/api/entries", json=ENTRY)
+    other = client.post("/api/entries", json={**ENTRY, "category": "数学", "subcategory": ""})
+    assert other.status_code == 201
+    assert other.json()["ref"] == "数学/冪等"
+
+
+def test_detail_does_not_link_same_term_in_another_category(client):
+    # プログラミングの「ソース」本文に出てくる「ソース」が料理へ飛ばないこと
+    client.post("/api/entries", json={
+        "term": "ソース", "category": "料理", "summary": "調味料", "definition": "調味料。",
+    })
+    ref = client.post("/api/entries", json={
+        "term": "ソース", "category": "プログラミング",
+        "definition": "人が書くプログラムそのもの。ソースコードとも言う。",
+    }).json()["ref"]
+    detail = client.get(f"/api/entries/{ref_path(ref)}").json()
+    assert 'class="gloss-link"' not in detail["definition_html"]
+
+
 def test_entry_detail_does_not_self_link(client):
-    slug = client.post("/api/entries", json=ENTRY).json()["slug"]
-    detail = client.get(f"/api/entries/{slug}").json()
+    ref = client.post("/api/entries", json=ENTRY).json()["ref"]
+    detail = client.get(f"/api/entries/{ref_path(ref)}").json()
     assert detail["path_label"] == "プログラミング / API"
+    assert detail["url"] == f"/glossary/{ref_path(ref)}"
     assert 'class="gloss-link"' not in detail["definition_html"]
     # 本文中のコードスパンは崩れない
     assert "<code>PUT</code>" in detail["definition_html"]
 
 
-def test_lookup_by_alias(client):
-    slug = client.post("/api/entries", json=ENTRY).json()["slug"]
-    hit = client.get("/api/lookup", params={"term": "idempotent"})
-    assert hit.status_code == 200
-    body = hit.json()
+def test_lookup_returns_every_category(client):
+    a = client.post("/api/entries", json=ENTRY).json()["ref"]
+    b = client.post("/api/entries", json={**ENTRY, "category": "数学"}).json()["ref"]
+    body = client.get("/api/lookup", params={"term": "idempotent"}).json()
     assert body["found"] is True
-    assert body["entry"]["slug"] == slug
-    assert body["entry"]["term"] == "冪等"
+    assert body["count"] == 2
+    assert {e["ref"] for e in body["entries"]} == {a, b}
 
 
 def test_lookup_miss_is_not_an_error(client):
     # 登録前の重複チェックに使うので、未登録は 200 + found:false で返す
     res = client.get("/api/lookup", params={"term": "無い語"})
     assert res.status_code == 200
-    assert res.json() == {"found": False, "entry": None}
+    assert res.json() == {"term": "無い語", "found": False, "count": 0, "entries": []}
 
 
 def test_update_and_delete(client):
-    slug = client.post("/api/entries", json=ENTRY).json()["slug"]
-    updated = client.put(f"/api/entries/{slug}", json={**ENTRY, "summary": "書き換え"})
+    ref = client.post("/api/entries", json=ENTRY).json()["ref"]
+    updated = client.put(f"/api/entries/{ref_path(ref)}", json={**ENTRY, "summary": "書き換え"})
     assert updated.status_code == 200
     assert updated.json()["summary"] == "書き換え"
-    assert client.delete(f"/api/entries/{slug}").status_code == 204
-    assert client.get(f"/api/entries/{slug}").status_code == 404
+    assert updated.json()["ref"] == ref
+    assert client.delete(f"/api/entries/{ref_path(ref)}").status_code == 204
+    assert client.get(f"/api/entries/{ref_path(ref)}").status_code == 404
 
 
-def test_categories(client):
-    client.post("/api/entries", json=ENTRY)
-    tree = client.get("/api/categories").json()
-    assert tree == [
-        {"category": "プログラミング", "count": 1, "subcategories": [{"name": "API", "count": 1}]}
-    ]
+def test_move_entry_between_categories(client):
+    ref = client.post("/api/entries", json=ENTRY).json()["ref"]
+    moved = client.post(f"/api/move/{ref_path(ref)}", json={"category": "数学"})
+    assert moved.status_code == 200
+    assert moved.json()["ref"] == "数学/冪等"
+    assert client.get(f"/api/entries/{ref_path(ref)}").status_code == 404
+    assert (config.GLOSSARY_DIR / "数学" / "冪等.md").exists()
+
+
+def test_update_with_new_category_also_moves(client):
+    ref = client.post("/api/entries", json=ENTRY).json()["ref"]
+    res = client.put(f"/api/entries/{ref_path(ref)}", json={**ENTRY, "category": "数学"})
+    assert res.json()["ref"] == "数学/冪等"
+
+
+class TestCategories:
+    def test_master_lists_empty_categories(self, client):
+        assert client.post("/api/categories", json={"name": "法律"}).status_code == 201
+        tree = {n["category"]: n for n in client.get("/api/categories").json()}
+        assert tree["法律"]["count"] == 0
+
+    def test_invalid_name_is_422(self, client):
+        res = client.post("/api/categories", json={"name": "a/b"})
+        assert res.status_code == 422
+        assert "使えない文字" in res.json()["detail"]
+
+    def test_reserved_name_is_422(self, client):
+        assert client.post("/api/categories", json={"name": "CON"}).status_code == 422
+
+    def test_rename_moves_entries(self, client):
+        client.post("/api/entries", json=ENTRY)
+        res = client.put("/api/categories/プログラミング", json={"name": "開発"})
+        assert res.status_code == 200
+        assert client.get(f"/api/entries/{ref_path('開発/冪等')}").status_code == 200
+        assert (config.GLOSSARY_DIR / "開発" / "冪等.md").exists()
+
+    def test_delete_requires_empty(self, client):
+        client.post("/api/entries", json=ENTRY)
+        assert client.delete("/api/categories/プログラミング").status_code == 400
+        client.post("/api/categories", json={"name": "空"})
+        assert client.delete("/api/categories/空").status_code == 204
+
+    def test_created_via_entry_is_registered(self, client):
+        client.post("/api/entries", json=ENTRY)
+        assert "プログラミング" in categories.names()
 
 
 def test_content_listing_and_read(client):
@@ -130,8 +194,20 @@ def test_markdown_is_not_raw_html(client):
     assert "<script>" not in res.json()["html"]
 
 
+def test_html_kind_is_sanitized_on_render(client):
+    # 取得済み HTML はクライアント経由で戻ってくるので、表示前にもう一度掃除する
+    res = client.post("/api/render", json={
+        "text": '<p onclick="evil()">本文</p><script>alert(1)</script>',
+        "kind": "html",
+    })
+    html = res.json()["html"]
+    assert "<script>" not in html
+    assert "onclick" not in html
+    assert "本文" in html
+
+
 def test_pages_are_served(client):
-    for path in ("/", "/glossary", "/glossary/anything"):
+    for path in ("/", "/glossary", "/glossary/cat/slug"):
         res = client.get(path)
         assert res.status_code == 200
         assert "GlossPop" in res.text

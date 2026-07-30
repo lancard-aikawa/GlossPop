@@ -23,8 +23,11 @@ AI 下書きは Claude Code CLI (`claude`) をサブプロセスで呼ぶ。PATH
 
 ### ビューアで登録する
 
-1. 左パネルから `content/` のファイルを選ぶ、ファイルを開く、ウィンドウに .md をドロップする、
-   またはテキストを貼り付けて **表示** を押す
+1. ソースを開く。次の 4 通り
+   - `content/` のファイル一覧から選ぶ
+   - **📂 ファイルを開く** / ウィンドウに .md をドロップ
+   - **URL を開く** に URL を入れて **開く**（後述）
+   - テキストを貼り付けて **表示**
 2. 本文中の語を選択すると **＋ 辞書に登録** ボタンが出る
 3. ダイアログで **✨ AI で下書き** を押すと、選択語とその前後の文脈を Claude に渡して
    読み・別名・カテゴリ・要約・本文の案を作る（数十秒かかる）
@@ -32,7 +35,20 @@ AI 下書きは Claude Code CLI (`claude`) をサブプロセスで呼ぶ。PATH
 
 これは**辞書ページの本文でも同じように使える**。辞書を読んでいて出てきた別の知らない語を、
 そのまま選択して登録できる（保存すると本文が再描画され、新しい語がリンクになる）。
-すでに登録済みの語を選択した場合は、409 で弾く代わりにそのエントリの編集ダイアログが開く。
+すでに 1 件だけ登録済みの語を選択した場合は、そのエントリの編集ダイアログが開く。
+
+### URL を開く
+
+左パネルの **URL を開く** に URL を入れると、サーバ側で取得して表示する
+（ブラウザから直接 fetch すると CORS で落ちるため）。
+
+- HTML は `<main>` / `<article>` があればその中身だけを採り、無ければ `<body>` 全体
+- `script` `style` `iframe` `form` `nav` `header` `footer` `aside` などは中身ごと捨てる
+- 属性は `href` / `src` / `alt` / `title` だけ残し、相対 URL は絶対化する
+- `.md` を直接指す URL なら Markdown として描画する
+- http / https のみ。8 MB・20 秒・リダイレクト 5 回の上限つき（環境変数で変更可）
+
+ローカルホストや社内ホストも開ける（そこを読むための道具なので、意図的に許可している）。
 
 リンクの挙動:
 
@@ -42,6 +58,9 @@ AI 下書きは Claude Code CLI (`claude`) をサブプロセスで呼ぶ。PATH
 | クリック | 吹き出しを固定表示（Esc で閉じる） |
 | Ctrl / ⌘ + クリック | 辞書ページを新しいタブで開く |
 | 吹き出しの「辞書ページを開く →」 | 辞書ページへ移動 |
+
+同じ表記がカテゴリ違いで複数登録されているときは、吹き出しがカテゴリごとの
+アコーディオンになる（先頭だけ開いた状態）。リンク自体は一覧検索に飛ぶ。
 
 ### Claude Code から登録する
 
@@ -54,16 +73,32 @@ AI 下書きは Claude Code CLI (`claude`) をサブプロセスで呼ぶ。PATH
 会話の流れやコードから用語を拾って登録したいときはこちら。中では CLI を使っている。
 
 ```powershell
-uv run glosspop list --json               # 一覧
-uv run glosspop categories                # カテゴリ構成
-uv run glosspop show 冪等                  # 1 語の Markdown を表示
-uv run glosspop add --json @entry.json    # 登録（--update で上書き）
-uv run glosspop rm 冪等                    # 削除
+uv run glosspop list --json                    # 一覧
+uv run glosspop show 冪等                       # 1 語の Markdown を表示
+uv run glosspop add --json @entry.json         # 登録（--update で上書き）
+uv run glosspop move ソース --to 料理            # カテゴリ移動
+uv run glosspop rm ソース --category 料理        # 削除（同名が複数あるとき）
+
+uv run glosspop categories                     # カテゴリマスターを見る
+uv run glosspop categories --add 音楽           # 用語 0 件でも登録できる
+uv run glosspop categories --rename 旧名 新名    # ディレクトリごと改名
+uv run glosspop categories --remove 音楽        # 空のカテゴリだけ削除できる
 ```
 
 ## データの形
 
-1 用語 = 1 Markdown ファイル。`data/glossary/<slug>.md`。
+```
+data/
+├─ categories.yaml            カテゴリマスター
+└─ glossary/
+   ├─ プログラミング/
+   │  ├─ ソース.md
+   │  └─ 冪等.md
+   └─ 料理/
+      └─ ソース.md            ← 同じ用語名でもカテゴリが違えば別エントリ
+```
+
+1 用語 = 1 Markdown ファイル。**ディレクトリ名がカテゴリ、ファイル名が slug の正**。
 
 ```markdown
 ---
@@ -71,7 +106,6 @@ term: 冪等
 reading: べきとう
 aliases:
   - idempotent
-category: プログラミング
 subcategory: API
 summary: 何度実行しても結果が同じであること。
 examples:
@@ -86,8 +120,39 @@ updated_at: '2026-07-30T10:00:00+09:00'
 ```
 
 - 本文がそのまま定義文になる。エディタで直接編集してよい（サーバは mtime を見て読み直す）
-- `slug` はファイル名が正。frontmatter には書かない
+- `category` は frontmatter に書かない（ディレクトリ名が正）。`slug` も書かない
 - `aliases` に書いた表記も自動リンクの対象になる
+- `source` が `http(s)://` で始まるときは、辞書ページと編集ダイアログで
+  **別タブで開くリンク**になる（`target="_blank"` + `rel="noreferrer noopener"`）。
+  ファイル名など URL でない出典はただの文字列のまま
+- 旧レイアウト（`data/glossary/*.md` のフラット配置）は起動時に自動で移行する
+
+### カテゴリ
+
+一意キーは **カテゴリ + 用語**。同じ「ソース」をプログラミングと料理の両方に持てる。
+
+- **マスター**は `data/categories.yaml`。順序・サブカテゴリ・説明を持ち、
+  **用語 0 件のカテゴリも登録しておける**
+- AI が下書きを作った時点で、提案されたカテゴリはマスターに登録される。
+  そのまま保存しなくても（空振りでも）マスターには残る
+- `mkdir` で作っただけのディレクトリは、次回読み込み時にマスターへ取り込まれる
+- カテゴリを変えるとファイルごと移動する（辞書ページの **カテゴリを移動**、
+  編集ダイアログのカテゴリ変更、`glosspop move` のどれでも）
+- 改名はディレクトリごと動かす。削除できるのは空のカテゴリだけ
+
+#### カテゴリ名に使える文字
+
+どの OS でもディレクトリを作れて、URL に載せても壊れない形だけを通す。
+
+| 制約 | 内容 |
+| --- | --- |
+| 使えない文字 | `< > : " / \ \| ? * # %` と制御文字 |
+| 先頭・末尾 | `.` と空白は不可 |
+| 予約名 | `CON` `PRN` `AUX` `NUL` `COM1`〜`COM9` `LPT1`〜`LPT9`（拡張子つきも不可） |
+| 長さ | 40 文字以内 |
+| 正規化 | NFC に揃える（macOS の NFD 濁点で別ディレクトリにならないように） |
+
+日本語・絵文字・空白・`+` `・` などは使える。
 
 ### 本文の改行
 
@@ -106,8 +171,35 @@ updated_at: '2026-07-30T10:00:00+09:00'
   英数字境界をチェックする（`API` は `APIs` にマッチしない）
 - 同じ位置では**長い表記が優先**（`機械学習` が登録されていれば `学習` は使われない）
 - 大文字小文字は区別しない。本文の表記はそのまま残る
-- `<a> <code> <pre> <script> <style> <textarea> <kbd> <samp>` の中身は対象外
 - 表示オプションで「各用語の最初の 1 回だけリンク」に切り替えられる
+
+### 対象になる場所
+
+| リンクになる | ならない |
+| --- | --- |
+| 本文・見出し・リスト・表・引用 | コードブロック（`<pre>`、``` ```〜``` ```） |
+| 強調・斜体・打ち消しなどの装飾内 | 既存のリンク（`<a>`）の中 |
+| **インラインコード（`` `用語` ``）** | `<script> <style> <textarea>` |
+
+インラインコードを対象にしているのは、日本語の技術文書では `` `用語` `` を
+コードではなく強調のつもりで書くことが多いため。コードそのものを載せるのは
+コードブロックのほうなので、そちらは従来どおり除外する。
+
+### 装飾をまたぐ照合
+
+照合は「読者に見えるテキスト」に対して行うので、**強調などで語が分断されていても
+リンクになる**。`**冪**等` や `結果**整合性**` は断片ごとにリンクを張り、CSS で
+下線を繋げて 1 続きに見せる。
+
+またがない境界（段落をまたいだ偶然の一致を防ぐため）:
+
+| またぐ | またがない |
+| --- | --- |
+| `<strong> <em> <b> <i> <s> <span> <sup> <code>` などインライン要素 | `<p> <li> <td> <h1>` などブロック要素 |
+| 空のインライン要素（`冪<strong></strong>等`） | `<br>`（視覚的な改行） |
+| | コードブロック・既存リンクの中 |
+
+語の間に別の文字が入る `冪**の**等` は、見えるテキストが「冪の等」なのでマッチしない。
 
 一般的すぎる語（「処理」「設定」など）を `aliases` に入れると本文がリンクだらけになるので注意。
 
@@ -116,21 +208,30 @@ updated_at: '2026-07-30T10:00:00+09:00'
 | 変数 | 既定 | 用途 |
 | --- | --- | --- |
 | `GLOSSPOP_GLOSSARY_DIR` | `./data/glossary` | 辞書の置き場所 |
+| `GLOSSPOP_CATEGORIES_FILE` | `./data/categories.yaml` | カテゴリマスター |
 | `GLOSSPOP_CONTENT_DIR` | `./content` | ビューアがブラウズする .md / .txt |
 | `GLOSSPOP_CLAUDE_BIN` | PATH から自動検出 | `claude` の場所 |
 | `GLOSSPOP_CLAUDE_ARGS` | `--model sonnet` | `claude -p` に渡す追加引数 |
 | `GLOSSPOP_CLAUDE_TIMEOUT` | `180` | AI 下書きのタイムアウト秒 |
+| `GLOSSPOP_FETCH_TIMEOUT` | `20` | URL 取得のタイムアウト秒 |
+| `GLOSSPOP_FETCH_MAX_BYTES` | `8388608` | URL 取得のサイズ上限 |
+| `GLOSSPOP_FETCH_MAX_REDIRECTS` | `5` | リダイレクト追跡の上限 |
+| `GLOSSPOP_FETCH_USER_AGENT` | `GlossPop/0.1 …` | 取得時の User-Agent |
 
 ## 構成
 
 ```
 glosspop/
-  app.py       FastAPI ルーティング
-  store.py     辞書 CRUD (Markdown + frontmatter)
-  linker.py    レンダリング済み HTML への自動リンク挿入
-  render.py    Markdown / テキスト → HTML、本文の改行整形
-  ai.py        claude CLI サブプロセス呼び出し
-  cli.py       serve / add / list / show / rm / categories
+  app.py        FastAPI ルーティング
+  store.py      辞書 CRUD (カテゴリ別ディレクトリ + frontmatter)
+  categories.py カテゴリマスター (categories.yaml)
+  models.py     データモデルとカテゴリ名の検証
+  linker.py     レンダリング済み HTML への自動リンク挿入
+  render.py     Markdown / テキスト → HTML、本文の改行整形
+  fetcher.py    URL 取得
+  htmlclean.py  外部 HTML の本文抽出とサニタイズ
+  ai.py         claude CLI サブプロセス呼び出し
+  cli.py        serve / add / list / show / move / rm / categories
   static/
     viewer.js      ビューア
     glossary.js    辞書一覧
