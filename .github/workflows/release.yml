@@ -59,7 +59,7 @@ jobs:
           uv sync --all-groups
           uv run pytest -q
 
-      - name: ビルド (配布用: サンプル辞書入り / 個人の辞書は入れない)
+      - name: "ビルド (配布用: サンプル辞書入り / 個人の辞書は入れない)"
         run: ./packaging/build.ps1 -Seed dist
 
       - name: exe を起動して確認する
