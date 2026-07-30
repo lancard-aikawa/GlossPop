@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlossPop — 辞書</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="/">Gloss<span>Pop</span></a>
+  <nav class="topnav">
+    <a href="/">ビューア</a>
+    <a href="/glossary" aria-current="page">辞書</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="meta" id="count"></span>
+</div>
+
+<div class="page">
+  <div class="page-inner">
+    <h1>用語辞書</h1>
+    <p class="lede" id="lede"></p>
+
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="用語・別名・本文を検索" autocomplete="off"
+             title="用語・別名・本文を検索" aria-label="用語・別名・本文を検索">
+      <select id="catFilter" class="auto-width" title="カテゴリで絞り込む" aria-label="カテゴリで絞り込む">
+        <option value="">すべてのカテゴリ</option>
+      </select>
+      <span class="spacer"></span>
+      <button type="button" class="primary" id="add">＋ 新規登録</button>
+    </div>
+
+    <div id="list"></div>
+  </div>
+</div>
+
+<script type="module" src="/static/glossary.js"></script>
+</body>
+</html>

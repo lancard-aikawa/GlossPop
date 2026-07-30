@@ -1,0 +1,2 @@
+# リポジトリ内は LF に正規化する (作業ツリーの改行は core.autocrlf に従う)
+* text=auto

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlossPop — ビューア</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="/">Gloss<span>Pop</span></a>
+  <nav class="topnav">
+    <a href="/" aria-current="page">ビューア</a>
+    <a href="/glossary">辞書</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="meta" id="count"></span>
+</div>
+
+<div class="layout">
+
+  <aside class="side">
+    <h2>ソース</h2>
+    <button type="button" id="pick" class="wide">📂 ファイルを開く…</button>
+    <input type="file" id="file" accept=".md,.markdown,.mdown,.txt,text/plain,text/markdown" hidden>
+    <p class="hint">.md / .txt をウィンドウにドロップしても開けます。</p>
+
+    <h2>content フォルダ
+      <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"
+              aria-label="ファイル一覧を再読み込み">↻</button>
+    </h2>
+    <ul class="filelist" id="files"></ul>
+
+    <h2>テキストを貼り付け</h2>
+    <textarea id="paste" rows="6" placeholder="ここにテキストを貼り付け"></textarea>
+    <div class="check-row gap-top">
+      <button type="button" id="showPaste" class="primary">表示</button>
+      <select id="kind" class="auto-width" title="貼り付けたテキストの種類" aria-label="貼り付けたテキストの種類">
+        <option value="auto">自動判定</option>
+        <option value="markdown">Markdown</option>
+        <option value="text">プレーンテキスト</option>
+      </select>
+    </div>
+
+    <h2>表示オプション</h2>
+    <label class="check"><input type="checkbox" id="firstOnly"> 各用語の最初の 1 回だけリンク</label>
+  </aside>
+
+  <main class="doc-wrap">
+    <div id="docHead" class="doc" hidden>
+      <p class="hint" id="docMeta"></p>
+    </div>
+    <article class="doc" id="doc">
+      <h1>GlossPop</h1>
+      <p>Markdown やテキストを表示して、<strong>知らない言葉を選択するだけで辞書に登録</strong>できるビューアです。</p>
+      <ol>
+        <li>左のパネルからファイルを開くか、テキストを貼り付けて <em>表示</em> を押します。</li>
+        <li>本文中の語句を選択すると <em>＋ 辞書に登録</em> ボタンが出ます。</li>
+        <li>ダイアログで <em>✨ AI で下書き</em> を押すと Claude が定義・カテゴリ案を作ります。</li>
+        <li>保存すると、以後その語は本文中で自動的にリンクになり、ホバーで吹き出しが出ます。</li>
+      </ol>
+      <p class="hint">Claude Code 側からは <code>/gloss-add</code> スキルでも登録できます。</p>
+    </article>
+  </main>
+
+  <aside class="side right">
+    <h2>この文書の用語</h2>
+    <ul class="termlist" id="terms"></ul>
+  </aside>
+
+</div>
+
+<script type="module" src="/static/viewer.js"></script>
+</body>
+</html>

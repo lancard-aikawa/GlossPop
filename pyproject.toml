@@ -1,0 +1,33 @@
+[project]
+name = "glosspop"
+version = "0.1.0"
+description = "選択したテキストを AI が辞書化し、以後の表示で自動リンク＋吹き出し表示するブラウザビューア"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "markdown-it-py>=3.0",
+    "mdit-py-plugins>=0.4",
+    "linkify-it-py>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+glosspop = "glosspop.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["glosspop"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
