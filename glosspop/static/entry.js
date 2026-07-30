@@ -119,7 +119,7 @@ function render(entry) {
 
   const meta = el("p", { class: "entry-meta" });
   const bits = [
-    el("span", { text: `保存先: data/glossary/${entry.category}/${entry.slug}.md` }),
+    el("span", { text: `保存先: ${entry.path}`, title: entry.path }),
     sourceNode(entry.source),
     el("span", { text: `作成 ${entry.created_at}` }),
     el("span", { text: `更新 ${entry.updated_at}` }),

@@ -26,6 +26,10 @@ function build() {
       </div>
       <footer>
         <button type="button" class="ghost" data-ref="toggle" hidden>全解除</button>
+        <select data-ref="scope" class="auto-width" title="保存先" aria-label="保存先">
+          <option value="global">全体の辞書へ</option>
+          <option value="local">このフォルダだけ</option>
+        </select>
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
         <button type="button" data-ref="stop" hidden>中止</button>
@@ -77,6 +81,8 @@ function selected(rows) {
 export async function openExtractDialog({ text = "", source = "", folder = false } = {}) {
   build();
   refs.title.textContent = folder ? "フォルダから用語をまとめて登録" : "用語をまとめて登録";
+  // フォルダ全体から拾うときは、そのフォルダ固有の語であることが多い
+  refs.scope.value = folder ? "local" : "global";
   refs.list.replaceChildren();
   refs.dropped.hidden = true;
   refs.go.hidden = refs.stop.hidden = refs.toggle.hidden = true;
@@ -180,7 +186,10 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     for (const row of targets) {
       setStatus(refs.status, `保存 ${done + 1}/${targets.length}: ${row.candidate.term}`, "busy");
       try {
-        row.saved = await api("/api/entries", { method: "POST", body: row.draft });
+        row.saved = await api("/api/entries", {
+          method: "POST",
+          body: { ...row.draft, scope: refs.scope.value },
+        });
         saved++;
         setStatus(row.state, `保存しました (${row.saved.path_label})`);
         row.check.checked = false;
@@ -205,6 +214,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
       term: row.candidate.term,
       context: row.candidate.context,
       source: origin,
+      scope: refs.scope.value,
       entry: { ...row.draft, term: row.draft?.term || row.candidate.term, source: origin },
     });
     if (!result) return;

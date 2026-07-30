@@ -51,7 +51,8 @@ _TAG = "tag"
 
 
 def entry_url(entry: Entry) -> str:
-    return f"/glossary/{quote(entry.category)}/{quote(entry.slug)}"
+    # ref はローカル辞書だと ".local/" が付くので、ref から組み立てる
+    return "/glossary/" + "/".join(quote(part) for part in entry.ref.split("/"))
 
 
 def _tag_info(tag: str) -> tuple[str | None, bool, bool]:

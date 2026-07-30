@@ -44,6 +44,12 @@ function build() {
             <input type="text" data-ref="subcategory" list="gp-subs" autocomplete="off">
             <datalist id="gp-subs"></datalist></label>
         </div>
+        <label class="field"><span>保存先</span>
+          <select data-ref="scope">
+            <option value="global">全体の辞書（どの文書でも有効）</option>
+            <option value="local">このフォルダだけ</option>
+          </select>
+          <p class="hint" data-ref="scopeHint"></p></label>
         <label class="field"><span>要約 (吹き出しに出る 1〜2 文)</span>
           <textarea data-ref="summary" rows="2"></textarea></label>
         <label class="field"><span>本文 (Markdown)</span>
@@ -89,6 +95,20 @@ function build() {
 
   document.body.append(dialog);
   return dialog;
+}
+
+/** 保存先 (全体 / このフォルダ) の選択肢を整える。編集中は動かせない。 */
+async function paintScope(selected, editing) {
+  refs.scope.value = selected === "local" ? "local" : "global";
+  refs.scope.disabled = editing;
+  try {
+    const health = await api("/api/health");
+    refs.scopeHint.textContent = editing
+      ? "保存先は変えられません（登録し直してください）"
+      : `このフォルダ = ${health.content_dir}`;
+  } catch {
+    refs.scopeHint.textContent = "";
+  }
 }
 
 /** マスターを読み直してカテゴリ選択肢を作る。 */
@@ -149,6 +169,7 @@ function readForm() {
   const draft = {
     term: refs.term.value.trim(),
     reading: refs.reading.value.trim(),
+    scope: refs.scope.value,
     category: currentCategory(),
     subcategory: refs.subcategory.value.trim(),
     summary: refs.summary.value.trim(),
@@ -188,10 +209,18 @@ function setNotice(html) {
  * @param {object} [o.entry]    編集モードの初期値
  * @returns {Promise<object|null>} 保存されたエントリ、キャンセルなら null
  */
-export async function openEntryEditor({ term = "", context = "", source = "", ref = null, entry = null } = {}) {
+export async function openEntryEditor({
+  term = "",
+  context = "",
+  source = "",
+  ref = null,
+  entry = null,
+  scope = "",
+} = {}) {
   build();
   let targetRef = ref;
   categoryTouched = Boolean(entry?.category);
+  await paintScope(entry?.scope || scope, Boolean(targetRef));
 
   refs.title.textContent = targetRef ? "用語を編集" : "用語を辞書に登録";
   refs.save.textContent = targetRef ? "更新" : "保存";

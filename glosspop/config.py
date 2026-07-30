@@ -83,6 +83,16 @@ def is_default_content_dir() -> bool:
     return _content_override is None
 
 
+#: 開いているフォルダに置くローカル辞書のディレクトリ名。
+#: フォルダごとコピーすれば辞書も一緒についていく
+LOCAL_DIR_NAME = ".glosspop"
+
+
+def local_glossary_dir() -> Path:
+    """開いているフォルダのローカル辞書。フォルダを切り替えれば当然変わる。"""
+    return content_dir() / LOCAL_DIR_NAME / "glossary"
+
+
 def ensure_dirs() -> None:
     GLOSSARY_DIR.mkdir(parents=True, exist_ok=True)
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)

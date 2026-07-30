@@ -11,6 +11,15 @@ from pydantic import BaseModel, Field, field_validator
 
 UNCATEGORIZED = "未分類"
 
+#: 辞書の置き場所。global = data/glossary、local = 開いているフォルダの .glosspop/
+GLOBAL_SCOPE = "global"
+LOCAL_SCOPE = "local"
+SCOPES = (GLOBAL_SCOPE, LOCAL_SCOPE)
+
+#: ローカルエントリの ref に付ける接頭辞。
+#: カテゴリ名は「.」で始められない (normalize_category) ので実名と衝突しない
+LOCAL_PREFIX = ".local"
+
 # Windows でファイル名に使えない文字 + 制御文字
 _SLUG_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]+')
 _SLUG_SPACE = re.compile(r"\s+")
@@ -120,23 +129,42 @@ class EntryBase(BaseModel):
 class EntryDraft(EntryBase):
     """AI 下書き / API 入力。"""
 
+    #: どちらの辞書に入れるか。保存先を決めるだけで、ファイルには書かない
+    scope: str = GLOBAL_SCOPE
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _normalize_scope(cls, v: object) -> str:
+        value = str(v or "").strip() or GLOBAL_SCOPE
+        return value if value in SCOPES else GLOBAL_SCOPE
+
 
 class Entry(EntryBase):
     """保存済みエントリ。
 
-    保存先は ``data/glossary/<category>/<slug>.md``。ディレクトリ名が
+    保存先は ``<辞書ルート>/<category>/<slug>.md``。ディレクトリ名が
     ``category``、ファイル名が ``slug`` の正であり、frontmatter には書かない。
+    ``scope`` も同じくパス（どちらの辞書にあるか）が正。
     同じ用語名でもカテゴリが違えば別エントリとして併存できる。
     """
 
     slug: str = ""
+    scope: str = GLOBAL_SCOPE
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 
     @property
     def ref(self) -> str:
-        """エントリを一意に指す ID。URL でもそのまま使う (``カテゴリ/slug``)。"""
-        return f"{self.category}/{self.slug}"
+        """エントリを一意に指す ID。URL でもそのまま使う。
+
+        グローバルは ``カテゴリ/slug``、ローカルは ``.local/カテゴリ/slug``。
+        グローバル側の形を変えないので、既存の URL と CLI はそのまま通る。
+        """
+        return make_ref(self.scope, self.category, self.slug)
+
+    @property
+    def is_local(self) -> bool:
+        return self.scope == LOCAL_SCOPE
 
     @property
     def surfaces(self) -> list[str]:
@@ -145,12 +173,31 @@ class Entry(EntryBase):
 
     @property
     def path_label(self) -> str:
-        return f"{self.category} / {self.subcategory}" if self.subcategory else self.category
+        """UI に出す所在。ローカル辞書は先頭に印を付ける。
+
+        吹き出しでローカルとグローバルの同名エントリが並ぶので、
+        カテゴリ名だけだとどちらの意味か見分けられない。
+        """
+        base = f"{self.category} / {self.subcategory}" if self.subcategory else self.category
+        return f"📁 {base}" if self.is_local else base
 
 
-def split_ref(ref: str) -> tuple[str, str]:
-    """``カテゴリ/slug`` を分解する。区切りが無ければ ``CategoryNameError``。"""
-    category, sep, slug = (ref or "").rpartition("/")
+def make_ref(scope: str, category: str, slug: str) -> str:
+    prefix = f"{LOCAL_PREFIX}/" if scope == LOCAL_SCOPE else ""
+    return f"{prefix}{category}/{slug}"
+
+
+def split_ref(ref: str) -> tuple[str, str, str]:
+    """ref を ``(scope, カテゴリ, slug)`` に分解する。
+
+    区切りが無ければ ``CategoryNameError``。
+    """
+    rest = (ref or "").strip()
+    scope = GLOBAL_SCOPE
+    if rest.startswith(f"{LOCAL_PREFIX}/"):
+        scope = LOCAL_SCOPE
+        rest = rest[len(LOCAL_PREFIX) + 1:]
+    category, sep, slug = rest.rpartition("/")
     if not sep or not category or not slug:
         raise CategoryNameError(f"不正な参照です: {ref!r}（「カテゴリ/slug」の形で指定してください）")
-    return category, slug
+    return scope, category, slug

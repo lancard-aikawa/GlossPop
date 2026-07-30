@@ -129,6 +129,7 @@ def _term_card(entry: Entry) -> dict:
         "summary": entry.summary,
         "category": entry.category,
         "subcategory": entry.subcategory,
+        "scope": entry.scope,
         "path_label": entry.path_label,
         "url": entry_url(entry),
     }
@@ -157,6 +158,8 @@ def _entry_payload(entry: Entry, *, linker: Linker | None = None) -> dict:
     data["ref"] = entry.ref
     data["url"] = entry_url(entry)
     data["path_label"] = entry.path_label
+    # 実際の保存先。グローバルとローカルでルートが違うので、組み立てを UI に任せない
+    data["path"] = str(store.path_for_ref(entry.ref))
     data["definition_html"] = definition_html
     data["summary_html"] = render.md_to_html(entry.summary) if entry.summary else ""
     data["examples_html"] = [render.md_to_html(x) for x in entry.examples]
@@ -215,6 +218,8 @@ def health() -> dict:
         "glossary_dir": str(config.GLOSSARY_DIR),
         "categories_file": str(config.CATEGORIES_FILE),
         "content_dir": str(config.content_dir()),
+        "local_glossary_dir": str(config.local_glossary_dir()),
+        "local_entry_count": sum(1 for e in store.load_all() if e.is_local),
         "entry_count": len(store.load_all()),
         "category_count": len(categories.load()),
     }
@@ -265,10 +270,13 @@ def list_entries(
     q: str = "",
     category: str | None = None,
     subcategory: str | None = None,
+    scope: str | None = None,
 ) -> list[dict]:
     needle = q.strip().casefold()
     out = []
     for e in store.load_all():
+        if scope is not None and e.scope != scope:
+            continue
         if category is not None and e.category != category:
             continue
         if subcategory is not None and e.subcategory != subcategory:

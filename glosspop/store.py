@@ -15,6 +15,9 @@ import yaml
 
 from . import categories, config, render
 from .models import (
+    GLOBAL_SCOPE,
+    LOCAL_SCOPE,
+    SCOPES,
     CategoryNameError,
     Entry,
     EntryDraft,
@@ -93,14 +96,38 @@ def dump_markdown(entry: Entry) -> str:
     return f"---\n{front}\n---\n\n{body}\n"
 
 
-def _entry_from_file(path: Path) -> Entry:
+def _entry_from_file(path: Path, scope: str = GLOBAL_SCOPE) -> Entry:
     meta, body = parse_markdown(path.read_text(encoding="utf-8"))
     meta = dict(meta)
     meta["definition"] = body
     meta["slug"] = path.stem
     meta["category"] = path.parent.name  # ディレクトリ名が正
+    meta["scope"] = scope                # 置き場所が正 (frontmatter には書かない)
     meta.setdefault("term", path.stem)
     return Entry.model_validate(meta)
+
+
+# --------------------------------------------------------------------------- #
+# 辞書の置き場所 (グローバル / 開いているフォルダのローカル)
+# --------------------------------------------------------------------------- #
+
+def glossary_dir(scope: str = GLOBAL_SCOPE) -> Path:
+    """スコープに対応する辞書ルート。
+
+    ``config`` を直接見ずに必ずここを通すこと。ローカルは開いているフォルダに
+    追従するので、参照のたびに解決し直す必要がある。
+    """
+    if scope == LOCAL_SCOPE:
+        return config.local_glossary_dir()
+    return config.GLOSSARY_DIR
+
+
+def local_available() -> bool:
+    """ローカル辞書を使えるか（開いているフォルダが実在するか）。"""
+    try:
+        return config.content_dir().is_dir()
+    except OSError:
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -159,32 +186,49 @@ def migrate_layout() -> list[str]:
 # --------------------------------------------------------------------------- #
 
 def _signature() -> object:
-    if not config.GLOSSARY_DIR.exists():
-        return ()
     sig = []
-    for path in config.GLOSSARY_DIR.glob("*/*.md"):
-        try:
-            st = path.stat()
-        except OSError:
+    for scope in SCOPES:
+        base = glossary_dir(scope)
+        # ローカルはフォルダを切り替えると別物になるので、ルート自体も鍵に含める
+        sig.append((scope, str(base)))
+        if not base.exists():
             continue
-        sig.append((path.parent.name, path.name, st.st_mtime_ns, st.st_size))
-    return tuple(sorted(sig))
+        for path in base.glob("*/*.md"):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            sig.append((scope, path.parent.name, path.name, st.st_mtime_ns, st.st_size))
+    return tuple(sorted(sig, key=repr))
 
 
 def load_all(*, force: bool = False) -> list[Entry]:
-    """全エントリを返す。壊れたファイルは黙って飛ばさず例外にする。"""
+    """全エントリを返す。壊れたファイルは黙って飛ばさず例外にする。
+
+    ローカル辞書（開いているフォルダ）のエントリを先に並べる。同じ表記が
+    両方にあるとき、吹き出しでローカルの意味を上に出すため。
+    """
     global _cache
     with _lock:
         sig = _signature()
         if not force and _cache is not None and _cache[0] == sig:
             return _cache[1]
         entries: list[Entry] = []
-        if config.GLOSSARY_DIR.exists():
-            for path in sorted(config.GLOSSARY_DIR.glob("*/*.md")):
-                entries.append(_entry_from_file(path))
+        for scope in SCOPES:
+            base = glossary_dir(scope)
+            if not base.exists():
+                continue
+            for path in sorted(base.glob("*/*.md")):
+                entries.append(_entry_from_file(path, scope))
         order = {name: i for i, name in enumerate(categories.names())}
         entries.sort(
-            key=lambda e: (order.get(e.category, 10**6), e.category, e.subcategory, e.reading or e.term)
+            key=lambda e: (
+                0 if e.is_local else 1,
+                order.get(e.category, 10**6),
+                e.category,
+                e.subcategory,
+                e.reading or e.term,
+            )
         )
         _cache = (sig, entries)
         return entries
@@ -196,12 +240,12 @@ def invalidate() -> None:
         _cache = None
 
 
-def path_for(category: str, slug: str) -> Path:
+def path_for(category: str, slug: str, scope: str = GLOBAL_SCOPE) -> Path:
     """カテゴリと slug からファイルパスを作る。ディレクトリ外への脱出を防ぐ。"""
     category = normalize_category(category)
     if not slug or "/" in slug or "\\" in slug or slug.startswith("."):
         raise StoreError(f"不正な slug: {slug!r}")
-    base = config.GLOSSARY_DIR.resolve()
+    base = glossary_dir(scope).resolve()
     path = (base / category / f"{slug}.md").resolve()
     if path.parent.parent != base:
         raise StoreError(f"不正な参照です: {category}/{slug}")
@@ -209,7 +253,8 @@ def path_for(category: str, slug: str) -> Path:
 
 
 def path_for_ref(ref: str) -> Path:
-    return path_for(*split_ref(ref))
+    scope, category, slug = split_ref(ref)
+    return path_for(category, slug, scope)
 
 
 def get(ref: str) -> Entry | None:
@@ -232,9 +277,14 @@ def find_by_surface(surface: str) -> list[Entry]:
     return hits
 
 
-def find_in_category(category: str, surface: str) -> Entry | None:
+def find_in_category(category: str, surface: str, scope: str = GLOBAL_SCOPE) -> Entry | None:
+    """同じ辞書・同じカテゴリの同名エントリ。衝突判定に使う。
+
+    スコープが違えば別エントリなので、ここでは一致させない
+    （フォルダ固有の意味を、全体辞書の同名語と衝突させない）。
+    """
     for e in find_by_surface(surface):
-        if e.category == category:
+        if e.category == category and e.scope == scope:
             return e
     return None
 
@@ -243,11 +293,11 @@ def find_in_category(category: str, surface: str) -> Entry | None:
 # 書き込み
 # --------------------------------------------------------------------------- #
 
-def _allocate_slug(category: str, term: str) -> str:
+def _allocate_slug(category: str, term: str, scope: str = GLOBAL_SCOPE) -> str:
     base = slugify(term)
     candidate = base
     n = 2
-    while path_for(category, candidate).exists():
+    while path_for(category, candidate, scope).exists():
         candidate = f"{base}-{n}"
         n += 1
     return candidate
@@ -258,7 +308,10 @@ def save(draft: EntryDraft, *, ref: str | None = None) -> Entry:
 
     更新時にカテゴリを変えるとファイルごと移動する（＝カテゴリ移動）。
     新規で同じカテゴリに同じ用語がある場合は ``StoreError``。
-    別カテゴリに同名があるのは正常なので通す。
+    別カテゴリ、あるいは別スコープに同名があるのは正常なので通す。
+
+    保存先の辞書は、新規なら ``draft.scope``、更新なら ``ref`` が決める
+    （更新でスコープは変えない。移し替えは別操作）。
     """
     if not draft.term:
         raise StoreError("term は必須です")
@@ -266,38 +319,46 @@ def save(draft: EntryDraft, *, ref: str | None = None) -> Entry:
     with _lock:
         config.ensure_dirs()
         category = normalize_category(draft.category or "未分類")
-        categories.ensure(category, subcategory=draft.subcategory)
 
         old_path: Path | None = None
         if ref is None:
+            scope = draft.scope
             created = now_iso()
         else:
+            scope, old_category, old_slug = split_ref(ref)
             old_path = path_for_ref(ref)
             if not old_path.exists():
                 raise StoreError(f"見つかりません: {ref}")
-            created = _entry_from_file(old_path).created_at
+            created = _entry_from_file(old_path, scope).created_at
 
-        clash = find_in_category(category, draft.term)
+        if scope == LOCAL_SCOPE and not local_available():
+            raise StoreError("ローカル辞書に保存できません（フォルダが開かれていません）")
+        # カテゴリマスターはグローバル辞書のもの。フォルダ固有のカテゴリで
+        # マスターを汚さないよう、ローカルはディレクトリだけを正とする
+        if scope == GLOBAL_SCOPE:
+            categories.ensure(category, subcategory=draft.subcategory)
+
+        clash = find_in_category(category, draft.term, scope)
         if clash is not None and (ref is None or clash.ref != ref):
             raise StoreError(
                 f"「{draft.term}」はカテゴリ「{category}」に既に登録されています"
                 f"（別のカテゴリなら同じ名前で登録できます）"
             )
 
-        old_category, old_slug = split_ref(ref) if ref else (None, None)
         if ref is not None and old_category == category:
             slug = old_slug           # 同カテゴリ内の更新はファイル名を変えない
         else:
-            slug = _allocate_slug(category, draft.term)
+            slug = _allocate_slug(category, draft.term, scope)
 
         data = draft.model_dump()
         data["category"] = category
+        data["scope"] = scope
         # 保存時に本文を 1 文 1 行へ整える。ファイル自体が読みやすくなり、
         # git の差分も文単位になる
         data["definition"] = render.soften_paragraphs(data["definition"])
         entry = Entry(**data, slug=slug, created_at=created, updated_at=now_iso())
 
-        target = path_for(category, slug)
+        target = path_for(category, slug, scope)
         target.parent.mkdir(parents=True, exist_ok=True)
         _write_atomic(target, dump_markdown(entry))
         if old_path is not None and old_path != target:
@@ -359,10 +420,13 @@ def rename_category(old: str, new: str) -> int:
 
 
 def delete_category(name: str) -> None:
-    """空のカテゴリだけ消す。"""
+    """空のカテゴリだけ消す（グローバル辞書のみ）。
+
+    ローカル辞書のカテゴリはディレクトリだけが正なので、マスターの操作対象外。
+    """
     with _lock:
         name = normalize_category(name)
-        if any(e.category == name for e in load_all()):
+        if any(e.category == name and not e.is_local for e in load_all()):
             raise StoreError(f"カテゴリ「{name}」にはまだ用語があります")
         directory = config.GLOSSARY_DIR / name
         if directory.exists():
@@ -379,30 +443,49 @@ def delete_category(name: str) -> None:
 # 一覧・集計
 # --------------------------------------------------------------------------- #
 
-def category_tree() -> list[dict]:
-    """マスターの順で [{category, count, subcategories: [...]}] を返す。
+def _subcategory_nodes(subs: dict[str, int], extra: list[str] | None = None) -> list[dict]:
+    names = list(dict.fromkeys([*(extra or []), *subs.keys()]))
+    return [
+        {"name": name, "count": subs.get(name, 0)}
+        for name in sorted(names, key=lambda s: (s == "", s))
+    ]
 
-    1 語も無いカテゴリも ``count: 0`` で含める（空振り登録を見えるようにする）。
+
+def category_tree() -> list[dict]:
+    """[{category, scope, count, subcategories: [...]}] を返す。
+
+    グローバルはマスターの順で、1 語も無いカテゴリも ``count: 0`` で含める
+    （空振り登録を見えるようにする）。ローカルはマスターを持たないので、
+    実際に存在するカテゴリだけを後ろに並べる。
     """
-    used: dict[str, dict[str, int]] = {}
+    used: dict[tuple[str, str], dict[str, int]] = {}
     for e in load_all():
-        used.setdefault(e.category, {})
-        subs = used[e.category]
+        key = (e.scope, e.category)
+        subs = used.setdefault(key, {})
         subs[e.subcategory] = subs.get(e.subcategory, 0) + 1
 
     out = []
     for cat in categories.load():
-        subs = used.get(cat.name, {})
-        names = list(dict.fromkeys([*cat.subcategories, *subs.keys()]))
+        subs = used.get((GLOBAL_SCOPE, cat.name), {})
         out.append(
             {
                 "category": cat.name,
+                "scope": GLOBAL_SCOPE,
                 "description": cat.description,
                 "count": sum(subs.values()),
-                "subcategories": [
-                    {"name": name, "count": subs.get(name, 0)}
-                    for name in sorted(names, key=lambda s: (s == "", s))
-                ],
+                "subcategories": _subcategory_nodes(subs, cat.subcategories),
+            }
+        )
+    for (scope, name), subs in sorted(used.items()):
+        if scope != LOCAL_SCOPE:
+            continue
+        out.append(
+            {
+                "category": name,
+                "scope": LOCAL_SCOPE,
+                "description": "",
+                "count": sum(subs.values()),
+                "subcategories": _subcategory_nodes(subs),
             }
         )
     return out
