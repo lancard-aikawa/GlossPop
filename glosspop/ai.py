@@ -330,6 +330,94 @@ async def extract_terms(
     return {"candidates": kept, "dropped": dropped}
 
 
+# --------------------------------------------------------------------------- #
+# フォルダ横断
+# --------------------------------------------------------------------------- #
+
+#: 1 ファイルあたり / 全体で AI に渡す文字数の上限。
+#: 全部渡すとプロンプトが膨らんで候補の質が落ちるので、頭から一定量だけ渡す
+PER_FILE_CHARS = 3000
+TOTAL_CHARS = 24000
+
+
+def combine_documents(
+    docs: list[tuple[str, str]], *, per_file: int = PER_FILE_CHARS, total: int = TOTAL_CHARS
+) -> tuple[str, list[str], list[str]]:
+    """複数文書を 1 つのプロンプト本文にまとめる。
+
+    返すのは (まとめた本文, 使ったファイル, 入りきらなかったファイル)。
+    切ったことは呼び出し側から UI に出す（黙って切らない）。
+    """
+    parts: list[str] = []
+    used: list[str] = []
+    skipped: list[str] = []
+    budget = total
+    for label, text in docs:
+        body = (text or "").strip()
+        if not body:
+            continue
+        if budget <= 0:
+            skipped.append(label)
+            continue
+        chunk = body[: min(per_file, budget)]
+        parts.append(f"### {label}\n{chunk}")
+        used.append(label)
+        budget -= len(chunk)
+    return "\n\n".join(parts), used, skipped
+
+
+def _occurrences(docs: list[tuple[str, str]], term: str) -> tuple[list[str], int]:
+    """語が出てくるファイルと総出現数。頻出順に並べるために使う。"""
+    needle = term.casefold()
+    files: list[str] = []
+    count = 0
+    for label, text in docs:
+        n = (text or "").casefold().count(needle)
+        if n:
+            files.append(label)
+            count += n
+    return files, count
+
+
+async def extract_terms_from_documents(
+    docs: list[tuple[str, str]], *, limit: int = 20
+) -> dict:
+    """フォルダ内の複数文書からまとめて候補を挙げる。
+
+    呼び出しは 1 回だけ。ファイル数ぶん呼ぶと数分かかるうえ、同じ語が
+    ファイルごとに重複して出てくる。
+    """
+    if not docs:
+        raise AIError("読める文書がありません")
+    combined, used, skipped = combine_documents(docs)
+    if not combined.strip():
+        raise AIError("読める文書がありません")
+
+    exclude = [s for e in store.load_all() for s in e.surfaces]
+    prompt = build_extract_prompt(combined, exclude=exclude, limit=limit)
+    raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
+    # 照合はプロンプトに載せた範囲ではなく全文に対して行う
+    # (頭 3000 字しか渡していなくても、後ろに出てくる語なら採用してよい)
+    haystack = "\n".join(text for _, text in docs)
+    kept, dropped = filter_candidates(parse_candidates(raw), haystack, limit=limit)
+
+    for item in kept:
+        files, count = _occurrences(docs, item["term"])
+        item["files"] = files[:20]
+        item["file_count"] = len(files)
+        item["count"] = count
+        item["source"] = files[0] if files else ""
+    # 複数のファイルに出てくる語ほど辞書化の価値が高い
+    kept.sort(key=lambda i: (-i["file_count"], -i["count"]))
+
+    return {
+        "candidates": kept,
+        "dropped": dropped,
+        "files_used": used,
+        "files_skipped": skipped,
+    }
+
+
 async def draft_entry(term: str, context: str = "", *, source: str = "") -> EntryDraft:
     """選択テキストから辞書エントリの下書きを作る。保存はしない。"""
     term = term.strip()

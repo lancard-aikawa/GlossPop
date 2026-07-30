@@ -356,3 +356,58 @@ class TestPickFolder:
         monkeypatch.setattr(picker, "pick_folder", lambda initial: str(tmp_path))
         client.post("/api/pick-folder", json={})
         assert client.get("/api/content").json()["is_default"] is True
+
+
+class TestAIExtractFolder:
+    """フォルダ横断の抽出。claude CLI は差し替える。"""
+
+    def _write(self, rel: str, text: str) -> None:
+        path = config.CONTENT_DIR / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def test_reads_every_file_and_sorts_by_frequency(self, client, monkeypatch):
+        self._write("a.md", "サーキットブレーカーで止める。指数バックオフで待つ。")
+        self._write("sub/b.md", "サーキットブレーカーは有効。")
+        seen = {}
+
+        def fake_run(prompt: str) -> str:
+            seen["prompt"] = prompt
+            return '[{"term": "指数バックオフ"}, {"term": "サーキットブレーカー"}]'
+
+        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+        res = client.post("/api/ai/extract-folder", json={}).json()
+        assert "### a.md" in seen["prompt"] and "### sub/b.md" in seen["prompt"]
+        assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー", "指数バックオフ"]
+        assert res["candidates"][0]["files"] == ["a.md", "sub/b.md"]
+        assert res["root"] == str(config.CONTENT_DIR)
+
+    def test_html_is_read_as_text(self, client, monkeypatch):
+        self._write("page.html", "<html><body><p>サーキットブレーカーの説明</p></body></html>")
+        captured = {}
+
+        def fake_run(prompt: str) -> str:
+            captured["prompt"] = prompt
+            return '[{"term": "サーキットブレーカー"}]'
+
+        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+        res = client.post("/api/ai/extract-folder", json={}).json()
+        assert "<p>" not in captured["prompt"]  # タグは渡さない
+        assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー"]
+
+    def test_reports_files_it_did_not_read(self, client, monkeypatch):
+        for i in range(3):
+            self._write(f"{i}.md", "サーキットブレーカー")
+        monkeypatch.setattr(ai, "_run_claude", lambda prompt: '[{"term": "サーキットブレーカー"}]')
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+        res = client.post("/api/ai/extract-folder", json={"max_files": 1}).json()
+        assert res["files_skipped"] == ["1.md", "2.md"]
+
+    def test_empty_folder_is_400(self, client, monkeypatch):
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+        assert client.post("/api/ai/extract-folder", json={}).status_code == 400

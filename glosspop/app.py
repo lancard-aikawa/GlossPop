@@ -85,6 +85,11 @@ class ExtractRequest(BaseModel):
     limit: int = 12
 
 
+class ExtractFolderRequest(BaseModel):
+    limit: int = 20
+    max_files: int = 40
+
+
 class CategoryRequest(BaseModel):
     name: str
     subcategories: list[str] = []
@@ -474,6 +479,47 @@ async def ai_extract(req: ExtractRequest) -> dict:
         )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/ai/extract-folder")
+async def ai_extract_folder(req: ExtractFolderRequest) -> dict:
+    """開いているフォルダ全体から候補語を挙げる。
+
+    ファイル数ぶん claude を呼ぶと数分かかるので、まとめて 1 回で済ませる。
+    読んだファイルと、多すぎて渡せなかったファイルは呼び出し側に返す。
+    """
+    if not ai.available():
+        raise HTTPException(503, "claude CLI が見つかりません。手動入力で登録してください。")
+
+    max_files = max(1, min(req.max_files, 200))
+    docs: list[tuple[str, str]] = []
+    unread: list[str] = []
+    base = config.content_dir()
+    for path in _iter_content_files(base):
+        rel = path.relative_to(base).as_posix()
+        if len(docs) >= max_files:
+            unread.append(rel)
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            unread.append(rel)
+            continue
+        docs.append((rel, render.to_plain_text(raw, filename=path.name)))
+
+    if not docs:
+        raise HTTPException(400, f"読める文書がありません: {base}")
+
+    try:
+        result = await ai.extract_terms_from_documents(
+            docs, limit=max(1, min(req.limit, 40))
+        )
+    except ai.AIError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    result["root"] = str(base)
+    result["files_skipped"] = [*result["files_skipped"], *unread]
+    return result
 
 
 @app.post("/api/ai/draft")

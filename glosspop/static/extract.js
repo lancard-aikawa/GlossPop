@@ -43,7 +43,11 @@ function build() {
 function makeRow(candidate) {
   const check = el("input", { type: "checkbox", checked: true });
   const state = el("span", { class: "status" });
-  const why = [candidate.why, candidate.context].filter(Boolean).join(" — ");
+  // フォルダ横断では「どのファイルに何回出たか」が選ぶ材料になる
+  const where = candidate.file_count
+    ? `${candidate.file_count} ファイル / ${candidate.count} 回: ${candidate.files.join(", ")}`
+    : "";
+  const why = [candidate.why, where, candidate.context].filter(Boolean).join(" — ");
   const edit = el("button", { type: "button", class: "ghost", text: "編集", hidden: true });
   const li = el("li", {}, [
     el("div", { class: "check-row" }, [
@@ -65,12 +69,14 @@ function selected(rows) {
  * 抽出ダイアログを開く。
  *
  * @param {object} o
- * @param {string} o.text     表示中の文書の原文
- * @param {string} [o.source] 出典 (ファイル名や URL)
+ * @param {string} [o.text]    表示中の文書の原文 (folder=false のとき必須)
+ * @param {string} [o.source]  出典 (ファイル名や URL)
+ * @param {boolean} [o.folder] true なら開いているフォルダ全体から抽出する
  * @returns {Promise<number>} 保存した語数
  */
-export async function openExtractDialog({ text, source = "" } = {}) {
+export async function openExtractDialog({ text = "", source = "", folder = false } = {}) {
   build();
+  refs.title.textContent = folder ? "フォルダから用語をまとめて登録" : "用語をまとめて登録";
   refs.list.replaceChildren();
   refs.dropped.hidden = true;
   refs.go.hidden = refs.stop.hidden = refs.toggle.hidden = true;
@@ -129,7 +135,12 @@ export async function openExtractDialog({ text, source = "" } = {}) {
       try {
         const res = await api("/api/ai/draft", {
           method: "POST",
-          body: { term: row.candidate.term, context: row.candidate.context, source },
+          body: {
+            term: row.candidate.term,
+            context: row.candidate.context,
+            // フォルダ横断では、その語が出てくるファイルを出典にする
+            source: row.candidate.source || source,
+          },
           signal: controller.signal,
         });
         row.draft = res.draft;
@@ -189,11 +200,12 @@ export async function openExtractDialog({ text, source = "" } = {}) {
   const onGo = () => (rows.some((r) => r.draft) ? runSaves() : runDrafts());
 
   const onEdit = async (row) => {
+    const origin = row.candidate.source || source;
     const result = await openEntryEditor({
       term: row.candidate.term,
       context: row.candidate.context,
-      source,
-      entry: { ...row.draft, term: row.draft?.term || row.candidate.term, source },
+      source: origin,
+      entry: { ...row.draft, term: row.draft?.term || row.candidate.term, source: origin },
     });
     if (!result) return;
     row.saved = result;
@@ -222,14 +234,17 @@ export async function openExtractDialog({ text, source = "" } = {}) {
   refs.form.addEventListener("submit", onSubmit);
 
   try {
-    const res = await api("/api/ai/extract", { method: "POST", body: { text, source } });
+    const res = folder
+      ? await api("/api/ai/extract-folder", { method: "POST", body: {} })
+      : await api("/api/ai/extract", { method: "POST", body: { text, source } });
     rows = (res.candidates || []).map(makeRow);
     if (!rows.length) {
       refs.lead.textContent = "辞書に足せそうな語は見つかりませんでした。";
       setStatus(refs.status, "");
     } else {
+      const scope = folder ? `${res.files_used?.length || 0} ファイルから挙げました。` : "";
       refs.lead.textContent =
-        "登録する語を選んでください。下書きは 1 語あたり数十秒かかります（順に作ります）。";
+        scope + "登録する語を選んでください。下書きは 1 語あたり数十秒かかります（順に作ります）。";
       refs.list.replaceChildren(...rows.map((r) => r.li));
       for (const row of rows) {
         row.check.addEventListener("change", paintGo);
@@ -237,10 +252,20 @@ export async function openExtractDialog({ text, source = "" } = {}) {
       }
       setStatus(refs.status, `候補 ${rows.length} 語`);
     }
+    const notes = [];
     if (res.dropped?.length) {
+      notes.push("除いた語: " + res.dropped.map((d) => `${d.term}（${d.reason}）`).join("、"));
+    }
+    if (res.files_skipped?.length) {
+      // 黙って切らない: 渡しきれなかったファイルは名前で出す
+      notes.push(
+        `読まなかったファイル (${res.files_skipped.length}): ` +
+          res.files_skipped.slice(0, 20).join("、")
+      );
+    }
+    if (notes.length) {
       refs.dropped.hidden = false;
-      refs.dropped.textContent =
-        "除いた語: " + res.dropped.map((d) => `${d.term}（${d.reason}）`).join("、");
+      refs.dropped.textContent = notes.join(" / ");
     }
     paintGo();
   } catch (err) {

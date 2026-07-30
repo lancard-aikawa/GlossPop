@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import re
-from html import escape
+from html import escape, unescape
 
 from markdown_it import MarkdownIt
 from mdit_py_plugins.anchors import anchors_plugin
@@ -168,6 +168,23 @@ def render_source(
 
         return clean_fragment(text or "", base_url=base_url)
     return md_to_html(text) if kind == "markdown" else plain_to_html(text)
+
+
+_TAG = re.compile(r"<[^>]+>")
+
+
+def to_plain_text(text: str, *, kind: str = "auto", filename: str | None = None) -> str:
+    """用語抽出に渡すための素のテキスト。
+
+    Markdown は記法が残っていても抽出の邪魔にならないのでそのまま。HTML だけは
+    タグを落とす（そのまま渡すと属性値やタグ名が用語として拾われる）。
+    """
+    if resolve_kind(kind, filename) != "html":
+        return text or ""
+    from .htmlclean import clean_html
+
+    body = clean_html(text or "")[0]
+    return unescape(_TAG.sub(" ", body))
 
 
 def html_title(html: str) -> str:

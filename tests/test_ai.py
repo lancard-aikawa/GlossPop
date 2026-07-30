@@ -68,3 +68,65 @@ class TestFilterCandidates:
         kept, _ = ai.filter_candidates(raw, TEXT, limit=10)
         assert kept[0]["why"] == "設計の前提"
         assert kept[0]["context"].startswith("冪等な操作")
+
+
+DOCS = [
+    ("a.md", "サーキットブレーカーで止める。指数バックオフで待つ。"),
+    ("sub/b.md", "サーキットブレーカーは有効だ。"),
+    ("c.md", "無関係な文章。"),
+]
+
+
+class TestCombineDocuments:
+    def test_puts_a_header_per_file(self):
+        combined, used, skipped = ai.combine_documents(DOCS)
+        assert "### a.md" in combined and "### sub/b.md" in combined
+        assert used == ["a.md", "sub/b.md", "c.md"]
+        assert skipped == []
+
+    def test_reports_what_did_not_fit(self):
+        combined, used, skipped = ai.combine_documents(DOCS, per_file=10, total=15)
+        assert used == ["a.md", "sub/b.md"]
+        assert skipped == ["c.md"]     # 黙って切らない
+        assert len(combined) < 60
+
+    def test_skips_empty_files(self):
+        _, used, _ = ai.combine_documents([("empty.md", "  "), ("a.md", "本文")])
+        assert used == ["a.md"]
+
+
+class TestExtractFromDocuments:
+    async def _extract(self, monkeypatch, response: str, **kwargs):
+        monkeypatch.setattr(ai, "_run_claude", lambda prompt: response)
+        return await ai.extract_terms_from_documents(DOCS, **kwargs)
+
+    @pytest.mark.anyio
+    async def test_sorts_by_how_many_files_mention_the_term(self, monkeypatch):
+        res = await self._extract(
+            monkeypatch, '[{"term": "指数バックオフ"}, {"term": "サーキットブレーカー"}]'
+        )
+        # 2 ファイルに出る語を先に出す (AI が返した順ではない)
+        assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー", "指数バックオフ"]
+        first = res["candidates"][0]
+        assert first["files"] == ["a.md", "sub/b.md"]
+        assert first["file_count"] == 2 and first["count"] == 2
+        assert first["source"] == "a.md"
+
+    @pytest.mark.anyio
+    async def test_matches_against_the_whole_text_not_just_the_prompt(self, monkeypatch):
+        # プロンプトには頭しか載せないが、後ろに出てくる語も採用してよい
+        docs = [("long.md", "x" * 5000 + "サーキットブレーカー")]
+        monkeypatch.setattr(ai, "_run_claude", lambda prompt: '[{"term": "サーキットブレーカー"}]')
+        res = await ai.extract_terms_from_documents(docs)
+        assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー"]
+
+    @pytest.mark.anyio
+    async def test_no_documents_is_an_error(self, monkeypatch):
+        monkeypatch.setattr(ai, "_run_claude", lambda prompt: "[]")
+        with pytest.raises(ai.AIError):
+            await ai.extract_terms_from_documents([])
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"

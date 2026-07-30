@@ -171,16 +171,24 @@ $("showPaste").addEventListener("click", () => {
 
 $("firstOnly").addEventListener("change", renderCurrent);
 
-// 表示中の文書から候補を挙げて、選んだ語をまとめて登録する
-$("extract").addEventListener("click", async () => {
-  if (!source) return;
-  $("extract").disabled = true;
+// 候補を挙げて、選んだ語をまとめて登録する (表示中の文書 / フォルダ全体)
+async function runExtract(button, options) {
+  button.disabled = true;
   try {
-    const saved = await openExtractDialog({ text: source.text, source: sourceLabel() });
+    const saved = await openExtractDialog(options);
     if (saved) await Promise.all([renderCurrent(), paintEntryCount($("count"))]);
   } finally {
-    $("extract").disabled = false;
+    button.disabled = false;
   }
+}
+
+$("extract").addEventListener("click", () => {
+  if (!source) return;
+  runExtract($("extract"), { text: source.text, source: sourceLabel() });
+});
+
+$("extractFolder").addEventListener("click", () => {
+  runExtract($("extractFolder"), { folder: true });
 });
 
 // URL を開く (取得はサーバ側。CORS を踏まないため)
