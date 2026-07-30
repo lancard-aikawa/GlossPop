@@ -7,17 +7,49 @@ Markdown / テキストをブラウザで読みながら、**知らない言葉�
 テキスト表示 → 語を選択 → AI が下書き → 保存 → 以後は自動リンク＋吹き出し
 ```
 
-## セットアップ
+## ダウンロードして使う（Windows）
+
+Python のインストールは要らない。
+
+1. [Releases](https://github.com/lancard-aikawa/GlossPop/releases/latest) から
+   `GlossPop-<version>-win-x64.zip` をダウンロードする
+2. **展開する前に** zip を右クリック → プロパティ → 「セキュリティ: 許可する」に
+   チェック（`Unblock-File .\GlossPop-*.zip` でも可）。署名していないので、これをしないと
+   起動時に SmartScreen の警告が出る
+3. 好きな場所に展開し、`GlossPop\glosspop.exe` を実行する
+4. ブラウザで **http://127.0.0.1:8765/** を開く
+
+止めるときはコンソールで `Ctrl+C`（閉じるだけでも終了する）。
+
+`glosspop.exe` だけ取り出しても動かない。`_internal\` と同じフォルダに置いたまま使うこと。
+辞書は exe と同じ場所の `data\glossary\` に貯まるので、フォルダごとコピーすれば別の PC へ
+そのまま持っていける。更新のしかたは
+[リリースノート](packaging/release-notes.md)にある。
+
+## ソースから動かす
 
 ```powershell
 uv sync
-uv run glosspop serve
+uv run glosspop serve                   # http://127.0.0.1:8765/
+uv run glosspop serve --port 9000       # ポートを変える
+uv run glosspop serve --reload          # 開発用 (ソース変更で再起動)
 ```
 
-http://127.0.0.1:8765/ が開ける状態になる。
+`Ctrl+C` で止まる。**止まらない / 直したのに反映されないときは、ポートを掴んだままの
+古いプロセスが残っている**（`uv` の親を kill しても子の python が生き残る）。
+
+```powershell
+Get-NetTCPConnection -LocalPort 8765 -State Listen |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+Windows 用の exe を自分でビルドする手順は[後述](#windows-向けビルド)。
+
+## AI 下書きについて
 
 AI 下書きは Claude Code CLI (`claude`) をサブプロセスで呼ぶ。PATH に `claude` があれば
 それだけで動く（API キーは不要）。見つからない場合も手動入力での登録はできる。
+どちらの起動方法でも同じで、exe 版にも `claude` は同梱されない。
 
 ## 使いかた
 
@@ -292,7 +324,7 @@ dist\GlossPop\
   glosspop.exe    引数なしで起動 = serve
   _internal\      Python ランタイムと依存 (触らない)
   data\glossary\  辞書        ← exe の隣に読み書きされる
-  content\        ビューアで開く .md / .txt
+  content\        既定で開くフォルダ (.md / .txt / .html)
 ```
 
 `glosspop.exe` は CLI もそのまま使える（`glosspop.exe list`、`glosspop.exe add --json -` など）。
@@ -318,10 +350,6 @@ git push origin v0.1.1
 タグとコードのバージョンが食い違っていると、ビルドせずに失敗する。
 Actions は手動実行（workflow_dispatch）もでき、その場合は Release を作らず
 artifact に zip を置くだけなので、リリース前の確認に使える。
-
-
-AI 下書きはビルドに含まれない外部の `claude` CLI を使うので、配布先の PATH に `claude` が
-無ければその機能だけ無効になる（登録は手入力でできる）。
 
 ## テスト
 
