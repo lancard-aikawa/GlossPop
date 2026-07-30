@@ -26,6 +26,7 @@ KEEP_TAGS = frozenset({
     "blockquote", "pre", "code", "kbd", "samp", "var",
     "em", "strong", "b", "i", "u", "s", "del", "ins", "mark", "small", "sub", "sup",
     "a", "img", "figure", "figcaption",
+    "ruby", "rb",  # ルビの親字は残す (読みは DROP_TREES で落とす)
     "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col",
 })
 
@@ -35,6 +36,9 @@ DROP_TREES = frozenset({
     "iframe", "frame", "frameset", "object", "embed", "applet",
     "form", "input", "button", "select", "textarea", "label", "fieldset",
     "nav", "header", "footer", "aside", "menu", "dialog", "audio", "video",
+    # ルビの読み。残すと「太郎たろう」のように地の文に混ざり、自動リンクの
+    # 照合が壊れる（青空文庫の HTML 版や epub で必ず踏む）
+    "rt", "rp",
 })
 
 #: 閉じタグを持たない

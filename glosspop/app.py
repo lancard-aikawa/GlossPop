@@ -12,11 +12,25 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, ai, categories, config, fetcher, picker, render, store
+from . import (
+    __version__,
+    ai,
+    categories,
+    config,
+    documents,
+    fetcher,
+    picker,
+    render,
+    store,
+)
 from .linker import Linker, entry_url
 from .models import LOCAL_SCOPE, CategoryNameError, Entry, EntryDraft
 
-CONTENT_SUFFIXES = {".md", ".markdown", ".mdown", ".txt", ".html", ".htm"}
+CONTENT_SUFFIXES = {
+    ".md", ".markdown", ".mdown", ".txt",
+    ".html", ".htm",
+    ".epub", ".pdf",
+}
 
 #: 一覧で降りないディレクトリ。任意のフォルダを開けるので、リポジトリや
 #: 仮想環境を掴んだときに数万ファイルを走査しないためのもの
@@ -463,8 +477,18 @@ def set_content_root(req: ContentRootRequest) -> dict:
 @app.get("/api/content/{rel:path}")
 def read_content(rel: str) -> dict:
     path = _safe_content_path(rel)
-    text = path.read_text(encoding="utf-8", errors="replace")
-    return {"path": rel, "name": path.name, "text": text}
+    try:
+        doc = documents.read(path)
+    except documents.DocumentError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {
+        "path": rel,
+        "name": path.name,
+        "text": doc.text,
+        # epub は HTML、pdf はテキストになる。拡張子から推測させない
+        "kind": doc.kind,
+        "title": doc.title,
+    }
 
 
 @app.post("/api/fetch")
@@ -516,11 +540,9 @@ async def ai_extract_folder(req: ExtractFolderRequest) -> dict:
             unread.append(rel)
             continue
         try:
-            raw = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            docs.append((rel, documents.read(path).plain))
+        except (OSError, documents.DocumentError):
             unread.append(rel)
-            continue
-        docs.append((rel, render.to_plain_text(raw, filename=path.name)))
 
     if not docs:
         raise HTTPException(400, f"読める文書がありません: {base}")
@@ -541,12 +563,10 @@ def _first_seen_in_file(rel: str, term: str) -> tuple[str, str]:
     """content 内のファイルから初出位置と、その場面の抜粋を取る。"""
     try:
         path = _safe_content_path(rel)
-    except HTTPException:
+        doc = documents.read(path)
+    except (HTTPException, documents.DocumentError):
         return "", ""
-    text = render.to_plain_text(
-        path.read_text(encoding="utf-8", errors="replace"), filename=path.name
-    )
-    return ai.locator_of(text, term), ai.context_up_to_first(text, term)
+    return doc.locate(term), ai.context_up_to_first(doc.plain, term)
 
 
 @app.post("/api/ai/draft")

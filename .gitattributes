@@ -1,2 +1,2 @@
-# リポジトリ内は LF に正規化する (作業ツリーの改行は core.autocrlf に従う)
-* text=auto
+# 青空文庫のサンプルは Shift_JIS。改行変換や差分表示で壊されないよう素通しにする
+content/銀河鉄道の夜.txt -text -diff

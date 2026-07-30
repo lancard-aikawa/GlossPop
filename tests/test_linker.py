@@ -233,3 +233,14 @@ class TestDuplicateTerms:
         out, hits = link(self.entries, "<p>ソース</p>", skip_refs=["料理/ソース", "プログラミング/ソース"])
         assert 'class="gloss-link"' not in out
         assert hits == []
+
+
+def test_term_split_by_ruby_still_links():
+    """青空文庫 / epub のルビ。<ruby><rb>銀河</rb></ruby>鉄道 で 1 語として繋がること。"""
+    from glosspop.linker import Linker
+    from glosspop.models import Entry
+
+    linker = Linker([Entry(term="銀河鉄道", category="作品", slug="銀河鉄道")])
+    html, hits = linker.annotate("<p><ruby><rb>銀河</rb></ruby>鉄道に乗った。</p>")
+    assert len(hits) == 1
+    assert 'class="gloss-link' in html

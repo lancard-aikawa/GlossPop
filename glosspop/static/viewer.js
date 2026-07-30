@@ -152,11 +152,27 @@ doc.addEventListener("click", (ev) => {
 
 $("pick").addEventListener("click", () => $("file").click());
 
+/** epub / pdf はブラウザ側では中身を取り出せない（サーバが読む必要がある）。 */
+const SERVER_ONLY = /\.(epub|pdf)$/i;
+
+async function openLocalFile(file) {
+  if (SERVER_ONLY.test(file.name)) {
+    docHead.hidden = false;
+    note(
+      `${file.name} はサーバ側で読む必要があります。` +
+        "そのファイルがあるフォルダを左で開いてください。",
+      "error"
+    );
+    return;
+  }
+  await setSource({ text: await file.text(), kind: "auto", filename: file.name });
+  markCurrentFile(null);
+}
+
 $("file").addEventListener("change", async (ev) => {
   const file = ev.target.files?.[0];
   if (!file) return;
-  setSource({ text: await file.text(), kind: "auto", filename: file.name });
-  markCurrentFile(null);
+  await openLocalFile(file);
   ev.target.value = "";
 });
 
@@ -384,7 +400,14 @@ function markCurrentFile(path) {
 async function openContent(path) {
   try {
     const res = await api(`/api/content/${path.split("/").map(encodeURIComponent).join("/")}`);
-    await setSource({ text: res.text, kind: "auto", filename: res.name, contentPath: path });
+    // epub は HTML、pdf はテキストとして返ってくる。拡張子からは判断できない
+    await setSource({
+      text: res.text,
+      kind: res.kind || "auto",
+      filename: res.name,
+      contentPath: path,
+      title: res.title || "",
+    });
     markCurrentFile(path);
   } catch (err) {
     // リンクを辿って失敗したときは、いま読んでいる文書を壊さない
@@ -417,8 +440,7 @@ window.addEventListener("drop", async (ev) => {
   const file = ev.dataTransfer?.files?.[0];
   if (!file) return;
   ev.preventDefault();
-  setSource({ text: await file.text(), kind: "auto", filename: file.name });
-  markCurrentFile(null);
+  await openLocalFile(file);
 });
 
 // ------------------------------------------------------------------ 起動

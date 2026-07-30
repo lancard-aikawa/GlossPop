@@ -36,7 +36,7 @@ SKIP_TAGS = frozenset({"a", "pre", "script", "style", "textarea"})
 #: ``<br>`` は視覚的な改行なので意図的に外している。
 INLINE_TAGS = frozenset({
     "a", "abbr", "b", "bdi", "bdo", "big", "cite", "code", "data", "dfn", "del",
-    "em", "font", "i", "ins", "kbd", "mark", "q", "rp", "rt", "ruby", "s", "samp",
+    "em", "font", "i", "ins", "kbd", "mark", "q", "rb", "rp", "rt", "ruby", "s", "samp",
     "small", "span", "strong", "sub", "sup", "time", "tt", "u", "var", "wbr",
 })
 
