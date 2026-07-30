@@ -113,11 +113,12 @@ def _entry_from_file(path: Path, scope: str = GLOBAL_SCOPE) -> Entry:
 # 辞書の置き場所 (グローバル / 開いているフォルダのローカル)
 # --------------------------------------------------------------------------- #
 
-def glossary_dir(scope: str = GLOBAL_SCOPE) -> Path:
+def glossary_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
     """スコープに対応する辞書ルート。
 
-    ``config`` を直接見ずに必ずここを通すこと。ローカルは開いているフォルダに
-    追従するので、参照のたびに解決し直す必要がある。
+    ``config`` を直接見ずに必ずここを通すこと。ローカルは「いま読んでいるもの」
+    （フォルダ or URL）に追従するので、参照のたびに解決し直す必要がある。
+    URL を読んでいて辞書が無ければ ``None``。
     """
     if scope == LOCAL_SCOPE:
         return config.local_glossary_dir()
@@ -125,7 +126,16 @@ def glossary_dir(scope: str = GLOBAL_SCOPE) -> Path:
 
 
 def local_available() -> bool:
-    """ローカル辞書を使えるか（開いているフォルダが実在するか）。"""
+    """ローカル辞書を使えるか。
+
+    フォルダを読んでいるならそのフォルダが在ること、URL を読んでいるなら
+    その URL に効く辞書が作られていること。
+    """
+    directory = config.local_glossary_dir()
+    if directory is None:
+        return False
+    if config.reading_url():
+        return True                      # 見つかった時点で存在している
     try:
         return config.content_dir().is_dir()
     except OSError:
@@ -191,9 +201,9 @@ def _signature() -> object:
     sig = []
     for scope in SCOPES:
         base = glossary_dir(scope)
-        # ローカルはフォルダを切り替えると別物になるので、ルート自体も鍵に含める
+        # ローカルは対象を切り替えると別物になるので、ルート自体も鍵に含める
         sig.append((scope, str(base)))
-        if not base.exists():
+        if base is None or not base.exists():
             continue
         for path in base.glob("*/*.md"):
             try:
@@ -218,7 +228,7 @@ def load_all(*, force: bool = False) -> list[Entry]:
         entries: list[Entry] = []
         for scope in SCOPES:
             base = glossary_dir(scope)
-            if not base.exists():
+            if base is None or not base.exists():
                 continue
             for path in sorted(base.glob("*/*.md")):
                 entries.append(_entry_from_file(path, scope))
@@ -247,7 +257,10 @@ def path_for(category: str, slug: str, scope: str = GLOBAL_SCOPE) -> Path:
     category = normalize_category(category)
     if not slug or "/" in slug or "\\" in slug or slug.startswith("."):
         raise StoreError(f"不正な slug: {slug!r}")
-    base = glossary_dir(scope).resolve()
+    root = glossary_dir(scope)
+    if root is None:
+        raise StoreError("ローカル辞書がありません（この URL の辞書を作ってください）")
+    base = root.resolve()
     path = (base / category / f"{slug}.md").resolve()
     if path.parent.parent != base:
         raise StoreError(f"不正な参照です: {category}/{slug}")

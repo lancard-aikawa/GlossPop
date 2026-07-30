@@ -35,6 +35,12 @@
       <button type="submit" id="urlGo">開く</button>
     </form>
     <p class="hint" id="urlStatus"></p>
+    <p class="hint" id="urlDict" hidden></p>
+    <form id="urlDictForm" class="check-row gap-top" hidden>
+      <input type="text" id="urlPrefix" placeholder="example.com/docs" autocomplete="off"
+             title="辞書を効かせる範囲 (ドメイン + パス)" aria-label="辞書を効かせる範囲">
+      <button type="submit" id="urlDictGo">作る</button>
+    </form>
 
     <h2>フォルダを開く
       <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"

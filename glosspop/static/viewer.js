@@ -165,6 +165,7 @@ async function openLocalFile(file) {
     );
     return;
   }
+  await paintUrlDictionary("");   // URL ではないのでフォルダ側の辞書に戻す
   await setSource({ text: await file.text(), kind: "auto", filename: file.name });
   markCurrentFile(null);
 }
@@ -176,12 +177,13 @@ $("file").addEventListener("change", async (ev) => {
   ev.target.value = "";
 });
 
-$("showPaste").addEventListener("click", () => {
+$("showPaste").addEventListener("click", async () => {
   const text = $("paste").value;
   if (!text.trim()) {
     $("paste").focus();
     return;
   }
+  await paintUrlDictionary("");
   setSource({ text, kind: $("kind").value, filename: null });
   markCurrentFile(null);
 });
@@ -214,6 +216,8 @@ async function openUrl(url) {
   setStatus($("urlStatus"), "読み込み中", "busy");
   try {
     const res = await api("/api/fetch", { method: "POST", body: { url } });
+    // 辞書の文脈を URL 側へ切り替えてから描画する (フォルダ側の辞書は効かなくなる)
+    await paintUrlDictionary(res.url);
     setSource({
       text: res.text,
       kind: res.kind,
@@ -236,6 +240,45 @@ $("urlForm").addEventListener("submit", (ev) => {
   const url = $("url").value.trim();
   if (!url) return $("url").focus();
   openUrl(url);
+});
+
+// ------------------------------------------------- URL ごとのローカル辞書
+
+/** いま読んでいる URL をサーバに伝え、効いている辞書を表示する。 */
+async function paintUrlDictionary(url) {
+  const line = $("urlDict");
+  const form = $("urlDictForm");
+  try {
+    const info = await api("/api/url-context", { method: "POST", body: { url: url || "" } });
+    if (!url) {
+      line.hidden = form.hidden = true;
+      return;
+    }
+    line.hidden = false;
+    form.hidden = Boolean(info.prefix);
+    line.textContent = info.prefix
+      ? `この URL の辞書: ${info.prefix}`
+      : "この URL の辞書はまだありません（範囲を決めて作れます）";
+    $("urlPrefix").value = info.suggested_prefix || "";
+  } catch {
+    line.hidden = form.hidden = true;
+  }
+}
+
+$("urlDictForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const prefix = $("urlPrefix").value.trim();
+  if (!prefix) return $("urlPrefix").focus();
+  $("urlDictGo").disabled = true;
+  try {
+    await api("/api/url-dictionary", { method: "POST", body: { prefix } });
+    await paintUrlDictionary(source?.url || "");
+    await renderCurrent();   // 新しい辞書でリンクを引き直す
+  } catch (err) {
+    setStatus($("urlStatus"), err.message, "error");
+  } finally {
+    $("urlDictGo").disabled = false;
+  }
 });
 
 async function loadFileList() {
@@ -404,6 +447,7 @@ function markCurrentFile(path) {
 
 async function openContent(path) {
   try {
+    await paintUrlDictionary("");   // URL を読むのをやめる = フォルダ側の辞書に戻す
     const res = await api(`/api/content/${path.split("/").map(encodeURIComponent).join("/")}`);
     // epub は HTML、pdf はテキストとして返ってくる。拡張子からは判断できない
     await setSource({

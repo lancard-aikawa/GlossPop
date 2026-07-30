@@ -106,3 +106,35 @@ def test_unclosed_tags_do_not_leak():
 def test_is_idempotent():
     once = clean("<main><p>本文 <a href='/a'>リンク</a></p></main>")
     assert clean(once, "") == once
+
+
+def test_void_elements_in_drop_trees_do_not_eat_the_rest():
+    """``<input>`` は閉じタグを持たない。
+
+    void 要素として扱わないと、中身ごと捨てる処理が閉じタグを待ち続け、
+    それ以降の本文が全部消える（検索ボックスのあるページが空になっていた）。
+    """
+    out = clean('<p>前</p><form><input type="text"></form><p>後ろ</p>')
+    assert "前" in out and "後ろ" in out
+    assert "input" not in out
+
+
+@pytest.mark.parametrize("void", ["input", "embed", "frame", "source", "track"])
+def test_every_void_element_in_drop_trees_is_known(void):
+    from glosspop.htmlclean import DROP_TREES, VOID_TAGS
+
+    # DROP_TREES 側に void 要素を足すときは VOID_TAGS にも足すこと
+    if void in DROP_TREES:
+        assert void in VOID_TAGS
+
+
+def test_page_with_a_search_box_keeps_its_body():
+    html = (
+        "<html><body><nav>ナビ</nav>"
+        '<form class="search"><input name="q"><button>検索</button></form>'
+        "<div><h1>見出し</h1><p>本文がここにある。</p></div>"
+        "</body></html>"
+    )
+    out = clean(html)
+    assert "本文がここにある。" in out
+    assert "ナビ" not in out and "検索" not in out

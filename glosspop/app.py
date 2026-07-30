@@ -21,6 +21,7 @@ from . import (
     fetcher,
     picker,
     render,
+    sites,
     store,
 )
 from .linker import Linker, entry_url
@@ -136,6 +137,14 @@ class PickFolderRequest(BaseModel):
     initial: str = ""
 
 
+class UrlContextRequest(BaseModel):
+    url: str = ""
+
+
+class UrlDictionaryRequest(BaseModel):
+    prefix: str
+
+
 # --------------------------------------------------------------------------- #
 # ヘルパ
 # --------------------------------------------------------------------------- #
@@ -242,7 +251,8 @@ def health() -> dict:
         "glossary_dir": str(config.GLOSSARY_DIR),
         "categories_file": str(config.CATEGORIES_FILE),
         "content_dir": str(config.content_dir()),
-        "local_glossary_dir": str(config.local_glossary_dir()),
+        "reading_url": config.reading_url() or "",
+        "local_glossary_dir": str(config.local_glossary_dir() or ""),
         "spoiler_default": config.SPOILER_DEFAULT,
         "local_entry_count": sum(1 for e in store.load_all() if e.is_local),
         "entry_count": len(store.load_all()),
@@ -442,8 +452,9 @@ def list_content() -> dict:
         "truncated": truncated,
         # ローカル辞書は祖先にあることがある (1 巻 2 巻で共有するとき)。
         # 黙って別の場所を使わないよう、実際の置き場所を返す
-        "local_dir": str(config.local_glossary_dir()),
-        "local_is_ancestor": local_root != base,
+        "local_dir": str(config.local_glossary_dir() or ""),
+        "local_is_ancestor": local_root is not None and local_root != base,
+        "reading_url": config.reading_url() or "",
     }
 
 
@@ -461,6 +472,46 @@ async def pick_folder(req: PickFolderRequest) -> dict:
     return {"path": path, "cancelled": not path}
 
 
+@app.post("/api/url-context")
+def set_url_context(req: UrlContextRequest) -> dict:
+    """いま読んでいる URL を伝える（空なら開いているフォルダに戻る）。
+
+    フォルダと URL は排他。小説フォルダを開いたまま Web ページを読んで、
+    登場人物名が無関係なページでリンクになる、という事故を防ぐ。
+    """
+    config.set_reading_url(req.url)
+    return sites.describe(config.reading_url())
+
+
+@app.post("/api/url-dictionary", status_code=201)
+def create_url_dictionary(req: UrlDictionaryRequest) -> dict:
+    """``ドメイン/パス`` に辞書を作る。以後その配下を読むときに効く。"""
+    try:
+        sites.create(req.prefix)
+    except sites.SiteError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.invalidate()
+    return sites.describe(config.reading_url())
+
+
+@app.get("/api/url-dictionaries")
+def list_url_dictionaries() -> list[dict]:
+    """作ってある URL 辞書の一覧（prefix と語数）。"""
+    base = config.SITES_DIR
+    out = []
+    if base.exists():
+        for marker in sorted(base.rglob(config.LOCAL_DIR_NAME)):
+            if not marker.is_dir():
+                continue
+            glossary = marker / "glossary"
+            out.append({
+                "prefix": sites.prefix_of(marker.parent),
+                "dir": str(glossary),
+                "count": len(list(glossary.glob("*/*.md"))) if glossary.exists() else 0,
+            })
+    return out
+
+
 @app.post("/api/content-root")
 def set_content_root(req: ContentRootRequest) -> dict:
     """開くフォルダを切り替える (空文字で既定に戻す)。
@@ -468,6 +519,7 @@ def set_content_root(req: ContentRootRequest) -> dict:
     ローカル専用ツールなので任意のパスを受ける。ブラウザの他タブから叩かれても
     JSON の POST は preflight が要るので素通りはしない。
     """
+    config.set_reading_url(None)   # フォルダに戻る
     raw = (req.path or "").strip().strip('"')
     if not raw:
         config.set_content_dir(None)

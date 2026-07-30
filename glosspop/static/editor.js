@@ -111,9 +111,17 @@ async function paintScope(selected, editing) {
   refs.scope.disabled = editing;
   try {
     const health = await api("/api/health");
+    // URL を読んでいるときは、ローカル = その URL の辞書
+    const local = refs.scope.querySelector('option[value="local"]');
+    local.textContent = health.reading_url ? "この URL の辞書" : "このフォルダだけ";
+    local.disabled = !health.local_glossary_dir;
     refs.scopeHint.textContent = editing
       ? "保存先は変えられません（登録し直してください）"
-      : `このフォルダ = ${health.content_dir}`;
+      : health.reading_url
+        ? health.local_glossary_dir
+          ? `この URL の辞書: ${health.local_glossary_dir}`
+          : "この URL の辞書はまだありません（ビューアで作れます）"
+        : `このフォルダ = ${health.content_dir}`;
   } catch {
     refs.scopeHint.textContent = "";
   }

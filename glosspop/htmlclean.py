@@ -41,8 +41,15 @@ DROP_TREES = frozenset({
     "rt", "rp",
 })
 
-#: 閉じタグを持たない
-VOID_TAGS = frozenset({"br", "hr", "img", "col"})
+#: 閉じタグを持たない要素。**HTML の void 要素を漏れなく挙げること。**
+#:
+#: ここに無い void 要素が DROP_TREES に入っていると、閉じタグを待ち続けて
+#: **それ以降の本文が全部消える**。``<input>`` がそうで、検索ボックスのある
+#: ページ（＝たいていの Web ページ）が空になっていた。
+VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "frame", "hr", "img",
+    "input", "link", "meta", "param", "source", "track", "wbr",
+})
 
 #: タグごとに残す属性
 KEEP_ATTRS = {

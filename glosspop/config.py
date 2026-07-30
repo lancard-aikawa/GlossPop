@@ -103,14 +103,31 @@ LOCAL_DIR_NAME = ".glosspop"
 LOCAL_SEARCH_DEPTH = int(os.environ.get("GLOSSPOP_LOCAL_SEARCH_DEPTH", "6"))
 
 
-def local_root() -> Path:
-    """ローカル辞書を置く（置いてある）フォルダ。
+#: URL 用のローカル辞書の置き場所。``sites/<ドメイン>/<パス>/.glosspop/``
+SITES_DIR = _env_path("GLOSSPOP_SITES_DIR", GLOSSARY_DIR.parent / "sites")
 
-    開いているフォルダから祖先方向へ ``.glosspop`` を探し、**いちばん近いもの**を
-    使う。見つからなければ開いているフォルダ自身（そこに作られる）。
+#: いま読んでいる URL（フォルダを読んでいるときは None）。
+#: フォルダと URL は排他。小説フォルダを開いたまま Web を読んで、
+#: 登場人物名が無関係なページでリンクになる、という事故を防ぐ
+_reading_url: str | None = None
 
-    巻ごとにフォルダを分けていても、作品フォルダに 1 つ置けば共有できる。
-    逆に巻ごとに分けたいなら、その巻に ``.glosspop`` を作れば近い方が勝つ。
+
+def set_reading_url(url: str | None) -> None:
+    """URL を読み始める / 読み終える。空なら（開いている）フォルダに戻る。"""
+    global _reading_url
+    _reading_url = url or None
+
+
+def reading_url() -> str | None:
+    return _reading_url
+
+
+def _folder_local_root() -> Path:
+    """開いているフォルダから祖先方向へ ``.glosspop`` を探す。
+
+    **いちばん近いもの**を使い、見つからなければ開いているフォルダ自身
+    （そこに作られる）。巻ごとにフォルダを分けていても、作品フォルダに 1 つ置けば
+    共有できる。逆に巻ごとに分けたいなら、その巻に置けば近い方が勝つ。
     """
     base = content_dir()
     current = base
@@ -124,9 +141,24 @@ def local_root() -> Path:
     return base
 
 
-def local_glossary_dir() -> Path:
-    """いま使うローカル辞書。フォルダを切り替えれば当然変わる。"""
-    return local_root() / LOCAL_DIR_NAME / "glossary"
+def local_root() -> Path | None:
+    """いま使うローカル辞書のルート。無ければ ``None``。
+
+    URL を読んでいるときは ``sites/`` の下を最長一致で探す。**URL 側は
+    勝手に作らない** ので、辞書を作っていないサイトでは ``None`` になる
+    （訪れたサイトの数だけ空ディレクトリが増えないように）。
+    """
+    if _reading_url:
+        from .sites import site_root  # 循環 import を避けて遅延読み込み
+
+        return site_root(_reading_url)
+    return _folder_local_root()
+
+
+def local_glossary_dir() -> Path | None:
+    """いま使うローカル辞書。切り替えれば当然変わる。無ければ ``None``。"""
+    root = local_root()
+    return None if root is None else root / LOCAL_DIR_NAME / "glossary"
 
 
 def ensure_dirs() -> None:
