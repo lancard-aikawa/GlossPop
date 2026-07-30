@@ -169,3 +169,68 @@ class TestDraftDoesNotPolluteTheMaster:
         res = client.post("/api/ai/draft", json={"term": "九条ミナ", "spoiler": "full"}).json()
         assert res["registered_category"] == "登場人物"
         assert "登場人物" in categories.names()
+
+
+class TestSharedAcrossVolumes:
+    """1 巻 2 巻でローカル辞書を共有する（いちばん近い .glosspop を使う）。"""
+
+    def _series(self, tmp_path):
+        series = tmp_path / "銀河鉄道の夜"
+        for volume in ("1巻", "2巻"):
+            (series / volume).mkdir(parents=True)
+        return series
+
+    def test_volume_folder_uses_the_series_dictionary(self, tmp_path):
+        series = self._series(tmp_path)
+        (series / ".glosspop").mkdir()          # 作品フォルダに 1 つ置く
+
+        config.set_content_dir(series / "1巻")
+        add("カムパネルラ", scope="local", category="登場人物")
+        assert (series / ".glosspop" / "glossary" / "登場人物" / "カムパネルラ.md").exists()
+
+        # 2 巻を開いても同じ辞書が見える
+        config.set_content_dir(series / "2巻")
+        assert [e.term for e in store.load_all()] == ["カムパネルラ"]
+
+    def test_a_nearer_dictionary_wins(self, tmp_path):
+        series = self._series(tmp_path)
+        (series / ".glosspop").mkdir()
+        (series / "2巻" / ".glosspop").mkdir()   # 巻ごとに分けたい場合
+
+        config.set_content_dir(series / "1巻")
+        add("共通の語", scope="local", category="登場人物")
+        config.set_content_dir(series / "2巻")
+        add("2巻だけの語", scope="local", category="登場人物")
+
+        assert [e.term for e in store.load_all()] == ["2巻だけの語"]
+        config.set_content_dir(series / "1巻")
+        assert [e.term for e in store.load_all()] == ["共通の語"]
+
+    def test_without_any_dictionary_it_is_created_in_the_open_folder(self, tmp_path):
+        series = self._series(tmp_path)
+        config.set_content_dir(series / "1巻")
+        add("太郎", scope="local", category="登場人物")
+        assert (series / "1巻" / ".glosspop").is_dir()
+        assert not (series / ".glosspop").exists()
+
+    def test_the_search_stops_after_the_configured_depth(self, tmp_path, monkeypatch):
+        deep = tmp_path / "a" / "b" / "c" / "d"
+        deep.mkdir(parents=True)
+        (tmp_path / ".glosspop").mkdir()
+
+        monkeypatch.setattr(config, "LOCAL_SEARCH_DEPTH", 1)
+        config.set_content_dir(deep)
+        # 1 段しか遡らないので tmp_path の辞書は掴まない
+        assert config.local_root() == deep
+
+        monkeypatch.setattr(config, "LOCAL_SEARCH_DEPTH", 6)
+        assert config.local_root() == tmp_path
+
+    def test_listing_says_where_the_dictionary_is(self, client, tmp_path):
+        series = self._series(tmp_path)
+        (series / ".glosspop").mkdir()
+        client.post("/api/content-root", json={"path": str(series / "1巻")})
+
+        listing = client.get("/api/content").json()
+        assert listing["local_is_ancestor"] is True
+        assert listing["local_dir"] == str(series / ".glosspop" / "glossary")

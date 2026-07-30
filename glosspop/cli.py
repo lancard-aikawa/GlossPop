@@ -297,14 +297,33 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _use_utf8_when_piped() -> None:
+    """パイプに出すときだけ UTF-8 に固定する。
+
+    凍結した exe はコンソールのコードページ (日本語 Windows なら CP932) で書くので、
+    ``glosspop add --json -`` の出力を他のツールが受けると壊れた文字列になる。
+    コンソールへ直接出す場合は既定のまま（UTF-8 で書くと CP932 のコンソールが化ける）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if not stream.isatty():
+                stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            pass  # 差し替えられたストリーム等では何もしない
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    _use_utf8_when_piped()
     # 隠しコマンド: フォルダ選択ダイアログの子プロセス。exe には python が無いので
     # 自分自身を再実行して使う (picker.py 参照)。ヘルプには出さない
     if argv and argv[0] == "__pick-folder":
         from .picker import run_dialog
 
-        sys.stdout.write(run_dialog(argv[1] if len(argv) > 1 else ""))
+        # UTF-8 のバイト列で返す。テキストで書くと exe ではコンソールの
+        # コードページで符号化され、日本語を含むパスが壊れる
+        sys.stdout.buffer.write(run_dialog(argv[1] if len(argv) > 1 else "").encode("utf-8"))
+        sys.stdout.buffer.flush()
         return 0
 
     args = build_parser().parse_args(argv)

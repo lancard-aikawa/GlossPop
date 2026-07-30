@@ -430,11 +430,16 @@ def list_content() -> dict:
             files.append(
                 {"path": path.relative_to(base).as_posix(), "name": path.name, "size": size}
             )
+    local_root = config.local_root()
     return {
         "root": str(base),
         "is_default": config.is_default_content_dir(),
         "files": files,
         "truncated": truncated,
+        # ローカル辞書は祖先にあることがある (1 巻 2 巻で共有するとき)。
+        # 黙って別の場所を使わないよう、実際の置き場所を返す
+        "local_dir": str(config.local_glossary_dir()),
+        "local_is_ancestor": local_root != base,
     }
 
 

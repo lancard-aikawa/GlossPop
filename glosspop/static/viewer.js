@@ -252,6 +252,11 @@ function paintFileList(res) {
   root.className = "hint"; // 直前のエラー表示を戻す
   root.textContent = res.root + (res.is_default ? "（既定）" : "");
   root.title = res.root;
+  // 辞書が親フォルダにあるときは黙って使わない (1 巻 2 巻の共有で起きる)
+  if (res.local_is_ancestor) {
+    root.textContent += ` — このフォルダの辞書: ${res.local_dir}`;
+    root.title = `${res.root}\n辞書: ${res.local_dir}`;
+  }
   $("root").value = res.is_default ? "" : res.root;
   currentRoot = res.root;
   paintFolderMenu();

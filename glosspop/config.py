@@ -97,10 +97,36 @@ def is_default_content_dir() -> bool:
 #: フォルダごとコピーすれば辞書も一緒についていく
 LOCAL_DIR_NAME = ".glosspop"
 
+#: ローカル辞書を祖先方向に探す段数。
+#: 1 巻 2 巻をフォルダで分けていても、作品フォルダに 1 つ置けば共有できる。
+#: 無制限に遡るとドライブ全体の辞書を掴みかねないので段数で止める
+LOCAL_SEARCH_DEPTH = int(os.environ.get("GLOSSPOP_LOCAL_SEARCH_DEPTH", "6"))
+
+
+def local_root() -> Path:
+    """ローカル辞書を置く（置いてある）フォルダ。
+
+    開いているフォルダから祖先方向へ ``.glosspop`` を探し、**いちばん近いもの**を
+    使う。見つからなければ開いているフォルダ自身（そこに作られる）。
+
+    巻ごとにフォルダを分けていても、作品フォルダに 1 つ置けば共有できる。
+    逆に巻ごとに分けたいなら、その巻に ``.glosspop`` を作れば近い方が勝つ。
+    """
+    base = content_dir()
+    current = base
+    for _ in range(max(0, LOCAL_SEARCH_DEPTH) + 1):
+        if (current / LOCAL_DIR_NAME).is_dir():
+            return current
+        parent = current.parent
+        if parent == current:      # ドライブのルートまで来た
+            break
+        current = parent
+    return base
+
 
 def local_glossary_dir() -> Path:
-    """開いているフォルダのローカル辞書。フォルダを切り替えれば当然変わる。"""
-    return content_dir() / LOCAL_DIR_NAME / "glossary"
+    """いま使うローカル辞書。フォルダを切り替えれば当然変わる。"""
+    return local_root() / LOCAL_DIR_NAME / "glossary"
 
 
 def ensure_dirs() -> None:
