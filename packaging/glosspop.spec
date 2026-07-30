@@ -38,7 +38,8 @@ a = Analysis(  # noqa: F821
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "pytest", "IPython"],
+    # tkinter はフォルダ選択ダイアログ (picker.py) が使うので落とさない
+    excludes=["pytest", "IPython"],
     noarchive=False,
     optimize=0,
 )

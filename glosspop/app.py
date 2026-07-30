@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, ai, categories, config, fetcher, render, store
+from . import __version__, ai, categories, config, fetcher, picker, render, store
 from .linker import Linker, entry_url
 from .models import CategoryNameError, Entry, EntryDraft
 
@@ -101,6 +101,10 @@ class MoveRequest(BaseModel):
 
 class ContentRootRequest(BaseModel):
     path: str = ""
+
+
+class PickFolderRequest(BaseModel):
+    initial: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -398,6 +402,20 @@ def list_content() -> dict:
         "files": files,
         "truncated": truncated,
     }
+
+
+@app.post("/api/pick-folder")
+async def pick_folder(req: PickFolderRequest) -> dict:
+    """OS のフォルダ選択ダイアログを開く（サーバ＝手元の PC で開く）。
+
+    選ばれても root は変えない。切り替えは ``/api/content-root`` の役目。
+    """
+    initial = req.initial or str(config.content_dir())
+    try:
+        path = await to_thread.run_sync(picker.pick_folder, initial, abandon_on_cancel=True)
+    except picker.PickerError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return {"path": path, "cancelled": not path}
 
 
 @app.post("/api/content-root")

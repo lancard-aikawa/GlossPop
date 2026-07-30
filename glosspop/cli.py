@@ -298,6 +298,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # 隠しコマンド: フォルダ選択ダイアログの子プロセス。exe には python が無いので
+    # 自分自身を再実行して使う (picker.py 参照)。ヘルプには出さない
+    if argv and argv[0] == "__pick-folder":
+        from .picker import run_dialog
+
+        sys.stdout.write(run_dialog(argv[1] if len(argv) > 1 else ""))
+        return 0
+
     args = build_parser().parse_args(argv)
     try:
         for line in store.ensure_ready():

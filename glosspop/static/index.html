@@ -40,8 +40,15 @@
       <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"
               aria-label="ファイル一覧を再読み込み">↻</button>
     </h2>
-    <form id="rootForm" class="check-row">
-      <input type="text" id="root" placeholder="C:\path\to\docs" autocomplete="off"
+    <div class="check-row">
+      <button type="button" id="pickFolder" class="wide">📁 フォルダを選ぶ…</button>
+      <button type="button" id="favToggle" class="ghost icon"
+              title="このフォルダをお気に入りに入れる" aria-label="お気に入りに入れる">☆</button>
+    </div>
+    <select id="recent" class="gap-top" title="最近開いたフォルダ"
+            aria-label="最近開いたフォルダ"></select>
+    <form id="rootForm" class="check-row gap-top">
+      <input type="text" id="root" placeholder="パスを直接入力" autocomplete="off"
              title="開くフォルダのパス" aria-label="開くフォルダのパス">
       <button type="submit" id="rootGo">開く</button>
     </form>

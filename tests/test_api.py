@@ -5,7 +5,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-from glosspop import ai, categories, config
+from glosspop import ai, categories, config, picker
 from glosspop.app import app
 
 
@@ -320,3 +320,39 @@ class TestAIExtract:
     def test_empty_text_is_rejected(self, client, monkeypatch):
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
         assert client.post("/api/ai/extract", json={"text": "  "}).status_code == 502
+
+
+class TestPickFolder:
+    """OS のダイアログはサーバ側で開く。ここでは呼び出し方だけ見る。"""
+
+    def test_returns_the_chosen_path(self, client, monkeypatch, tmp_path):
+        seen = {}
+
+        def fake_pick(initial: str) -> str:
+            seen["initial"] = initial
+            return str(tmp_path)
+
+        monkeypatch.setattr(picker, "pick_folder", fake_pick)
+        res = client.post("/api/pick-folder", json={}).json()
+        assert res == {"path": str(tmp_path), "cancelled": False}
+        # 初期位置は今開いているフォルダ
+        assert seen["initial"] == str(config.CONTENT_DIR)
+
+    def test_cancel_is_not_an_error(self, client, monkeypatch):
+        monkeypatch.setattr(picker, "pick_folder", lambda initial: "")
+        res = client.post("/api/pick-folder", json={})
+        assert res.status_code == 200
+        assert res.json()["cancelled"] is True
+
+    def test_dialog_failure_is_503(self, client, monkeypatch):
+        def boom(initial: str) -> str:
+            raise picker.PickerError("開けません")
+
+        monkeypatch.setattr(picker, "pick_folder", boom)
+        assert client.post("/api/pick-folder", json={}).status_code == 503
+
+    def test_picking_does_not_switch_by_itself(self, client, monkeypatch, tmp_path):
+        # 切り替えは /api/content-root の役目 (選んだだけでは変えない)
+        monkeypatch.setattr(picker, "pick_folder", lambda initial: str(tmp_path))
+        client.post("/api/pick-folder", json={})
+        assert client.get("/api/content").json()["is_default"] is True

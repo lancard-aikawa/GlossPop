@@ -228,6 +228,8 @@ function paintFileList(res) {
   root.textContent = res.root + (res.is_default ? "（既定）" : "");
   root.title = res.root;
   $("root").value = res.is_default ? "" : res.root;
+  currentRoot = res.root;
+  paintFolderMenu();
 
   if (!res.files.length) {
     filesList.replaceChildren(
@@ -255,19 +257,112 @@ function paintFileList(res) {
   }
 }
 
-// フォルダの切り替え。空にして「開く」を押すと既定に戻る
-$("rootForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const path = $("root").value.trim();
-  $("rootGo").disabled = true;
+// ------------------------------------------------- フォルダの切り替えと履歴
+
+const FOLDERS_KEY = "glosspop.folders";
+const MAX_RECENT = 8;
+
+/** {recent: [path], favorites: [path]} を localStorage に持つ。 */
+function loadFolders() {
   try {
-    paintFileList(await api("/api/content-root", { method: "POST", body: { path } }));
+    const data = JSON.parse(localStorage.getItem(FOLDERS_KEY) || "{}");
+    return { recent: data.recent || [], favorites: data.favorites || [] };
+  } catch {
+    return { recent: [], favorites: [] };
+  }
+}
+
+function saveFolders(data) {
+  try {
+    localStorage.setItem(FOLDERS_KEY, JSON.stringify(data));
+  } catch {
+    /* プライベートモード等で書けなくても機能自体は動く */
+  }
+}
+
+let currentRoot = "";
+
+function rememberFolder(path) {
+  if (!path) return;
+  const data = loadFolders();
+  data.recent = [path, ...data.recent.filter((p) => p !== path)].slice(0, MAX_RECENT);
+  saveFolders(data);
+}
+
+function paintFolderMenu() {
+  const { recent, favorites } = loadFolders();
+  const select = $("recent");
+  const groups = [];
+  const option = (path) => el("option", { value: path, text: path, title: path });
+  if (favorites.length) {
+    groups.push(el("optgroup", { label: "お気に入り" }, favorites.map(option)));
+  }
+  const rest = recent.filter((p) => !favorites.includes(p));
+  if (rest.length) {
+    groups.push(el("optgroup", { label: "最近開いた" }, rest.map(option)));
+  }
+  select.replaceChildren(
+    el("option", { value: "", text: groups.length ? "フォルダを選ぶ…" : "（履歴なし）" }),
+    ...groups
+  );
+  select.value = "";
+  select.disabled = !groups.length;
+  $("favToggle").textContent = favorites.includes(currentRoot) ? "★" : "☆";
+  $("favToggle").disabled = !currentRoot;
+}
+
+/** フォルダを開く。空文字なら既定に戻る。 */
+async function openRoot(path) {
+  $("rootGo").disabled = $("pickFolder").disabled = true;
+  try {
+    const res = await api("/api/content-root", { method: "POST", body: { path } });
+    paintFileList(res);
     markCurrentFile(null);
+    if (!res.is_default) rememberFolder(res.root);
+    paintFolderMenu();
   } catch (err) {
     setStatus($("rootStatus"), err.message, "error");
   } finally {
-    $("rootGo").disabled = false;
+    $("rootGo").disabled = $("pickFolder").disabled = false;
   }
+}
+
+$("rootForm").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  openRoot($("root").value.trim());
+});
+
+$("recent").addEventListener("change", () => {
+  const path = $("recent").value;
+  if (path) openRoot(path);
+});
+
+// OS のフォルダ選択ダイアログはサーバ側で開く (ブラウザは絶対パスをくれない)
+$("pickFolder").addEventListener("click", async () => {
+  $("pickFolder").disabled = true;
+  setStatus($("rootStatus"), "フォルダ選択ダイアログを開いています", "busy");
+  try {
+    const res = await api("/api/pick-folder", {
+      method: "POST",
+      body: { initial: currentRoot },
+    });
+    if (res.cancelled) paintFileList(await api("/api/content"));
+    else await openRoot(res.path);
+  } catch (err) {
+    setStatus($("rootStatus"), err.message, "error");
+  } finally {
+    $("pickFolder").disabled = false;
+  }
+});
+
+$("favToggle").addEventListener("click", () => {
+  if (!currentRoot) return;
+  const data = loadFolders();
+  data.favorites = data.favorites.includes(currentRoot)
+    ? data.favorites.filter((p) => p !== currentRoot)
+    : [currentRoot, ...data.favorites];
+  saveFolders(data);
+  paintFolderMenu();
 });
 
 function markCurrentFile(path) {
