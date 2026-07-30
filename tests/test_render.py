@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from glosspop.render import definition_to_html, md_to_html, soften_paragraphs
+from glosspop.render import (
+    definition_to_html,
+    html_title,
+    md_to_html,
+    render_source,
+    resolve_kind,
+    soften_paragraphs,
+)
 
 LONG = (
     "同じ操作を繰り返しても状態が変わらない性質を指す。"
@@ -87,3 +94,41 @@ def test_definition_html_turns_single_newlines_into_br():
 def test_source_documents_keep_standard_markdown_semantics():
     # ビューアで開く文書は CommonMark どおり: 単一改行は改行にならない
     assert "<br>" not in md_to_html("1 行目\n2 行目")
+
+
+# --------------------------------------------------------------------------- #
+# 拡張子から種類を決める / ローカル HTML
+# --------------------------------------------------------------------------- #
+
+def test_resolve_kind_uses_suffix():
+    assert resolve_kind("auto", "doc.md") == "markdown"
+    assert resolve_kind("auto", "page.HTML") == "html"
+    assert resolve_kind("auto", "note.txt") == "text"
+    assert resolve_kind("auto", None) == "text"
+    # 明示された種類は拡張子で上書きしない
+    assert resolve_kind("text", "page.html") == "text"
+
+
+def test_local_html_file_is_sanitized():
+    out = render_source(
+        "<html><head><title>題</title><style>p{color:red}</style></head>"
+        "<body><h1>見出し</h1><p onclick=\"x()\">本文</p><script>alert(1)</script></body></html>",
+        kind="auto",
+        filename="page.html",
+    )
+    assert "<h1>見出し</h1>" in out
+    assert "<p>本文</p>" in out
+    for dropped in ("script", "alert", "color:red", "onclick", "題"):
+        assert dropped not in out
+
+
+def test_local_html_keeps_relative_links_but_not_images():
+    # リンクはビューアが content 内を辿れるので残す
+    assert 'href="other.md"' in render_source('<a href="other.md">次</a>', kind="html")
+    # 画像は配信する経路が無いので残さない (壊れた画像アイコンを出さない)
+    assert "src=" not in render_source('<img src="pic.png" alt="図">', kind="html")
+
+
+def test_html_title_is_extracted():
+    assert html_title("<html><head><title> ページの題 </title></head><body>x</body></html>") == "ページの題"
+    assert html_title("<p>題の無い断片</p>") == ""

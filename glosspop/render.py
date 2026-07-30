@@ -134,22 +134,47 @@ def plain_to_html(text: str) -> str:
     return "\n".join(blocks)
 
 
+#: 拡張子から種類を決めるための対応表
+MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdown")
+HTML_SUFFIXES = (".html", ".htm")
+
+
+def resolve_kind(kind: str = "auto", filename: str | None = None) -> str:
+    """``auto`` を拡張子で ``markdown`` / ``html`` / ``text`` に落とす。
+
+    レンダリングと題の決定で同じ判定を使うため、``render_source`` から切り出してある。
+    """
+    if kind != "auto":
+        return kind
+    name = (filename or "").lower()
+    if name.endswith(MARKDOWN_SUFFIXES):
+        return "markdown"
+    if name.endswith(HTML_SUFFIXES):
+        return "html"
+    return "text"
+
+
 def render_source(
     text: str, *, kind: str = "auto", filename: str | None = None, base_url: str = ""
 ) -> str:
     """``kind`` は ``markdown`` / ``text`` / ``html`` / ``auto``。
 
-    ``html`` は取得済みの Web ページ。クライアント経由で戻ってくるので、
-    表示前にもう一度サニタイザを通す。
+    ``html`` は取得済みの Web ページかローカルの .html。どちらもサニタイザを通す
+    （前者はクライアント経由で戻ってくるので、表示前にもう一度通すことになる）。
     """
-    if kind == "auto":
-        name = (filename or "").lower()
-        kind = "markdown" if name.endswith((".md", ".markdown", ".mdown")) else "text"
+    kind = resolve_kind(kind, filename)
     if kind == "html":
         from .htmlclean import clean_fragment  # 循環 import を避けて遅延読み込み
 
         return clean_fragment(text or "", base_url=base_url)
     return md_to_html(text) if kind == "markdown" else plain_to_html(text)
+
+
+def html_title(html: str) -> str:
+    """HTML の ``<title>`` を取り出す。無ければ空文字。"""
+    from .htmlclean import clean_html  # 循環 import を避けて遅延読み込み
+
+    return clean_html(html or "")[1]
 
 
 def guess_title(text: str, *, fallback: str = "") -> str:

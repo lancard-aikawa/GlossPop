@@ -86,8 +86,65 @@ function paintTerms(terms) {
 function setSource(next) {
   source = next;
   selection.hide();
+  note("");
   renderCurrent();
 }
+
+/** 文書の上に出す一言 (リンクを追えなかった理由など)。 */
+function note(message, kind = "") {
+  const node = $("docStatus");
+  setStatus(node, message, kind);
+  node.hidden = !message;
+}
+
+// -------------------------------------------------- 文書内リンクを追いかける
+
+/** ビューアで開ける拡張子。サーバ側の CONTENT_SUFFIXES と揃える。 */
+const OPENABLE = /\.(md|markdown|mdown|txt|html?)$/i;
+
+/** content 内の相対リンクを content ルートからのパスに直す。 */
+function resolveContentPath(fromPath, href) {
+  const dir = fromPath.includes("/") ? fromPath.replace(/[^/]*$/, "") : "";
+  // URL に解決させると ../ や ./ の処理を自前で書かずに済む
+  const target = new URL(href, `http://doc.invalid/${dir}`);
+  return decodeURIComponent(target.pathname).replace(/^\//, "");
+}
+
+doc.addEventListener("click", (ev) => {
+  if (ev.defaultPrevented || ev.button !== 0) return;
+  if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return; // 別タブで開く操作は邪魔しない
+
+  const a = ev.target.closest("a[href]");
+  if (!a || !doc.contains(a)) return;
+  const href = a.getAttribute("href") || "";
+  // ページ内アンカーと辞書ページ (/glossary/...) はそのままブラウザに任せる
+  if (!href || href.startsWith("#") || href.startsWith("/")) return;
+  if (a.classList.contains("gloss-link")) return;
+
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+    if (!/^https?:/i.test(href)) return; // mailto: などは触らない
+    ev.preventDefault();
+    // URL で読んでいる文書なら続きもビューアで読む。ローカル文書からは別タブへ
+    if (source?.url) openUrl(href);
+    else window.open(href, "_blank", "noopener");
+    return;
+  }
+
+  ev.preventDefault(); // 相対リンク: サーバの 404 に飛ばさない
+  if (source?.url) return openUrl(new URL(href, source.url).href);
+
+  if (source?.contentPath) {
+    const path = resolveContentPath(source.contentPath, href);
+    if (OPENABLE.test(path)) return openContent(path);
+    return note(`ビューアで開ける形式ではありません: ${path}`, "error");
+  }
+
+  note(
+    "開いたファイル単体では隣のファイルを読めません（ブラウザの制限）。" +
+      "リンクを辿るには、そのファイルがあるフォルダを左で開いてください。",
+    "error"
+  );
+});
 
 // ------------------------------------------------------------- ソース選択
 
@@ -114,10 +171,7 @@ $("showPaste").addEventListener("click", () => {
 $("firstOnly").addEventListener("change", renderCurrent);
 
 // URL を開く (取得はサーバ側。CORS を踏まないため)
-$("urlForm").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const url = $("url").value.trim();
-  if (!url) return $("url").focus();
+async function openUrl(url) {
   $("urlGo").disabled = true;
   setStatus($("urlStatus"), "読み込み中", "busy");
   try {
@@ -137,35 +191,71 @@ $("urlForm").addEventListener("submit", async (ev) => {
   } finally {
     $("urlGo").disabled = false;
   }
+}
+
+$("urlForm").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const url = $("url").value.trim();
+  if (!url) return $("url").focus();
+  openUrl(url);
 });
 
 async function loadFileList() {
   filesList.replaceChildren(el("li", { class: "empty", text: "読み込み中…" }));
   try {
-    const files = await api("/api/content");
-    if (!files.length) {
-      filesList.replaceChildren(
-        el("li", { class: "empty", text: "content/ に .md / .txt を置くとここに出ます" })
-      );
-      return;
-    }
-    filesList.replaceChildren(
-      ...files.map((f) =>
-        el("li", {}, [
-          el("button", {
-            type: "button",
-            title: f.path,
-            "data-path": f.path,
-            text: f.path,
-            onclick: () => openContent(f.path),
-          }),
-        ])
-      )
-    );
+    paintFileList(await api("/api/content"));
   } catch (err) {
     filesList.replaceChildren(el("li", { class: "empty", text: `一覧を取得できません: ${err.message}` }));
   }
 }
+
+function paintFileList(res) {
+  const root = $("rootStatus");
+  root.className = "hint"; // 直前のエラー表示を戻す
+  root.textContent = res.root + (res.is_default ? "（既定）" : "");
+  root.title = res.root;
+  $("root").value = res.is_default ? "" : res.root;
+
+  if (!res.files.length) {
+    filesList.replaceChildren(
+      el("li", { class: "empty", text: "このフォルダに .md / .txt / .html を置くとここに出ます" })
+    );
+    return;
+  }
+  filesList.replaceChildren(
+    ...res.files.map((f) =>
+      el("li", {}, [
+        el("button", {
+          type: "button",
+          title: f.path,
+          "data-path": f.path,
+          text: f.path,
+          onclick: () => openContent(f.path),
+        }),
+      ])
+    )
+  );
+  if (res.truncated) {
+    filesList.append(
+      el("li", { class: "empty", text: `${res.files.length} 件で打ち切りました（多すぎます）` })
+    );
+  }
+}
+
+// フォルダの切り替え。空にして「開く」を押すと既定に戻る
+$("rootForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const path = $("root").value.trim();
+  $("rootGo").disabled = true;
+  try {
+    paintFileList(await api("/api/content-root", { method: "POST", body: { path } }));
+    markCurrentFile(null);
+  } catch (err) {
+    setStatus($("rootStatus"), err.message, "error");
+  } finally {
+    $("rootGo").disabled = false;
+  }
+});
 
 function markCurrentFile(path) {
   for (const btn of filesList.querySelectorAll("button")) {
@@ -180,7 +270,9 @@ async function openContent(path) {
     setSource({ text: res.text, kind: "auto", filename: res.name, contentPath: path });
     markCurrentFile(path);
   } catch (err) {
-    doc.innerHTML = `<p class="status error">${esc(err.message)}</p>`;
+    // リンクを辿って失敗したときは、いま読んでいる文書を壊さない
+    if (source) note(`開けません: ${err.message}`, "error");
+    else doc.innerHTML = `<p class="status error">${esc(err.message)}</p>`;
   }
 }
 

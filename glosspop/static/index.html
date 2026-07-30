@@ -24,8 +24,9 @@
   <aside class="side">
     <h2>ソース</h2>
     <button type="button" id="pick" class="wide">📂 ファイルを開く…</button>
-    <input type="file" id="file" accept=".md,.markdown,.mdown,.txt,text/plain,text/markdown" hidden>
-    <p class="hint">.md / .txt をウィンドウにドロップしても開けます。</p>
+    <input type="file" id="file"
+           accept=".md,.markdown,.mdown,.txt,.html,.htm,text/plain,text/markdown,text/html" hidden>
+    <p class="hint">.md / .txt / .html をウィンドウにドロップしても開けます。</p>
 
     <h2>URL を開く</h2>
     <form id="urlForm" class="check-row">
@@ -35,10 +36,16 @@
     </form>
     <p class="hint" id="urlStatus"></p>
 
-    <h2>content フォルダ
+    <h2>フォルダを開く
       <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"
               aria-label="ファイル一覧を再読み込み">↻</button>
     </h2>
+    <form id="rootForm" class="check-row">
+      <input type="text" id="root" placeholder="C:\path\to\docs" autocomplete="off"
+             title="開くフォルダのパス" aria-label="開くフォルダのパス">
+      <button type="submit" id="rootGo">開く</button>
+    </form>
+    <p class="hint" id="rootStatus"></p>
     <ul class="filelist" id="files"></ul>
 
     <h2>テキストを貼り付け</h2>
@@ -49,6 +56,7 @@
         <option value="auto">自動判定</option>
         <option value="markdown">Markdown</option>
         <option value="text">プレーンテキスト</option>
+        <option value="html">HTML</option>
       </select>
     </div>
 
@@ -59,6 +67,7 @@
   <main class="doc-wrap">
     <div id="docHead" class="doc" hidden>
       <p class="hint" id="docMeta"></p>
+      <p class="status" id="docStatus" hidden></p>
     </div>
     <article class="doc" id="doc">
       <h1>GlossPop</h1>

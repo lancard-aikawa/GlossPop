@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,7 +16,18 @@ from . import __version__, ai, categories, config, fetcher, render, store
 from .linker import Linker, entry_url
 from .models import CategoryNameError, Entry, EntryDraft
 
-CONTENT_SUFFIXES = {".md", ".markdown", ".mdown", ".txt"}
+CONTENT_SUFFIXES = {".md", ".markdown", ".mdown", ".txt", ".html", ".htm"}
+
+#: 一覧で降りないディレクトリ。任意のフォルダを開けるので、リポジトリや
+#: 仮想環境を掴んだときに数万ファイルを走査しないためのもの
+SKIP_DIRS = frozenset({
+    ".git", ".hg", ".svn", ".venv", "venv", "node_modules",
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    "dist", "build", ".idea", ".vscode",
+})
+
+#: 一覧の上限。超えたぶんは切って ``truncated`` で知らせる
+MAX_CONTENT_FILES = 2000
 
 
 @asynccontextmanager
@@ -81,6 +93,10 @@ class MoveRequest(BaseModel):
     category: str
 
 
+class ContentRootRequest(BaseModel):
+    path: str = ""
+
+
 # --------------------------------------------------------------------------- #
 # ヘルパ
 # --------------------------------------------------------------------------- #
@@ -133,7 +149,7 @@ def _entry_payload(entry: Entry, *, linker: Linker | None = None) -> dict:
 
 
 def _safe_content_path(rel: str) -> Path:
-    base = config.CONTENT_DIR.resolve()
+    base = config.content_dir().resolve()
     target = (base / rel).resolve()
     if base not in target.parents:
         raise HTTPException(400, "content ディレクトリ外は開けません")
@@ -183,7 +199,7 @@ def health() -> dict:
         "claude_bin": config.CLAUDE_BIN,
         "glossary_dir": str(config.GLOSSARY_DIR),
         "categories_file": str(config.CATEGORIES_FILE),
-        "content_dir": str(config.CONTENT_DIR),
+        "content_dir": str(config.content_dir()),
         "entry_count": len(store.load_all()),
         "category_count": len(categories.load()),
     }
@@ -318,13 +334,18 @@ def get_entry(ref: str) -> dict:
 
 @app.post("/api/render")
 def render_text(req: RenderRequest) -> dict:
+    kind = render.resolve_kind(req.kind, req.filename)
     html = render.render_source(
-        req.text, kind=req.kind, filename=req.filename, base_url=req.base_url
+        req.text, kind=kind, filename=req.filename, base_url=req.base_url
     )
     linked, entries = _linker().annotate(html, first_only=req.first_only)
-    title = req.title or (
-        render.guess_title(req.text, fallback=req.filename or "") if req.kind != "html" else ""
-    )
+    if req.title:
+        title = req.title
+    elif kind == "html":
+        # ローカルの .html は <title> を題に使う (URL 経由は fetcher が付けてくる)
+        title = render.html_title(req.text) or (req.filename or "")
+    else:
+        title = render.guess_title(req.text, fallback=req.filename or "")
     return {
         "html": linked,
         "title": title,
@@ -336,17 +357,63 @@ def render_text(req: RenderRequest) -> dict:
 # API: content ディレクトリ / URL
 # --------------------------------------------------------------------------- #
 
+def _iter_content_files(base: Path):
+    """開いているフォルダを走査する。隠しディレクトリと SKIP_DIRS には降りない。"""
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = sorted(
+            d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS
+        )
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            if path.suffix.lower() in CONTENT_SUFFIXES:
+                yield path
+
+
 @app.get("/api/content")
-def list_content() -> list[dict]:
-    base = config.CONTENT_DIR
-    if not base.exists():
-        return []
-    files = []
-    for path in sorted(base.rglob("*")):
-        if path.is_file() and path.suffix.lower() in CONTENT_SUFFIXES:
-            rel = path.relative_to(base).as_posix()
-            files.append({"path": rel, "name": path.name, "size": path.stat().st_size})
-    return files
+def list_content() -> dict:
+    base = config.content_dir()
+    files: list[dict] = []
+    truncated = False
+    if base.exists():
+        for path in _iter_content_files(base):
+            if len(files) >= MAX_CONTENT_FILES:
+                truncated = True
+                break
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            files.append(
+                {"path": path.relative_to(base).as_posix(), "name": path.name, "size": size}
+            )
+    return {
+        "root": str(base),
+        "is_default": config.is_default_content_dir(),
+        "files": files,
+        "truncated": truncated,
+    }
+
+
+@app.post("/api/content-root")
+def set_content_root(req: ContentRootRequest) -> dict:
+    """開くフォルダを切り替える (空文字で既定に戻す)。
+
+    ローカル専用ツールなので任意のパスを受ける。ブラウザの他タブから叩かれても
+    JSON の POST は preflight が要るので素通りはしない。
+    """
+    raw = (req.path or "").strip().strip('"')
+    if not raw:
+        config.set_content_dir(None)
+        return list_content()
+    target = Path(raw).expanduser()
+    try:
+        target = target.resolve(strict=True)
+    except OSError as exc:
+        raise HTTPException(404, f"開けません: {raw}") from exc
+    if not target.is_dir():
+        raise HTTPException(400, f"フォルダではありません: {target}")
+    config.set_content_dir(target)
+    return list_content()
 
 
 @app.get("/api/content/{rel:path}")

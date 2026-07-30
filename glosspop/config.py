@@ -58,6 +58,31 @@ FETCH_USER_AGENT = os.environ.get(
 )
 
 
+#: 実行中に切り替えられる content ルート (ビューアの「フォルダを開く」)。
+#: 既定 (CONTENT_DIR) は環境変数と起動場所で決まり、こちらはプロセス内の一時的な上書き。
+_content_override: Path | None = None
+
+
+def content_dir() -> Path:
+    """いま開いている content フォルダ。
+
+    ``CONTENT_DIR`` を直接見ずに必ずこれを通すこと。UI から切り替えたあとも
+    一覧・読み出し・パス検査が同じ基準を使う必要がある。
+    """
+    return _content_override or CONTENT_DIR
+
+
+def set_content_dir(path: Path | None) -> Path:
+    """content フォルダを切り替える。``None`` で既定に戻す。"""
+    global _content_override
+    _content_override = path
+    return content_dir()
+
+
+def is_default_content_dir() -> bool:
+    return _content_override is None
+
+
 def ensure_dirs() -> None:
     GLOSSARY_DIR.mkdir(parents=True, exist_ok=True)
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)

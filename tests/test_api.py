@@ -173,7 +173,9 @@ def test_content_listing_and_read(client):
     (config.CONTENT_DIR / "ignore.png").write_bytes(b"x")
 
     listing = client.get("/api/content").json()
-    assert [f["path"] for f in listing] == ["sub/note.md"]
+    assert [f["path"] for f in listing["files"]] == ["sub/note.md"]
+    assert listing["root"] == str(config.CONTENT_DIR)
+    assert listing["is_default"] is True
     assert client.get("/api/content/sub/note.md").json()["text"] == "# ノート\n"
 
 
@@ -220,3 +222,72 @@ def test_static_and_pages_are_not_browser_cached(client):
     assert res.status_code == 200
     assert res.headers["cache-control"] == "no-cache"
     assert res.headers.get("etag")
+
+
+def test_local_html_is_rendered_with_its_title(client):
+    res = client.post(
+        "/api/render",
+        json={
+            "text": "<html><head><title>ページの題</title></head>"
+                    "<body><h1>見出し</h1><p>本文</p><script>alert(1)</script></body></html>",
+            "kind": "auto",
+            "filename": "page.html",
+        },
+    )
+    data = res.json()
+    assert data["title"] == "ページの題"
+    assert "<h1>見出し</h1>" in data["html"]
+    assert "alert" not in data["html"]
+
+
+def test_content_listing_includes_html(client):
+    (config.CONTENT_DIR / "page.html").write_text("<h1>x</h1>", encoding="utf-8")
+    assert "page.html" in [f["path"] for f in client.get("/api/content").json()["files"]]
+    assert client.get("/api/content/page.html").json()["text"] == "<h1>x</h1>"
+
+
+class TestContentRoot:
+    """開くフォルダの切り替え。"""
+
+    def test_switch_and_reset(self, client, tmp_path):
+        other = tmp_path / "別のフォルダ"
+        other.mkdir()
+        (other / "外の文書.md").write_text("# 外\n", encoding="utf-8")
+        (config.CONTENT_DIR / "中の文書.md").write_text("# 中\n", encoding="utf-8")
+
+        res = client.post("/api/content-root", json={"path": str(other)}).json()
+        assert res["root"] == str(other.resolve())
+        assert res["is_default"] is False
+        assert [f["path"] for f in res["files"]] == ["外の文書.md"]
+        # 切り替え後は新しいフォルダのファイルが読める
+        assert client.get("/api/content/外の文書.md").json()["text"] == "# 外\n"
+        assert client.get("/api/health").json()["content_dir"] == str(other.resolve())
+
+        back = client.post("/api/content-root", json={"path": ""}).json()
+        assert back["is_default"] is True
+        assert [f["path"] for f in back["files"]] == ["中の文書.md"]
+
+    def test_missing_folder_is_rejected(self, client, tmp_path):
+        assert client.post("/api/content-root", json={"path": str(tmp_path / "無い")}).status_code == 404
+
+    def test_file_is_not_a_folder(self, client, tmp_path):
+        target = tmp_path / "ファイル.md"
+        target.write_text("x", encoding="utf-8")
+        assert client.post("/api/content-root", json={"path": str(target)}).status_code == 400
+
+    def test_traversal_still_blocked_after_switch(self, client, tmp_path):
+        other = tmp_path / "配下"
+        other.mkdir()
+        client.post("/api/content-root", json={"path": str(other)})
+        assert client.get("/api/content/../../secret.md").status_code in (400, 404)
+
+    def test_heavy_directories_are_skipped(self, client, tmp_path):
+        root = tmp_path / "リポジトリ"
+        (root / ".git").mkdir(parents=True)
+        (root / "node_modules").mkdir()
+        (root / ".git" / "内部.md").write_text("x", encoding="utf-8")
+        (root / "node_modules" / "依存.md").write_text("x", encoding="utf-8")
+        (root / "読む.md").write_text("x", encoding="utf-8")
+
+        res = client.post("/api/content-root", json={"path": str(root)}).json()
+        assert [f["path"] for f in res["files"]] == ["読む.md"]

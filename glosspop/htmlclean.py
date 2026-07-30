@@ -52,17 +52,23 @@ _SAFE_SCHEMES = ("http", "https", "mailto", "data:image/")
 MAIN_CANDIDATES = ("main", "article")
 
 
-def _safe_url(value: str, base: str) -> str | None:
+def _safe_url(value: str, base: str, *, allow_relative: bool = False) -> str | None:
     value = (value or "").strip()
     if not value:
         return None
     if value.startswith("#"):
         return None  # ページ内アンカーは開いた文書では意味を持たないので落とす
+    if value.startswith("//"):
+        return None  # プロトコル相対は基準が無いと外部への遷移になる
     absolute = urljoin(base, value) if base else value
     scheme = urlsplit(absolute).scheme.lower()
     if scheme in ("http", "https", "mailto"):
         return absolute
     if absolute.lower().startswith("data:image/"):
+        return absolute
+    # 基準 URL が無い = ローカルの .html。リンク先の相対パスはビューアが
+    # content の中を辿れるので残す (画像は配信する経路が無いので残さない)
+    if allow_relative and not base and not scheme:
         return absolute
     return None
 
@@ -127,7 +133,7 @@ class _Cleaner(HTMLParser):
             if name not in KEEP_ATTRS.get(tag, ()):
                 continue
             if name in ("href", "src"):
-                url = _safe_url(value or "", self.base_url)
+                url = _safe_url(value or "", self.base_url, allow_relative=(name == "href"))
                 if url is None:
                     continue
                 value = url

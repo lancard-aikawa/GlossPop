@@ -16,9 +16,12 @@ def isolated_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONTENT_DIR", content)
     monkeypatch.setattr(config, "CATEGORIES_FILE", tmp_path / "categories.yaml")
     monkeypatch.setattr(store, "_ready", False)
+    # 「フォルダを開く」の上書きはプロセス内に残るのでテスト間で持ち越さない
+    config.set_content_dir(None)
     store.invalidate()
     categories.invalidate()
     yield tmp_path
+    config.set_content_dir(None)
     store.invalidate()
     categories.invalidate()
 
