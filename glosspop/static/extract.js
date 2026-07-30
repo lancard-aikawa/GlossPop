@@ -2,7 +2,7 @@
 //
 // 抽出は 1 回の AI 呼び出しで済むが、下書きは 1 語あたり数十秒かかる。
 // そのため「候補を選ぶ」段階を必ず挟み、下書きは選ばれた語だけを順に作る。
-import { api, el, setStatus } from "./base.js";
+import { api, defaultSpoiler, el, rememberSpoiler, setStatus } from "./base.js";
 import { openEntryEditor } from "./editor.js";
 import { invalidatePopupCache } from "./popup.js";
 
@@ -29,6 +29,12 @@ function build() {
         <select data-ref="scope" class="auto-width" title="保存先" aria-label="保存先">
           <option value="global">全体の辞書へ</option>
           <option value="local">このフォルダだけ</option>
+        </select>
+        <select data-ref="spoiler" class="auto-width" aria-label="ネタバレ"
+                title="AI にどこまで読ませるか">
+          <option value="position">初出位置だけ（AI を使わない）</option>
+          <option value="first">初出の場面だけで書く</option>
+          <option value="full">全文から書く（ネタバレ可）</option>
         </select>
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
@@ -83,6 +89,11 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   refs.title.textContent = folder ? "フォルダから用語をまとめて登録" : "用語をまとめて登録";
   // フォルダ全体から拾うときは、そのフォルダ固有の語であることが多い
   refs.scope.value = folder ? "local" : "global";
+  refs.spoiler.value = await defaultSpoiler();
+  refs.spoiler.onchange = () => {
+    rememberSpoiler(refs.spoiler.value);
+    paintGo();
+  };
   refs.list.replaceChildren();
   refs.dropped.hidden = true;
   refs.go.hidden = refs.stop.hidden = refs.toggle.hidden = true;
@@ -98,10 +109,15 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   const paintGo = () => {
     const n = selected(rows).length;
     const phase = rows.some((r) => r.draft) ? "保存" : "下書き";
+    const noAI = refs.spoiler.value === "position";
     refs.go.hidden = !rows.length;
     refs.go.disabled = n === 0;
     refs.go.textContent =
-      phase === "下書き" ? `選んだ ${n} 語の下書きを作る` : `チェックした ${n} 語を保存`;
+      phase === "保存"
+        ? `チェックした ${n} 語を保存`
+        : noAI
+          ? `選んだ ${n} 語を取り込む（AI なし）`
+          : `選んだ ${n} 語の下書きを作る`;
     refs.toggle.hidden = !rows.length;
     refs.toggle.textContent = n ? "全解除" : "全選択";
   };
@@ -146,13 +162,20 @@ export async function openExtractDialog({ text = "", source = "", folder = false
             context: row.candidate.context,
             // フォルダ横断では、その語が出てくるファイルを出典にする
             source: row.candidate.source || source,
+            spoiler: refs.spoiler.value,
+            file: row.candidate.first_file || "",
+            scope: refs.scope.value,
           },
           signal: controller.signal,
         });
         row.draft = res.draft;
         const label = [res.draft.category, res.draft.subcategory].filter(Boolean).join(" / ");
+        const first = res.draft.first_locator
+          ? `初出 ${res.draft.first_file} ${res.draft.first_locator}`
+          : "";
         setStatus(row.state, label || "カテゴリ未定");
-        row.li.querySelector(".hint").textContent = res.draft.summary || "";
+        row.li.querySelector(".hint").textContent =
+          [res.draft.summary, first].filter(Boolean).join(" — ");
         row.edit.hidden = false;
       } catch (err) {
         if (aborted) break;

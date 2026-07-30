@@ -411,3 +411,105 @@ class TestAIExtractFolder:
     def test_empty_folder_is_400(self, client, monkeypatch):
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
         assert client.post("/api/ai/extract-folder", json={}).status_code == 400
+
+
+class TestSpoilerLevels:
+    """AI にどこまで読ませるか（小説の人物辞書向け）。"""
+
+    NOVEL = "第一章\n駅前に太郎が立っていた。\n\n第十章\n太郎の正体は間諜だった。\n"
+
+    def _write_novel(self):
+        (config.CONTENT_DIR / "第一章.md").write_text(self.NOVEL, encoding="utf-8")
+
+    def test_position_only_does_not_call_claude(self, client, monkeypatch):
+        self._write_novel()
+
+        def boom(prompt: str) -> str:
+            raise AssertionError("AI を呼んではいけない")
+
+        monkeypatch.setattr(ai, "_run_claude", boom)
+        monkeypatch.setattr(config, "CLAUDE_BIN", "")   # claude が無くても通ること
+
+        res = client.post(
+            "/api/ai/draft",
+            json={"term": "太郎", "file": "第一章.md", "spoiler": "position"},
+        )
+        assert res.status_code == 200
+        draft = res.json()["draft"]
+        assert draft["term"] == "太郎"
+        assert draft["first_file"] == "第一章.md"
+        assert draft["first_locator"] == "L.2"
+        assert draft["definition"] == ""     # 本文は自分で書く
+
+    def test_first_only_hides_later_chapters(self, client, monkeypatch):
+        self._write_novel()
+        seen = {}
+
+        def fake_run(prompt: str) -> str:
+            seen["prompt"] = prompt
+            return '{"term": "太郎", "summary": "駅前にいた人物。", "category": "登場人物"}'
+
+        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+        res = client.post(
+            "/api/ai/draft",
+            json={"term": "太郎", "file": "第一章.md", "spoiler": "first"},
+        )
+        assert res.status_code == 200
+        assert "駅前に太郎" in seen["prompt"]
+        assert "間諜" not in seen["prompt"]           # 後の展開は渡さない
+        assert "ネタバレの禁止" in seen["prompt"]
+        assert res.json()["draft"]["first_locator"] == "L.2"
+
+    def test_full_passes_the_given_context(self, client, monkeypatch):
+        self._write_novel()
+        seen = {}
+
+        def fake_run(prompt: str) -> str:
+            seen["prompt"] = prompt
+            return '{"term": "太郎", "category": "登場人物"}'
+
+        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+        client.post(
+            "/api/ai/draft",
+            json={
+                "term": "太郎",
+                "file": "第一章.md",
+                "context": "太郎の正体は間諜だった。",
+                "spoiler": "full",
+            },
+        )
+        assert "間諜" in seen["prompt"]
+        assert "ネタバレの禁止" not in seen["prompt"]
+
+    def test_unknown_level_falls_back_to_the_configured_default(self, client, monkeypatch):
+        monkeypatch.setattr(config, "SPOILER_DEFAULT", "position")
+        monkeypatch.setattr(config, "CLAUDE_BIN", "")
+        res = client.post("/api/ai/draft", json={"term": "太郎", "spoiler": "でたらめ"})
+        assert res.status_code == 200      # position 扱いなので AI を呼ばない
+
+    def test_health_reports_the_default(self, client):
+        assert client.get("/api/health").json()["spoiler_default"] in config.SPOILER_LEVELS
+
+    def test_first_seen_survives_saving(self, client):
+        created = client.post(
+            "/api/entries",
+            json={
+                "term": "太郎",
+                "category": "登場人物",
+                "scope": "local",
+                "definition": "主人公。",
+                "first_file": "第一章.md",
+                "first_locator": "L.2",
+            },
+        ).json()
+        assert created["first_file"] == "第一章.md"
+        assert created["first_locator"] == "L.2"
+        # frontmatter にも残る (ファイルを直接見ても分かる)
+        saved = (config.CONTENT_DIR / ".glosspop" / "glossary" / "登場人物" / "太郎.md").read_text(
+            encoding="utf-8"
+        )
+        assert "first_file: 第一章.md" in saved

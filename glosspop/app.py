@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from . import __version__, ai, categories, config, fetcher, picker, render, store
 from .linker import Linker, entry_url
-from .models import CategoryNameError, Entry, EntryDraft
+from .models import LOCAL_SCOPE, CategoryNameError, Entry, EntryDraft
 
 CONTENT_SUFFIXES = {".md", ".markdown", ".mdown", ".txt", ".html", ".htm"}
 
@@ -73,6 +73,12 @@ class DraftRequest(BaseModel):
     term: str
     context: str = ""
     source: str = ""
+    #: position | first | full （空なら設定の既定）
+    spoiler: str = ""
+    #: 初出ファイル（content ルートからの相対パス）。spoiler=first のとき文脈を作るのに使う
+    file: str = ""
+    #: どちらの辞書に入れるつもりか。カテゴリマスターを触るかの判断に使う
+    scope: str = "global"
 
 
 class FetchRequest(BaseModel):
@@ -219,6 +225,7 @@ def health() -> dict:
         "categories_file": str(config.CATEGORIES_FILE),
         "content_dir": str(config.content_dir()),
         "local_glossary_dir": str(config.local_glossary_dir()),
+        "spoiler_default": config.SPOILER_DEFAULT,
         "local_entry_count": sum(1 for e in store.load_all() if e.is_local),
         "entry_count": len(store.load_all()),
         "category_count": len(categories.load()),
@@ -530,21 +537,64 @@ async def ai_extract_folder(req: ExtractFolderRequest) -> dict:
     return result
 
 
+def _first_seen_in_file(rel: str, term: str) -> tuple[str, str]:
+    """content 内のファイルから初出位置と、その場面の抜粋を取る。"""
+    try:
+        path = _safe_content_path(rel)
+    except HTTPException:
+        return "", ""
+    text = render.to_plain_text(
+        path.read_text(encoding="utf-8", errors="replace"), filename=path.name
+    )
+    return ai.locator_of(text, term), ai.context_up_to_first(text, term)
+
+
 @app.post("/api/ai/draft")
 async def ai_draft(req: DraftRequest) -> dict:
+    spoiler = req.spoiler if req.spoiler in config.SPOILER_LEVELS else config.SPOILER_DEFAULT
+
+    locator = ""
+    context = req.context
+    if req.file:
+        locator, first_context = _first_seen_in_file(req.file, req.term)
+        if spoiler == "first":
+            # それ以降の展開は渡さない。初出の場面だけに差し替える
+            context = first_context or req.context
+
+    if spoiler == "position":
+        # AI を呼ばない。初出位置だけ埋めて、本文はユーザーが書く
+        draft = EntryDraft(
+            term=req.term,
+            source=req.source,
+            first_file=req.file,
+            first_locator=locator,
+        )
+        return {
+            "draft": draft.model_dump(),
+            "registered_category": None,
+            "warning": "",
+            "existing": [_term_card(e) for e in store.find_by_surface(req.term)],
+        }
+
     if not ai.available():
         raise HTTPException(
             503, "claude CLI が見つかりません。手動入力で登録してください。"
         )
     try:
-        draft = await ai.draft_entry(req.term, req.context, source=req.source)
+        draft = await ai.draft_entry(
+            req.term, context, source=req.source, spoiler=spoiler
+        )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc
+    draft.first_file = req.file
+    draft.first_locator = locator
 
-    # 下書き段階でカテゴリをマスターに登録しておく (保存されず空振りでも残す)
+    # 下書き段階でカテゴリをマスターに登録しておく (保存されず空振りでも残す)。
+    # ただしローカル辞書に入れるつもりの下書きは登録しない —— マスターは
+    # グローバル辞書のものなので、フォルダ固有のカテゴリで汚さない (store.save と同じ判断)
     registered = None
     warning = ""
-    if draft.category:
+    if draft.category and req.scope != LOCAL_SCOPE:
         try:
             registered = categories.ensure(draft.category, subcategory=draft.subcategory).name
         except CategoryNameError as exc:

@@ -1,5 +1,5 @@
 // 辞書エントリの登録 / 編集ダイアログ。ビューアと辞書ページの両方から使う。
-import { api, el, esc, isHttpUrl, setStatus } from "./base.js";
+import { api, defaultSpoiler, el, esc, isHttpUrl, rememberSpoiler, setStatus } from "./base.js";
 import { invalidatePopupCache } from "./popup.js";
 
 const LIST_FIELDS = ["aliases", "related", "tags"];
@@ -71,6 +71,12 @@ function build() {
       </div>
       <footer>
         <button type="button" data-ref="draft">✨ AI で下書き</button>
+        <select data-ref="spoiler" class="auto-width" aria-label="ネタバレ"
+                title="AI にどこまで読ませるか">
+          <option value="position">初出位置だけ（AI を使わない）</option>
+          <option value="first">初出の場面だけで書く</option>
+          <option value="full">全文から書く（ネタバレ可）</option>
+        </select>
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
         <button type="button" data-ref="cancel">キャンセル</button>
@@ -164,9 +170,13 @@ function currentCategory() {
     : refs.category.value;
 }
 
+/** 初出位置はフォームに出さないが、保存時に落とさないよう保持する。 */
+let firstSeen = { first_file: "", first_locator: "" };
+
 function readForm() {
   const listOf = (value) => value.split(",").map((s) => s.trim()).filter(Boolean);
   const draft = {
+    ...firstSeen,
     term: refs.term.value.trim(),
     reading: refs.reading.value.trim(),
     scope: refs.scope.value,
@@ -182,6 +192,10 @@ function readForm() {
 }
 
 function writeForm(data) {
+  firstSeen = {
+    first_file: data.first_file || "",
+    first_locator: data.first_locator || "",
+  };
   refs.term.value = data.term || "";
   refs.reading.value = data.reading || "";
   refs.subcategory.value = data.subcategory || "";
@@ -221,6 +235,7 @@ export async function openEntryEditor({
   let targetRef = ref;
   categoryTouched = Boolean(entry?.category);
   await paintScope(entry?.scope || scope, Boolean(targetRef));
+  refs.spoiler.value = await defaultSpoiler();
 
   refs.title.textContent = targetRef ? "用語を編集" : "用語を辞書に登録";
   refs.save.textContent = targetRef ? "更新" : "保存";
@@ -261,9 +276,20 @@ export async function openEntryEditor({
       refs.draft.disabled = refs.save.disabled = true;
       setStatus(refs.status, "Claude が下書きを作成中 (数十秒かかります)", "busy");
       try {
+        rememberSpoiler(refs.spoiler.value);
+        const origin = refs.source.value.trim() || source;
         const res = await api("/api/ai/draft", {
           method: "POST",
-          body: { term: t, context, source: refs.source.value.trim() || source },
+          body: {
+            term: t,
+            context,
+            source: origin,
+            spoiler: refs.spoiler.value,
+            // 出典が content 内の相対パスなら、サーバが初出位置を数えられる
+            file: isHttpUrl(origin) ? "" : origin,
+            // ローカル辞書に入れるつもりなら、提案カテゴリでマスターを汚さない
+            scope: refs.scope.value,
+          },
         });
         // ユーザーが手で書いた内容は消さない
         const typed = readForm();

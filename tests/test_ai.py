@@ -130,3 +130,48 @@ class TestExtractFromDocuments:
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+NOVEL = (
+    "第一章\n"
+    "駅前は雨だった。\n"
+    "そこに立っていたのが太郎だった。\n"
+    "太郎は傘を持っていなかった。\n"
+    "\n"
+    "第十章\n"
+    "太郎の正体は敵の間諜だった。\n"
+)
+
+
+class TestSpoilerControl:
+    def test_locator_points_at_the_first_line(self):
+        assert ai.locator_of(NOVEL, "太郎") == "L.3"
+        assert ai.locator_of(NOVEL, "花子") == ""
+
+    def test_context_stops_after_the_first_appearance(self):
+        out = ai.context_up_to_first(NOVEL, "太郎", lead=100, trail=20)
+        assert "駅前は雨だった" in out          # 初出までの流れは渡す
+        assert "正体は敵の間諜" not in out       # その後の展開は渡さない
+
+    def test_context_is_cut_at_the_paragraph_break(self):
+        # trail が長くても、初出を含む段落の先までは渡さない
+        out = ai.context_up_to_first(NOVEL, "太郎", lead=100, trail=4000)
+        assert "傘を持っていなかった" in out
+        assert "第十章" not in out and "間諜" not in out
+
+    def test_context_is_bounded_before_the_first_appearance(self):
+        # 長い前置きを丸ごと渡さない (小説 1 冊を送りつけない)
+        text = "あ" * 5000 + "太郎が現れた。"
+        out = ai.context_up_to_first(text, "太郎", lead=100, trail=10)
+        assert len(out) < 200 and "太郎" in out
+
+    def test_missing_term_yields_nothing(self):
+        assert ai.context_up_to_first(NOVEL, "花子") == ""
+
+    def test_prompt_forbids_spoilers_when_asked(self):
+        prompt = ai.build_prompt("太郎", "初出の場面", spoiler="first")
+        assert "ネタバレの禁止" in prompt
+        assert "ここまでしか読んでいない" in prompt
+
+    def test_prompt_is_unrestricted_by_default(self):
+        assert "ネタバレの禁止" not in ai.build_prompt("太郎", "文脈")

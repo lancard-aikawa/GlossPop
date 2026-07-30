@@ -44,6 +44,8 @@ uv run glosspop show "<用語名>"             # あれば内容が出る。無�
 | `related` | | 関連語。既存の `term` と一致すればリンクになる |
 | `tags` | | 検索用タグ |
 | `source` | | 出典（ファイル名・URL・「〇〇との会話」など） |
+| `first_file` | | 初出のファイル（ビューアで開くフォルダからの相対パス） |
+| `first_locator` | | 初出の位置（`L.42` など。表示とジャンプに使う） |
 
 注意点:
 
@@ -133,8 +135,13 @@ uv run glosspop serve                           # ビューアを起動 (http://
 ## 直接ファイルを編集してもよい
 
 `data/glossary/<カテゴリ>/*.md` を Edit で直接書き換えても反映される（サーバは mtime を
-見て読み直す）。frontmatter のキー名は上の表と同じ。ただし **`category` と `slug` は
-書かない** — ディレクトリ名とファイル名が正なので、frontmatter に書いても無視される。
+見て読み直す）。frontmatter のキー名は上の表と同じ。ただし **`category` と `slug`、
+`scope` は書かない** — ディレクトリ名・ファイル名・置き場所が正なので、frontmatter に
+書いても無視される。
+
+なお `glosspop` CLI が書くのは**全体の辞書**（`data/glossary/`）だけ。ビューアには
+「そのフォルダを開いている間だけ有効なローカル辞書」もあるが、そちらは
+`<フォルダ>/.glosspop/glossary/` に置かれ、CLI からは触らない。
 
 `mkdir` でカテゴリのディレクトリを作っただけでも、次の読み込み時に
 `data/categories.yaml` へ自動で取り込まれる。

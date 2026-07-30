@@ -139,3 +139,33 @@ class TestApi:
         body = client.get("/api/lookup", params={"term": "太郎"}).json()
         assert body["count"] == 2
         assert body["entries"][0]["scope"] == "local"  # ローカルが先
+
+
+class TestDraftDoesNotPolluteTheMaster:
+    """ローカル辞書に入れるつもりの下書きで、グローバルのカテゴリマスターを汚さない。"""
+
+    def _fake_ai(self, monkeypatch):
+        from glosspop import ai, config as cfg
+
+        monkeypatch.setattr(ai, "_run_claude", lambda prompt: '{"term": "九条ミナ", "category": "登場人物"}')
+        monkeypatch.setattr(cfg, "CLAUDE_BIN", "claude")
+
+    def test_local_draft_leaves_the_master_alone(self, client, monkeypatch):
+        from glosspop import categories
+
+        self._fake_ai(monkeypatch)
+        res = client.post(
+            "/api/ai/draft",
+            json={"term": "九条ミナ", "spoiler": "full", "scope": "local"},
+        ).json()
+        assert res["draft"]["category"] == "登場人物"
+        assert res["registered_category"] is None
+        assert "登場人物" not in categories.names()
+
+    def test_global_draft_still_registers_it(self, client, monkeypatch):
+        from glosspop import categories
+
+        self._fake_ai(monkeypatch)
+        res = client.post("/api/ai/draft", json={"term": "九条ミナ", "spoiler": "full"}).json()
+        assert res["registered_category"] == "登場人物"
+        assert "登場人物" in categories.names()

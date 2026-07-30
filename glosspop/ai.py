@@ -19,6 +19,9 @@ from .models import UNCATEGORIZED, EntryDraft
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
+#: 段落の切れ目。初出の場面をここで打ち切る
+_BLANK_LINE = re.compile(r"\n[ \t]*\n")
+
 #: 下書き生成はテキスト変換なので、ツールは全部落とす。
 #: 許可を出さないとサブプロセスが承認待ちで固まる (実際に踏んだ)。
 _DISALLOWED_TOOLS = ",".join([
@@ -57,7 +60,49 @@ _SCHEMA_HINT = """{
 }"""
 
 
-def build_prompt(term: str, context: str = "", *, source: str = "") -> str:
+#: 初出の前後をどれだけ渡すか (spoiler="first")
+FIRST_LEAD_CHARS = 2000
+FIRST_TRAIL_CHARS = 400
+
+
+def locator_of(text: str, term: str) -> str:
+    """初出の行番号を表示用の文字列にする。見つからなければ空文字。
+
+    PDF のページなど別の単位が来ても置き換えられるよう、文字列で持つ。
+    """
+    index = (text or "").casefold().find((term or "").casefold())
+    if index < 0:
+        return ""
+    return f"L.{text[:index].count(chr(10)) + 1}"
+
+
+def context_up_to_first(
+    text: str, term: str, *, lead: int = FIRST_LEAD_CHARS, trail: int = FIRST_TRAIL_CHARS
+) -> str:
+    """初出の場面だけを切り出す（それ以降の展開を AI に見せない）。
+
+    前は直前 ``lead`` 文字まで。「初出時点までの全文」にしないのは、小説 1 冊が
+    入りきらないうえ、結局そこまでの筋書きを要約させることになるため。
+
+    後ろは **初出を含む段落の終わりまで**（空行で切る）。単純に N 文字取ると、
+    初出がファイル末尾に近いときに次の章まで巻き込んでネタバレする。
+    """
+    haystack = (text or "").casefold()
+    index = haystack.find((term or "").casefold())
+    if index < 0:
+        return ""
+    start = max(0, index - lead)
+    end = min(len(text), index + len(term) + trail)
+    tail = text[index:end]
+    para = _BLANK_LINE.search(tail)
+    if para:
+        end = index + para.start()
+    return text[start:end]
+
+
+def build_prompt(
+    term: str, context: str = "", *, source: str = "", spoiler: str = "full"
+) -> str:
     tree = store.category_tree()
     if tree:
         known = "\n".join(
@@ -90,7 +135,18 @@ def build_prompt(term: str, context: str = "", *, source: str = "") -> str:
         f"## 対象の用語\n{term}",
     ]
     if context.strip():
-        parts += ["", "## 用語が現れた文脈（この文脈での意味を優先する）", context.strip()[:4000]]
+        heading = "## 用語が現れた文脈（この文脈での意味を優先する）"
+        if spoiler == "first":
+            heading = "## 用語が初めて出てくる場面（ここまでしか読んでいない）"
+        parts += ["", heading, context.strip()[:4000]]
+    if spoiler == "first":
+        parts += [
+            "",
+            "## ネタバレの禁止",
+            "**渡した抜粋は初出の場面だけです。それ以降の展開は知らないものとして書いてください。**",
+            "後の展開・結末・正体・生死・因果関係の種明かしには触れないこと。",
+            "この時点で分かる説明だけを書き、推測で先を語らないこと。",
+        ]
     if source.strip():
         parts += ["", f"## 出典\n{source.strip()[:200]}"]
     parts += [
@@ -379,6 +435,17 @@ def _occurrences(docs: list[tuple[str, str]], term: str) -> tuple[list[str], int
     return files, count
 
 
+def _first_seen(docs: list[tuple[str, str]], term: str) -> tuple[str, str, str]:
+    """初出のファイル・位置・その場面の抜粋を返す。
+
+    docs は読む順に並んでいる前提（第 1 章から順に渡す）。
+    """
+    for label, text in docs:
+        if (term or "").casefold() in (text or "").casefold():
+            return label, locator_of(text, term), context_up_to_first(text, term)
+    return "", "", ""
+
+
 async def extract_terms_from_documents(
     docs: list[tuple[str, str]], *, limit: int = 20
 ) -> dict:
@@ -403,10 +470,15 @@ async def extract_terms_from_documents(
 
     for item in kept:
         files, count = _occurrences(docs, item["term"])
+        first_file, locator, first_context = _first_seen(docs, item["term"])
         item["files"] = files[:20]
         item["file_count"] = len(files)
         item["count"] = count
-        item["source"] = files[0] if files else ""
+        item["source"] = first_file
+        item["first_file"] = first_file
+        item["first_locator"] = locator
+        # 初出の場面。ネタバレを避けるとき (spoiler=first) はこれだけを AI に渡す
+        item["first_context"] = first_context
     # 複数のファイルに出てくる語ほど辞書化の価値が高い
     kept.sort(key=lambda i: (-i["file_count"], -i["count"]))
 
@@ -418,12 +490,14 @@ async def extract_terms_from_documents(
     }
 
 
-async def draft_entry(term: str, context: str = "", *, source: str = "") -> EntryDraft:
+async def draft_entry(
+    term: str, context: str = "", *, source: str = "", spoiler: str = "full"
+) -> EntryDraft:
     """選択テキストから辞書エントリの下書きを作る。保存はしない。"""
     term = term.strip()
     if not term:
         raise AIError("用語が空です")
-    prompt = build_prompt(term, context, source=source)
+    prompt = build_prompt(term, context, source=source, spoiler=spoiler)
     raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
     data = parse_draft(raw)
     data.setdefault("term", term)

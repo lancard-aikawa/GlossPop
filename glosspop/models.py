@@ -105,6 +105,9 @@ class EntryBase(BaseModel):
     related: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     source: str = ""
+    #: 初出の位置。小説の人物辞書などで「どこで出てきた語か」を残すために使う
+    first_file: str = ""        # content ルートからの相対パス
+    first_locator: str = ""     # 表示用の位置 ("L.42" / "p.42" / "第3章" など)
 
     @field_validator("aliases", "examples", "related", "tags", mode="before")
     @classmethod
@@ -115,7 +118,11 @@ class EntryBase(BaseModel):
             v = [v]
         return _clean_list([str(x) for x in v])  # type: ignore[union-attr]
 
-    @field_validator("term", "reading", "category", "subcategory", "summary", "definition", "source", mode="before")
+    @field_validator(
+        "term", "reading", "category", "subcategory", "summary", "definition",
+        "source", "first_file", "first_locator",
+        mode="before",
+    )
     @classmethod
     def _normalize_str(cls, v: object) -> str:
         return "" if v is None else str(v).strip()

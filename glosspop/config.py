@@ -49,6 +49,16 @@ CLAUDE_EXTRA_ARGS = shlex.split(os.environ.get("GLOSSPOP_CLAUDE_ARGS", "--model 
 #: claude CLI のタイムアウト秒
 CLAUDE_TIMEOUT = int(os.environ.get("GLOSSPOP_CLAUDE_TIMEOUT", "180"))
 
+#: AI にどこまで読ませるか（小説の人物辞書などでのネタバレ対策）
+#:
+#: position … AI を呼ばない。初出位置だけ記録して本文は自分で書く
+#: first    … 初出の前後だけを渡す。それ以降の展開は知らないものとして書かせる
+#: full     … 全部渡す（ネタバレ可）
+SPOILER_LEVELS = ("position", "first", "full")
+SPOILER_DEFAULT = os.environ.get("GLOSSPOP_SPOILER_DEFAULT", "full")
+if SPOILER_DEFAULT not in SPOILER_LEVELS:
+    SPOILER_DEFAULT = "full"
+
 #: URL 読み込みの上限とタイムアウト
 FETCH_TIMEOUT = float(os.environ.get("GLOSSPOP_FETCH_TIMEOUT", "20"))
 FETCH_MAX_BYTES = int(os.environ.get("GLOSSPOP_FETCH_MAX_BYTES", str(8 * 1024 * 1024)))

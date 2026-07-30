@@ -88,7 +88,8 @@ function setSource(next) {
   source = next;
   selection.hide();
   note("");
-  renderCurrent();
+  // 描画の完了を待ちたい呼び出し元 (初出へジャンプ) があるので promise を返す
+  return renderCurrent();
 }
 
 /** 文書の上に出す一言 (リンクを追えなかった理由など)。 */
@@ -383,7 +384,7 @@ function markCurrentFile(path) {
 async function openContent(path) {
   try {
     const res = await api(`/api/content/${path.split("/").map(encodeURIComponent).join("/")}`);
-    setSource({ text: res.text, kind: "auto", filename: res.name, contentPath: path });
+    await setSource({ text: res.text, kind: "auto", filename: res.name, contentPath: path });
     markCurrentFile(path);
   } catch (err) {
     // リンクを辿って失敗したときは、いま読んでいる文書を壊さない
@@ -422,5 +423,23 @@ window.addEventListener("drop", async (ev) => {
 
 // ------------------------------------------------------------------ 起動
 
+/** 用語の初出へ飛ぶ。``/?open=<content パス>&term=<用語>`` で開かれる。 */
+async function openFromQuery() {
+  const params = new URLSearchParams(location.search);
+  const path = params.get("open");
+  if (!path) return;
+  await openContent(path);
+  const term = params.get("term");
+  if (!term) return;
+  // annotate 済みの本文から、その語の最初のリンクを探して寄せる
+  const hit = doc.querySelector(`[data-gloss="${CSS.escape(term)}"]`);
+  if (hit) {
+    hit.scrollIntoView({ block: "center" });
+    hit.classList.add("gloss-flash");
+  } else {
+    note(`「${term}」はこの文書に見つかりませんでした`, "error");
+  }
+}
+
 paintEntryCount($("count"));
-loadFileList();
+loadFileList().then(openFromQuery);

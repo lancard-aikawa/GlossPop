@@ -105,6 +105,17 @@ function render(entry) {
   }
 
   const movePanel = el("div", { class: "move-panel", hidden: true });
+  // 「初出へ」: ビューアでそのファイルを開き、最初の出現までスクロールする
+  function firstSeenLink(e) {
+    if (!e.first_file) return null;
+    const query = new URLSearchParams({ open: e.first_file, term: e.term });
+    return el("a", {
+      href: `/?${query}`,
+      text: `初出: ${e.first_file}${e.first_locator ? ` ${e.first_locator}` : ""} →`,
+      title: "その場面をビューアで開く",
+    });
+  }
+
   parts.push(el("div", { class: "toolbar entry-actions" }, [
     el("button", { type: "button", text: "編集", onclick: () => edit(entry) }),
     el("button", {
@@ -120,6 +131,7 @@ function render(entry) {
   const meta = el("p", { class: "entry-meta" });
   const bits = [
     el("span", { text: `保存先: ${entry.path}`, title: entry.path }),
+    firstSeenLink(entry),
     sourceNode(entry.source),
     el("span", { text: `作成 ${entry.created_at}` }),
     el("span", { text: `更新 ${entry.updated_at}` }),

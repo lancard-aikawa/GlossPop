@@ -38,6 +38,8 @@ _FM_KEYS = (
     "related",
     "tags",
     "source",
+    "first_file",
+    "first_locator",
     "created_at",
     "updated_at",
 )

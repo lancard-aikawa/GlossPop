@@ -481,6 +481,16 @@ dialog.sheet footer .spacer { flex: 1; }
 }
 .notice[hidden] { display: none; }
 
+/* 「初出へ」で飛んできたときに、どれを見ればいいか分かるようにする */
+.gloss-flash {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+  animation: gloss-flash 2.4s ease-out 1 forwards;
+}
+@keyframes gloss-flash { to { outline-color: transparent; } }
+@media (prefers-reduced-motion: reduce) { .gloss-flash { animation: none; } }
+
 /* まとめて登録ダイアログの候補一覧 */
 .cand-list { list-style: none; margin: 0 0 12px; padding: 0; }
 .cand-list li {

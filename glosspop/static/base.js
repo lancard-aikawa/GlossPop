@@ -24,6 +24,32 @@ export async function api(path, { method = "GET", body, signal } = {}) {
   return data;
 }
 
+// ネタバレ設定 (AI にどこまで読ませるか) は登録ダイアログと抽出ダイアログで共用する
+const SPOILER_KEY = "glosspop.spoiler";
+
+/** 既定値: 前回の選択 (localStorage) > サーバの設定 > full。 */
+export async function defaultSpoiler() {
+  try {
+    const saved = localStorage.getItem(SPOILER_KEY);
+    if (saved) return saved;
+  } catch {
+    /* 読めなくてもサーバ既定に落ちるだけ */
+  }
+  try {
+    return (await api("/api/health")).spoiler_default || "full";
+  } catch {
+    return "full";
+  }
+}
+
+export function rememberSpoiler(value) {
+  try {
+    localStorage.setItem(SPOILER_KEY, value);
+  } catch {
+    /* 保存できなくてもその回の選択は効く */
+  }
+}
+
 export function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
