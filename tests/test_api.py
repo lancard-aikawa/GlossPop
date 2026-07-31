@@ -694,11 +694,20 @@ def test_doctor_reports_a_broken_relation(client):
     assert body["errors"] == 1
 
 
-def test_relations_draft_needs_two_entries(client):
+def test_relations_draft_needs_two_entries(client, monkeypatch):
+    # claude CLI の有無は環境で変わる。手元では 400 まで届くが、無い環境では
+    # 503 で止まって別のものを見てしまう（CI で実際に落ちた）
+    monkeypatch.setattr(ai, "available", lambda: True)
     _person(client, "ジョバンニ")
     res = client.post("/api/ai/relations", json={"category": "登場人物"})
     assert res.status_code == 400
     assert "2 語以上" in res.json()["detail"]
+
+
+def test_relations_draft_reports_a_missing_claude_cli(client, monkeypatch):
+    monkeypatch.setattr(ai, "available", lambda: False)
+    res = client.post("/api/ai/relations", json={"category": "登場人物"})
+    assert res.status_code == 503
 
 
 def test_relations_draft_can_read_the_displayed_document(client, monkeypatch):

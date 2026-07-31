@@ -383,6 +383,13 @@ renderer / gpu）も数に入るので、ブラウザ本体だけを見ること
 差し替える。**`store._ready` のリセットも fixture がやっている** ので、
 `store.ensure_ready()` の初期化をテストで当てにするなら fixture を確認すること。
 
+**`claude` の有無をテストの前提にしない。** 手元は PATH に `claude` があるので
+`ai.available()` が真になり、AI 経路のエンドポイントは 503 を返さず先まで進む。
+CI には無いので 503 で止まり、**手元で通ったテストだけが向こうで落ちる**
+（実際にリリースのワークフローで踏んだ）。AI 経路を叩くテストでは
+`monkeypatch.setattr(ai, "available", lambda: True)` を明示すること。
+手元で CI と同じ状況を作るなら、`GLOSSPOP_CLAUDE_BIN` を空にして PATH からも外す。
+
 **フロントは `tests/test_smoke_ui.py` が通しで見張っている。** 本物のサーバを
 別スレッドで立てて Chrome で操作し、「登録 → 本文でリンクになる → 吹き出し →
 関係 → 相関図 → 点検」まで走る。HTML は正しいのに JS が落ちている、という壊れ方は
