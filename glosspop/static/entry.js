@@ -14,6 +14,8 @@ installGlossPopup();
 
 /** 表記 -> [{ref, path_label}] の索引。関連語をリンクにするために使う。 */
 let index = new Map();
+/** 関係の行き先を入力するときの候補（全エントリ）。 */
+let allEntries = [];
 /** 表示中のエントリ。 */
 let current = null;
 
@@ -31,6 +33,7 @@ const selection = installSelectionAdd({
 async function loadIndex() {
   try {
     const entries = await api("/api/entries");
+    allEntries = entries;
     index = new Map();
     for (const e of entries) {
       for (const s of [e.term, ...(e.aliases || [])]) {
@@ -56,6 +59,187 @@ function relatedChip(name) {
   // 同名が複数カテゴリにある / 未登録 → 検索に飛ばす
   const label = hits.length > 1 ? `${name} (${hits.length})` : name;
   return chip(label, `/glossary?q=${encodeURIComponent(name)}`);
+}
+
+// --------------------------------------------------------------------------- //
+// 関係
+//
+// **関係は片側にしか書かない。** 逆向きは書かせず、相手のページでは
+// 「指されている側」(backlinks) として出す。両側に書けると必ずずれる。
+// --------------------------------------------------------------------------- //
+
+const RANK_OPTIONS = [
+  ["", "上下は指定しない"],
+  ["上", "相手が上"],
+  ["下", "相手が下"],
+  ["対等", "対等"],
+];
+const RANK_MARK = { 上: "▲ 相手が上", 下: "▼ 相手が下", 対等: "＝ 対等" };
+
+/** 関係 1 件の行。解決できていなければ赤リンクにする。 */
+function relationRow(rel, onRemove) {
+  const arrow = el("span", {
+    class: "rel-arrow",
+    text: rel.mutual ? "⇄" : "→",
+    title: rel.mutual ? "相互" : "一方的",
+  });
+  const target = el("a", {
+    class: rel.missing ? "chip missing" : "chip",
+    href: rel.url,
+    text: rel.term,
+    title: rel.missing ? rel.reason : rel.path_label,
+  });
+  const words = [rel.label, rel.mutual && rel.back !== rel.label ? `（逆: ${rel.back}）` : ""]
+    .filter(Boolean)
+    .join(" ");
+
+  const bits = [arrow, target];
+  if (words) bits.push(el("span", { class: "rel-label", text: words }));
+  if (rel.rank) bits.push(el("span", { class: "rel-rank", text: RANK_MARK[rel.rank] }));
+  if (rel.reveal) {
+    bits.push(el("span", { class: "rel-reveal", text: `判明: ${rel.reveal}`, title: "相関図では既定で伏せる" }));
+  }
+  if (rel.missing) bits.push(el("span", { class: "hint", text: rel.reason }));
+  bits.push(el("span", { class: "spacer" }));
+  bits.push(el("button", { type: "button", class: "ghost", text: "削除", onclick: onRemove }));
+  return el("li", { class: "rel-row" }, bits);
+}
+
+/** 「この語を指している側」。書いていない側にも関係を見せるための行。 */
+function backlinkRow(link) {
+  const bits = [
+    el("span", { class: "rel-arrow", text: link.mutual ? "⇄" : "←", title: link.mutual ? "相互" : "相手からの一方的な関係" }),
+    el("a", { class: "chip", href: link.url, text: link.term, title: link.path_label }),
+  ];
+  if (link.label) bits.push(el("span", { class: "rel-label", text: link.label }));
+  else bits.push(el("span", { class: "hint", text: `相手側に「${link.incoming}」と書かれています` }));
+  if (link.rank) bits.push(el("span", { class: "rel-rank", text: RANK_MARK[link.rank] }));
+  if (link.reveal) {
+    bits.push(el("span", { class: "rel-reveal", text: `判明: ${link.reveal}`, title: "相関図では既定で伏せる" }));
+  }
+  return el("li", { class: "rel-row" }, bits);
+}
+
+/** 関係を書き換えて保存し、描き直す。 */
+async function saveRelations(entry, relations, status) {
+  setStatus(status, "保存中", "busy");
+  try {
+    await api(`/api/entries/${encodePath(entry.ref)}`, {
+      method: "PUT",
+      body: { ...entry, relations },
+    });
+    invalidatePopupCache();
+    await reload(entry.ref);
+  } catch (err) {
+    setStatus(status, err.message, "error");
+  }
+}
+
+/** 追加フォーム。prompt() は使わず、インラインの input / select で入力する。 */
+function relationForm(entry) {
+  const listId = "rel-targets";
+  const datalist = el(
+    "datalist",
+    { id: listId },
+    allEntries
+      .filter((e) => e.ref !== entry.ref)
+      .map((e) => el("option", { value: e.term, label: e.path_label }))
+  );
+  const to = el("input", {
+    type: "text",
+    list: listId,
+    placeholder: "相手の用語名 または カテゴリ/slug",
+    "aria-label": "関係の相手",
+  });
+  const label = el("input", { type: "text", placeholder: "この語から見た一言（例: 親友）", "aria-label": "関係" });
+  const back = el("input", { type: "text", placeholder: "逆から見た一言（空なら一方的）", "aria-label": "逆からの関係" });
+  const rank = el(
+    "select",
+    { class: "auto-width", "aria-label": "上下" },
+    RANK_OPTIONS.map(([value, text]) => el("option", { value, text }))
+  );
+  const reveal = el("input", {
+    type: "text",
+    class: "narrow",
+    placeholder: "判明する位置（任意）",
+    "aria-label": "判明する位置",
+    title: "書いておくと相関図では既定で伏せられます",
+  });
+  const status = el("span", { class: "status" });
+
+  const add = el("button", {
+    type: "button",
+    class: "primary",
+    text: "関係を足す",
+    onclick: async () => {
+      if (!to.value.trim()) {
+        setStatus(status, "相手を入力してください", "error");
+        to.focus();
+        return;
+      }
+      const next = [
+        ...(entry.relations || []),
+        {
+          to: to.value,
+          label: label.value,
+          back: back.value,
+          rank: rank.value,
+          reveal: reveal.value,
+        },
+      ];
+      await saveRelations(entry, next, status);
+    },
+  });
+
+  return el("div", { class: "rel-form" }, [
+    datalist,
+    el("div", { class: "rel-form-line" }, [to, label, back]),
+    el("div", { class: "rel-form-line" }, [rank, reveal, add, status]),
+    el("p", {
+      class: "hint",
+      text:
+        "すべて「この語から見た相手」の向きで書きます。逆から見た一言を入れると相互（⇄）、" +
+        "空なら一方的（→）になります。相手側に同じ関係を書く必要はありません。",
+    }),
+  ]);
+}
+
+function relationsSection(entry) {
+  const resolved = entry.relations_resolved || [];
+  const links = entry.backlinks || [];
+  const status = el("span", { class: "status" });
+
+  const list = el(
+    "ul",
+    { class: "rel-list" },
+    resolved.map((rel, i) =>
+      relationRow(rel, () => {
+        const next = (entry.relations || []).filter((_, j) => j !== i);
+        return saveRelations(entry, next, status);
+      })
+    )
+  );
+
+  const parts = [];
+  if (resolved.length) parts.push(list);
+  else parts.push(el("p", { class: "empty", text: "まだ関係が書かれていません。" }));
+  if (links.length) {
+    parts.push(el("h3", { class: "rel-sub", text: "この語を指している側" }));
+    parts.push(el("ul", { class: "rel-list" }, links.map(backlinkRow)));
+  }
+  parts.push(status);
+  parts.push(relationForm(entry));
+  parts.push(
+    el("p", {}, [
+      el("a", {
+        class: "btn",
+        href: `/graph?category=${encodeURIComponent(entry.category)}` +
+          (entry.scope === "local" ? "&scope=local" : ""),
+        text: "相関図で見る →",
+      }),
+    ])
+  );
+  return section("関係", parts);
 }
 
 function render(entry) {
@@ -103,6 +287,8 @@ function render(entry) {
   if (entry.related?.length) {
     parts.push(section("関連語", el("div", { class: "chips" }, entry.related.map(relatedChip))));
   }
+
+  parts.push(relationsSection(entry));
 
   const movePanel = el("div", { class: "move-panel", hidden: true });
   // 「初出へ」: ビューアでそのファイルを開き、最初の出現までスクロールする

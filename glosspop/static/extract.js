@@ -2,12 +2,36 @@
 //
 // 抽出は 1 回の AI 呼び出しで済むが、下書きは 1 語あたり数十秒かかる。
 // そのため「候補を選ぶ」段階を必ず挟み、下書きは選ばれた語だけを順に作る。
+//
+// **その前にもう 1 段ある: 何を抜き出すか (種別) を先に決める。** 種別を指定
+// せずに頼むと AI は語義説明のできる語ばかり挙げ、登場人物がまるごと落ちる。
 import { api, defaultSpoiler, el, rememberSpoiler, setStatus } from "./base.js";
 import { openEntryEditor } from "./editor.js";
 import { invalidatePopupCache } from "./popup.js";
 
 let dialog = null;
 let refs = {};
+
+const KINDS_KEY = "glosspop.extract.kinds";
+
+/** 前回選んだ種別。無ければ null (サーバの既定に従う)。 */
+function rememberedKinds() {
+  try {
+    const raw = localStorage.getItem(KINDS_KEY);
+    const list = raw ? JSON.parse(raw) : null;
+    return Array.isArray(list) && list.length ? list : null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberKinds(list) {
+  try {
+    localStorage.setItem(KINDS_KEY, JSON.stringify(list));
+  } catch {
+    /* 保存できなくてもその回の選択は効く */
+  }
+}
 
 function build() {
   if (dialog) return dialog;
@@ -21,6 +45,10 @@ function build() {
       </header>
       <div class="body">
         <p class="hint" data-ref="lead"></p>
+        <fieldset class="kind-picker" data-ref="kindbox">
+          <legend>何を抜き出すか</legend>
+          <div class="kind-list" data-ref="kinds"></div>
+        </fieldset>
         <ul class="cand-list" data-ref="list"></ul>
         <p class="notice" data-ref="dropped" hidden></p>
       </div>
@@ -50,6 +78,26 @@ function build() {
   return dialog;
 }
 
+/** 種別のチェックボックスを描く。返すのは [{key, check}]。 */
+function paintKinds(list, chosen, onChange) {
+  const boxes = list.map((kind) => {
+    const check = el("input", {
+      type: "checkbox",
+      checked: chosen.includes(kind.key),
+      onchange: onChange,
+    });
+    refs.kinds.append(
+      el("label", { class: "check kind", title: kind.hint }, [
+        check,
+        el("span", { class: "kind-label", text: kind.label }),
+        el("span", { class: "hint", text: kind.hint }),
+      ])
+    );
+    return { key: kind.key, check };
+  });
+  return boxes;
+}
+
 /** 候補 1 件ぶんの行。DOM とデータを 1 つにまとめて持ち回る。 */
 function makeRow(candidate) {
   const check = el("input", { type: "checkbox", checked: true });
@@ -70,6 +118,21 @@ function makeRow(candidate) {
     el("p", { class: "hint", text: why }),
   ]);
   return { li, check, state, edit, candidate, draft: null, saved: null };
+}
+
+/** 種別ごとの見出しを挟んだ行の並びを返す。 */
+function groupRows(rows) {
+  const out = [];
+  let last = null;
+  for (const row of rows) {
+    const label = row.candidate.kind_label || "その他";
+    if (label !== last) {
+      out.push(el("li", { class: "cand-group", text: label }));
+      last = label;
+    }
+    out.push(row.li);
+  }
+  return out;
 }
 
 function selected(rows) {
@@ -96,30 +159,47 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     paintGo();
   };
   refs.list.replaceChildren();
+  refs.kinds.replaceChildren();
+  refs.kindbox.hidden = false;
+  refs.kindbox.disabled = false;
   refs.dropped.hidden = true;
   refs.go.hidden = refs.stop.hidden = refs.toggle.hidden = true;
-  refs.lead.textContent = "";
-  setStatus(refs.status, "Claude が候補を抽出中 (数十秒かかります)", "busy");
+  refs.lead.textContent =
+    "抜き出すものを先に選んでください。種別ごとに別々の枠で挙げるので、" +
+    "人物と専門用語が枠を取り合いません。";
+  setStatus(refs.status, "");
   dialog.showModal();
 
   let rows = [];
+  let kindBoxes = [];
   let saved = 0;
   let aborted = false;
+  let busy = false;
   let controller = null;
 
+  const pickedKinds = () => kindBoxes.filter((k) => k.check.checked).map((k) => k.key);
+
   const paintGo = () => {
+    refs.go.hidden = false;
+    // 段は 3 つ: 種別を選ぶ → 候補を選ぶ → 下書きを確認して保存する
+    if (!rows.length) {
+      const n = pickedKinds().length;
+      refs.go.disabled = busy || n === 0;
+      refs.go.textContent = n ? `${n} 種別で候補を抽出する` : "抜き出すものを選んでください";
+      refs.toggle.hidden = true;
+      return;
+    }
     const n = selected(rows).length;
     const phase = rows.some((r) => r.draft) ? "保存" : "下書き";
     const noAI = refs.spoiler.value === "position";
-    refs.go.hidden = !rows.length;
-    refs.go.disabled = n === 0;
+    refs.go.disabled = busy || n === 0;
     refs.go.textContent =
       phase === "保存"
         ? `チェックした ${n} 語を保存`
         : noAI
           ? `選んだ ${n} 語を取り込む（AI なし）`
           : `選んだ ${n} 語の下書きを作る`;
-    refs.toggle.hidden = !rows.length;
+    refs.toggle.hidden = false;
     refs.toggle.textContent = n ? "全解除" : "全選択";
   };
 
@@ -137,6 +217,66 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     aborted = true;
     controller?.abort();
     setStatus(refs.status, "中止しました", "error");
+  };
+
+  /** 選んだ種別で候補を挙げさせる。AI 呼び出しは 1 回だけ。 */
+  const runExtract = async () => {
+    const kinds = pickedKinds();
+    if (!kinds.length) return;
+    rememberKinds(kinds);
+    aborted = false;
+    busy = true;
+    refs.kindbox.disabled = true;
+    refs.stop.hidden = false;
+    paintGo();
+    setStatus(refs.status, "Claude が候補を抽出中 (数十秒かかります)", "busy");
+    try {
+      controller = new AbortController();
+      const options = { method: "POST", signal: controller.signal };
+      const res = folder
+        ? await api("/api/ai/extract-folder", { ...options, body: { kinds } })
+        : await api("/api/ai/extract", { ...options, body: { text, source, kinds } });
+      controller = null;
+      rows = (res.candidates || []).map(makeRow);
+      if (!rows.length) {
+        refs.lead.textContent = "選んだ種別に当てはまる語は見つかりませんでした。";
+        setStatus(refs.status, "");
+      } else {
+        const scope = folder ? `${res.files_used?.length || 0} ファイルから挙げました。` : "";
+        refs.lead.textContent =
+          scope + "登録する語を選んでください。下書きは 1 語あたり数十秒かかります（順に作ります）。";
+        refs.list.replaceChildren(...groupRows(rows));
+        for (const row of rows) {
+          row.check.addEventListener("change", paintGo);
+          row.edit.addEventListener("click", () => onEdit(row));
+        }
+        setStatus(refs.status, `候補 ${rows.length} 語`);
+      }
+      paintNotes(res);
+    } catch (err) {
+      // 閉じられて中断したときは、消えたダイアログにエラーを書きに行かない
+      if (!aborted) setStatus(refs.status, err.message, "error");
+      refs.kindbox.disabled = false;   // やり直せるように戻す
+    }
+    busy = false;
+    refs.stop.hidden = true;
+    paintGo();
+  };
+
+  /** 除いた語・読まなかったファイルを出す（黙って切らない）。 */
+  const paintNotes = (res) => {
+    const notes = [];
+    if (res.dropped?.length) {
+      notes.push("除いた語: " + res.dropped.map((d) => `${d.term}（${d.reason}）`).join("、"));
+    }
+    if (res.files_skipped?.length) {
+      notes.push(
+        `読まなかったファイル (${res.files_skipped.length}): ` +
+          res.files_skipped.slice(0, 20).join("、")
+      );
+    }
+    refs.dropped.hidden = !notes.length;
+    refs.dropped.textContent = notes.join(" / ");
   };
 
   /** 選ばれた語の下書きを順に作る。1 語ずつなので進捗を出し、中止も効く。 */
@@ -163,6 +303,8 @@ export async function openExtractDialog({ text = "", source = "", folder = false
             spoiler: refs.spoiler.value,
             file: row.candidate.first_file || "",
             scope: refs.scope.value,
+            // 抽出時の種別。保存先 (人物ならこのフォルダの辞書) の下敷きになる
+            kind: row.candidate.kind || "",
           },
           signal: controller.signal,
         });
@@ -233,7 +375,11 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     paintGo();
   };
 
-  const onGo = () => (rows.some((r) => r.draft) ? runSaves() : runDrafts());
+  // 主ボタンは 1 つで、段によって役割が変わる (種別を選ぶ → 抽出 → 下書き → 保存)
+  const onGo = () => {
+    if (!rows.length) return runExtract();
+    return rows.some((r) => r.draft) ? runSaves() : runDrafts();
+  };
 
   const onEdit = async (row) => {
     const origin = row.candidate.source || source;
@@ -284,48 +430,16 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   });
   dialog.addEventListener("close", closed, { once: true });
 
+  // 種別の一覧はサーバが持っている (ai.EXTRACT_KINDS)。抽出はここでは始めない
+  // —— 何を抜き出すかを選んでもらってからでないと、人物が落ちた結果しか出ない
   try {
-    controller = new AbortController();
-    const options = { method: "POST", signal: controller.signal };
-    const res = folder
-      ? await api("/api/ai/extract-folder", { ...options, body: {} })
-      : await api("/api/ai/extract", { ...options, body: { text, source } });
-    controller = null;
-    rows = (res.candidates || []).map(makeRow);
-    if (!rows.length) {
-      refs.lead.textContent = "辞書に足せそうな語は見つかりませんでした。";
-      setStatus(refs.status, "");
-    } else {
-      const scope = folder ? `${res.files_used?.length || 0} ファイルから挙げました。` : "";
-      refs.lead.textContent =
-        scope + "登録する語を選んでください。下書きは 1 語あたり数十秒かかります（順に作ります）。";
-      refs.list.replaceChildren(...rows.map((r) => r.li));
-      for (const row of rows) {
-        row.check.addEventListener("change", paintGo);
-        row.edit.addEventListener("click", () => onEdit(row));
-      }
-      setStatus(refs.status, `候補 ${rows.length} 語`);
-    }
-    const notes = [];
-    if (res.dropped?.length) {
-      notes.push("除いた語: " + res.dropped.map((d) => `${d.term}（${d.reason}）`).join("、"));
-    }
-    if (res.files_skipped?.length) {
-      // 黙って切らない: 渡しきれなかったファイルは名前で出す
-      notes.push(
-        `読まなかったファイル (${res.files_skipped.length}): ` +
-          res.files_skipped.slice(0, 20).join("、")
-      );
-    }
-    if (notes.length) {
-      refs.dropped.hidden = false;
-      refs.dropped.textContent = notes.join(" / ");
-    }
-    paintGo();
+    const spec = await api("/api/ai/kinds");
+    const chosen = rememberedKinds() || spec.default || [];
+    kindBoxes = paintKinds(spec.kinds || [], chosen, paintGo);
   } catch (err) {
-    // 閉じられて中断したときは、消えたダイアログにエラーを書きに行かない
     if (!aborted) setStatus(refs.status, err.message, "error");
   }
+  paintGo();
 
   return done;
 }

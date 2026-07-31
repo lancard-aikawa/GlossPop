@@ -13,7 +13,6 @@ def test_prompt_lists_known_terms_to_skip():
     prompt = ai.build_extract_prompt(TEXT, exclude=["冪等", "ソース"], limit=5)
     assert "すでに辞書にある語" in prompt
     assert "冪等" in prompt and "ソース" in prompt
-    assert "5 件まで" in prompt
     assert TEXT in prompt
 
 
@@ -61,13 +60,104 @@ class TestFilterCandidates:
         raw = [{"term": "API"}, {"term": "結果整合性"}, {"term": "冪等"}]
         kept, dropped = ai.filter_candidates(raw, TEXT, limit=2)
         assert len(kept) == 2
-        assert "上限" in dropped[0]["reason"]
+        assert "枠" in dropped[0]["reason"]
 
     def test_keeps_the_reported_context(self):
         raw = [{"term": "冪等", "why": "設計の前提", "context": "冪等な操作ならリトライしても安全だ。"}]
         kept, _ = ai.filter_candidates(raw, TEXT, limit=10)
         assert kept[0]["why"] == "設計の前提"
         assert kept[0]["context"].startswith("冪等な操作")
+
+
+#: 人物と専門用語が混ざった文書。種別ごとの枠を確かめるのに使う
+MIXED = (
+    "ジョバンニは活版所で働いていた。カムパネルラは黙っていた。"
+    "この API は結果整合性を前提にしており、冪等な操作ならリトライできる。"
+)
+
+
+class TestExtractKinds:
+    """**何を抜き出すかを先に決める**部分。
+
+    種別を分けずに頼むと AI は語義説明のできる語ばかり挙げ、登場人物が
+    まるごと落ちる。枠を独立させたことが効いているかを見る。
+    """
+
+    def test_prompt_asks_for_each_kind_with_its_own_quota(self):
+        prompt = ai.build_extract_prompt(MIXED, limit=12)
+        for key in ai.DEFAULT_KINDS:
+            assert f"`{key}`" in prompt
+            assert ai.EXTRACT_KINDS[key]["label"] in prompt
+        # 枠の振り替えを明示的に禁じていること (ここが緩むと人物が消える)
+        assert "振り替えないこと" in prompt
+
+    def test_prompt_only_mentions_the_requested_kinds(self):
+        prompt = ai.build_extract_prompt(MIXED, kinds=["person"], limit=6)
+        assert ai.EXTRACT_KINDS["person"]["label"] in prompt
+        # 頼んでいない種別の説明は載せない（"`term`" はスキーマのキー名と
+        # 衝突するのでラベルで見る）
+        assert ai.EXTRACT_KINDS["term"]["label"] not in prompt
+
+    def test_quota_splits_the_limit_without_exceeding_it(self):
+        quota = ai.allocate_quota(12, ["person", "proper", "term"])
+        assert quota == {"person": 4, "proper": 4, "term": 4}
+        assert sum(ai.allocate_quota(10, ["person", "proper", "term"]).values()) == 10
+
+    def test_one_kind_cannot_eat_another_kinds_quota(self):
+        """人物を先に並べられても専門用語の枠は残る（順序で切らない）。"""
+        raw = [
+            *({"term": t, "kind": "person"} for t in ["ジョバンニ", "カムパネルラ"]),
+            {"term": "結果整合性", "kind": "term"},
+        ]
+        kept, dropped = ai.filter_candidates(
+            raw, MIXED, limit=3, kinds=["person", "term"]
+        )
+        terms = [c["term"] for c in kept]
+        assert "結果整合性" in terms          # 人物 2 件のあとでも残る
+        assert len(kept) == 3
+
+    def test_a_kind_over_quota_is_dropped_with_a_reason(self):
+        raw = [
+            {"term": "ジョバンニ", "kind": "person"},
+            {"term": "カムパネルラ", "kind": "person"},
+            {"term": "結果整合性", "kind": "term"},
+        ]
+        kept, dropped = ai.filter_candidates(
+            raw, MIXED, limit=2, kinds=["person", "term"]
+        )
+        assert [c["term"] for c in kept] == ["ジョバンニ", "結果整合性"]
+        assert dropped[0]["term"] == "カムパネルラ"
+        assert "人物" in dropped[0]["reason"]
+
+    def test_unknown_kind_goes_to_a_bucket_with_room(self):
+        raw = [{"term": "冪等", "kind": "なにか"}]
+        kept, _ = ai.filter_candidates(raw, MIXED, limit=6, kinds=["person", "term"])
+        assert kept[0]["kind"] == "person"      # 先に空いている枠へ
+
+    def test_candidates_carry_the_kind_and_its_scope_hint(self):
+        raw = [
+            {"term": "ジョバンニ", "kind": "person"},
+            {"term": "結果整合性", "kind": "term"},
+        ]
+        kept, _ = ai.filter_candidates(raw, MIXED, limit=6, kinds=["person", "term"])
+        by_term = {c["term"]: c for c in kept}
+        assert by_term["ジョバンニ"]["kind_label"] == "人物・組織"
+        # 人物はこのフォルダの辞書向き、一般の専門用語は全体の辞書向き
+        assert by_term["ジョバンニ"]["scope_hint"] == "local"
+        assert by_term["結果整合性"]["scope_hint"] == "global"
+
+    def test_kept_candidates_are_grouped_by_requested_kind_order(self):
+        raw = [
+            {"term": "結果整合性", "kind": "term"},
+            {"term": "ジョバンニ", "kind": "person"},
+        ]
+        kept, _ = ai.filter_candidates(raw, MIXED, limit=6, kinds=["person", "term"])
+        assert [c["term"] for c in kept] == ["ジョバンニ", "結果整合性"]
+
+    def test_scope_block_leans_on_the_kind(self):
+        block = ai.build_scope_block("銀河鉄道の夜", "person")
+        assert "人物・組織" in block and "`local`" in block
+        assert "人物・組織" not in ai.build_scope_block("銀河鉄道の夜")
 
 
 DOCS = [

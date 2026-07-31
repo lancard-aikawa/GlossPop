@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlossPop — 相関図</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="/">Gloss<span>Pop</span></a>
+  <nav class="topnav">
+    <a href="/">ビューア</a>
+    <a href="/glossary">辞書</a>
+    <a href="/graph" aria-current="page">相関図</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="meta" id="count"></span>
+</div>
+
+<div class="page">
+  <div class="page-inner">
+    <div class="toolbar graph-toolbar">
+      <select id="category" class="auto-width" aria-label="カテゴリ"></select>
+      <label class="check">
+        <input type="checkbox" id="spoilers">
+        <span>判明位置つきの関係も出す</span>
+      </label>
+      <span class="spacer"></span>
+      <span class="status" id="status"></span>
+    </div>
+    <p class="notice" id="notes" hidden></p>
+    <div class="graph-canvas" id="canvas">
+      <p class="empty">読み込み中…</p>
+    </div>
+    <p class="hint" id="legend"></p>
+  </div>
+</div>
+
+<script type="module" src="/static/graph.js"></script>
+</body>
+</html>

@@ -102,9 +102,21 @@ def context_up_to_first(
     return text[start:end]
 
 
-def build_scope_block(folder: str) -> str:
-    """保存先（全体 / このフォルダだけ）を AI に選ばせるための説明。"""
+def build_scope_block(folder: str, kind: str = "") -> str:
+    """保存先（全体 / このフォルダだけ）を AI に選ばせるための説明。
+
+    抽出のときに選ばれた種別 (``kind``) が分かっていれば下敷きとして渡す。
+    人物や独自語はほぼローカルなので、毎回ゼロから考えさせる必要がない。
+    """
     where = f"「{folder}」" if folder else "いま開いているフォルダ"
+    spec = EXTRACT_KINDS.get(kind)
+    hint = []
+    if spec and spec["scope"]:
+        hint = [
+            "",
+            f"この語は抽出時に「{spec['label']}」として選ばれています。"
+            f"通常は `{spec['scope']}` が適切ですが、内容を見て違うと思えば変えてかまいません。",
+        ]
     return "\n".join([
         "## 保存先 (scope)",
         f"この用語を、全体の辞書と {where} だけの辞書のどちらに入れるべきか選んでください。",
@@ -116,6 +128,7 @@ def build_scope_block(folder: str) -> str:
         "",
         "迷ったら「ほかの文書で同じ意味で出てきたら嬉しいか」で決めてください。"
         "嬉しいなら `global`、この資料の中だけの話なら `local` です。",
+        *hint,
     ])
 
 
@@ -126,6 +139,7 @@ def build_prompt(
     source: str = "",
     spoiler: str = "full",
     scope_folder: str | None = None,
+    kind: str = "",
 ) -> str:
     tree = store.category_tree()
     if tree:
@@ -177,7 +191,7 @@ def build_prompt(
 
     schema = _SCHEMA_HINT
     if scope_folder is not None:
-        parts += ["", build_scope_block(scope_folder)]
+        parts += ["", build_scope_block(scope_folder, kind)]
         # 保存先を選ばせるときだけスキーマに足す（使わないなら聞かない）
         schema = _SCHEMA_HINT.replace("{\n", "{\n" + _SCOPE_FIELD, 1)
 
@@ -259,6 +273,7 @@ def _run_claude(prompt: str) -> str:
 _EXTRACT_SCHEMA_HINT = """[
   {
     "term": "文書中に出てくる表記そのまま（活用や助詞を含めない）",
+    "kind": "下の種別コードのいずれか",
     "reading": "日本語の読み (かな)。不要なら空文字",
     "why": "なぜ辞書化する価値があるかを 20 字程度で",
     "context": "その語が出てくる文を 1 文そのまま抜き出す"
@@ -266,32 +281,115 @@ _EXTRACT_SCHEMA_HINT = """[
 ]"""
 
 
+#: 抽出の種別。**何を抜き出すかを先に決めてから候補を挙げさせる**ための枠。
+#:
+#: 単に「辞書化する価値のある語」と頼むと、AI は語義説明のできる語 —— つまり
+#: 専門用語ばかりを挙げ、**登場人物がまるごと落ちる**。人名は「意味が分からない
+#: 語」ではないので、その基準に引っかからない。種別ごとに独立した枠を与えて、
+#: 枠の振り替えを禁じることでしか埋まらない。
+EXTRACT_KINDS: dict[str, dict[str, str]] = {
+    "person": {
+        "label": "人物・組織",
+        "hint": "登場人物・人名・団体・組織・肩書き。**その文書の中で役割を持つ主体**。"
+                "語義の説明が要らなくても、誰なのかを覚えておきたい相手なら挙げる",
+        "scope": "local",
+    },
+    "proper": {
+        "label": "固有名・独自語",
+        "hint": "地名・作品名・製品名・道具の名、その資料の中だけで通じる造語や呼び名。"
+                "**この文書を離れたら通じないもの**",
+        "scope": "local",
+    },
+    "term": {
+        "label": "専門用語・略語",
+        "hint": "その分野を知らない読者が意味を取れない語。技術用語・業界語・略語。"
+                "**この文書を離れても同じ意味で通じるもの**",
+        "scope": "global",
+    },
+    "key": {
+        "label": "鍵になる語",
+        "hint": "この文書の主題そのものを指す語や、繰り返し現れて議論の軸になっている語。"
+                "一般的な語でも、この文書では特別な重みを持つなら挙げる",
+        "scope": "",
+    },
+}
+
+#: 既定で抜き出す種別。「鍵になる語」は他と重なりやすいので既定では外す
+DEFAULT_KINDS = ("person", "proper", "term")
+
+
+def plain_hint(kind: str) -> str:
+    """種別の説明を UI 用の素の文にする。
+
+    ``hint`` はプロンプトに埋める前提で ``**`` を含んでいる（AI には強調が効く）。
+    UI にそのまま出すとアスタリスクが並ぶので、ここで落とす。
+    """
+    spec = EXTRACT_KINDS.get(kind)
+    return spec["hint"].replace("**", "") if spec else ""
+
+
+def normalize_kinds(kinds: list[str] | tuple[str, ...] | None) -> list[str]:
+    """要求された種別を、既知のものだけの順序付きリストにする。空なら既定。"""
+    out = [k for k in dict.fromkeys(kinds or ()) if k in EXTRACT_KINDS]
+    return out or list(DEFAULT_KINDS)
+
+
+def allocate_quota(limit: int, kinds: list[str]) -> dict[str, int]:
+    """件数の上限を種別ごとに割り振る。**合計は ``limit`` を超えない。**
+
+    合計に対して上限をかけるだけだと、AI が人物を先に並べただけで
+    専門用語が全部切られる（順序で切ると種別が丸ごと消える）。
+
+    種別の数より ``limit`` が小さいと 0 件の枠ができるが、それは呼び出し側の
+    指定どおりなので勝手に増やさない。実際の抽出経路では
+    ``extract_terms()`` が下限を持ち上げている。
+    """
+    base, extra = divmod(max(limit, 0), len(kinds))
+    return {k: base + (1 if i < extra else 0) for i, k in enumerate(kinds)}
+
+
 def build_extract_prompt(
-    text: str, *, exclude: list[str] | None = None, limit: int = 12, source: str = ""
+    text: str,
+    *,
+    exclude: list[str] | None = None,
+    limit: int = 12,
+    source: str = "",
+    kinds: list[str] | None = None,
 ) -> str:
     """文書から辞書化する価値のある語を挙げさせるプロンプト。
 
     下書き (build_prompt) と違い、**1 回の呼び出しで候補だけ**を出させる。
     本文の生成は選ばれた語についてだけ行う（語数 × 数十秒かかるため）。
     """
+    kinds = normalize_kinds(kinds)
+    quota = allocate_quota(limit, kinds)
+
     parts = [
         "あなたは用語辞書の編集者です。次の文書を読み、"
-        "読者がつまずきそうな専門用語を選び出してください。",
+        "辞書に登録する価値のある語を**種別ごとに**選び出してください。",
         "",
-        "## 選ぶ基準",
-        "- その分野を知らない読者が意味を取れない語（専門用語・略語・固有名詞）",
-        "- 文書の理解に効く語を優先し、多くても " + str(limit) + " 件まで",
-        "- 重要な順に並べる",
+        "## 抜き出す種別と件数",
+    ]
+    for key in kinds:
+        spec = EXTRACT_KINDS[key]
+        parts.append(f"- `{key}` … **{spec['label']}**（最大 {quota[key]} 件）— {spec['hint']}")
+    parts += [
+        "",
+        "**種別ごとに独立して選んでください。** ある種別で件数が集まらなくても、"
+        "余った枠を別の種別に振り替えないこと。逆に、ある種別に候補が多くても"
+        "他の種別の枠を奪わないこと。",
+        "各種別の中では重要な順に並べ、`kind` にその種別コードを必ず入れてください。",
         "",
         "## 選ばない語",
-        "- 一般的な日常語、一般的な動詞・形容詞",
+        "- 一般的な日常語、一般的な動詞・形容詞（`key` に該当する場合を除く）",
         "- 「これ」「その方法」のような指示語や、その文書だけの言い回し",
         "- 数値・日付・URL・コード片そのもの",
         "",
         "## 表記",
         "`term` は**文書中に現れる表記をそのまま**書いてください。"
         "言い換えたり、単数形・原形に直したりしないこと"
-        "（文書に無い表記は登録しても本文中でリンクになりません）。",
+        "（文書に無い表記は登録しても本文中でリンクになりません）。"
+        "人物なら、文書の中でいちばん多く使われている呼び方を選びます。",
     ]
     if exclude:
         listed = "、".join(sorted(set(exclude))[:200])
@@ -357,12 +455,27 @@ def parse_candidates(text: str) -> list[dict]:
     raise AIError(f"応答から JSON 配列を取り出せませんでした: {text[:400]}")
 
 
-def filter_candidates(raw: list[dict], text: str, *, limit: int) -> tuple[list[dict], list[dict]]:
+def kind_label(kind: str) -> str:
+    spec = EXTRACT_KINDS.get(kind)
+    return spec["label"] if spec else "その他"
+
+
+def filter_candidates(
+    raw: list[dict], text: str, *, limit: int, kinds: list[str] | None = None
+) -> tuple[list[dict], list[dict]]:
     """AI の申告をそのまま信じずに整える。
 
     返すのは (採用した候補, 落とした候補)。落とした理由も付けて返すのは、
     「なぜこの語が出てこないのか」を UI で説明できるようにするため。
+
+    件数の上限は**種別ごと**にかける。全体に対して先頭から切ると、AI が
+    ある種別を先に並べただけで別の種別が丸ごと消える。
     """
+    kinds = normalize_kinds(kinds)
+    quota = allocate_quota(limit, kinds)
+    used = {k: 0 for k in kinds}
+    order = {k: i for i, k in enumerate(kinds)}
+
     haystack = (text or "").casefold()
     kept: list[dict] = []
     dropped: list[dict] = []
@@ -377,8 +490,15 @@ def filter_candidates(raw: list[dict], text: str, *, limit: int) -> tuple[list[d
             continue
         seen.add(key)
 
+        kind = str(item.get("kind") or "").strip()
+        if kind not in order:
+            kind = ""      # 種別を答えなかった / 知らない種別。空きのある枠に入れる
         entry = {
             "term": term,
+            "kind": kind,
+            "kind_label": kind_label(kind),
+            # 人物や独自語はローカル辞書向き。下書き時の既定として渡す
+            "scope_hint": EXTRACT_KINDS.get(kind, {}).get("scope", ""),
             "reading": str(item.get("reading") or "").strip(),
             "why": str(item.get("why") or "").strip(),
             "context": str(item.get("context") or "").strip()[:400],
@@ -394,25 +514,41 @@ def filter_candidates(raw: list[dict], text: str, *, limit: int) -> tuple[list[d
                 "reason": "登録済み: " + "、".join(e.path_label for e in existing),
             })
             continue
-        if len(kept) >= limit:
-            dropped.append({**entry, "reason": f"上限 {limit} 件を超えた"})
+
+        bucket = kind or next((k for k in kinds if used[k] < quota[k]), "")
+        if not bucket or used[bucket] >= quota[bucket]:
+            label = kind_label(bucket or kind)
+            dropped.append({**entry, "reason": f"「{label}」の枠（{quota.get(bucket, limit)} 件）を超えた"})
             continue
+        used[bucket] += 1
+        entry["kind"] = bucket
+        entry["kind_label"] = kind_label(bucket)
+        entry["scope_hint"] = EXTRACT_KINDS[bucket]["scope"]
         kept.append(entry)
 
+    kept.sort(key=lambda i: order.get(i["kind"], len(order)))
     return kept, dropped
 
 
 async def extract_terms(
-    text: str, *, source: str = "", limit: int = 12
+    text: str, *, source: str = "", limit: int = 12, kinds: list[str] | None = None
 ) -> dict:
     """表示中の文書から辞書化する候補を挙げる。登録はしない。"""
     if not (text or "").strip():
         raise AIError("文書が空です")
+    kinds = normalize_kinds(kinds)
+    # 種別の数より少ない上限だと 0 件の枠ができる。選んだ種別が黙って
+    # 出てこないのがいちばん困るので、下限だけ持ち上げる
+    limit = max(limit, len(kinds))
     exclude = [s for e in store.load_all() for s in e.surfaces]
-    prompt = build_extract_prompt(text, exclude=exclude, limit=limit, source=source)
+    prompt = build_extract_prompt(
+        text, exclude=exclude, limit=limit, source=source, kinds=kinds
+    )
     raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
-    kept, dropped = filter_candidates(parse_candidates(raw), text, limit=limit)
-    return {"candidates": kept, "dropped": dropped}
+    kept, dropped = filter_candidates(
+        parse_candidates(raw), text, limit=limit, kinds=kinds
+    )
+    return {"candidates": kept, "dropped": dropped, "kinds": kinds}
 
 
 # --------------------------------------------------------------------------- #
@@ -476,7 +612,7 @@ def _first_seen(docs: list[tuple[str, str]], term: str) -> tuple[str, str, str]:
 
 
 async def extract_terms_from_documents(
-    docs: list[tuple[str, str]], *, limit: int = 20
+    docs: list[tuple[str, str]], *, limit: int = 20, kinds: list[str] | None = None
 ) -> dict:
     """フォルダ内の複数文書からまとめて候補を挙げる。
 
@@ -489,13 +625,17 @@ async def extract_terms_from_documents(
     if not combined.strip():
         raise AIError("読める文書がありません")
 
+    kinds = normalize_kinds(kinds)
+    limit = max(limit, len(kinds))
     exclude = [s for e in store.load_all() for s in e.surfaces]
-    prompt = build_extract_prompt(combined, exclude=exclude, limit=limit)
+    prompt = build_extract_prompt(combined, exclude=exclude, limit=limit, kinds=kinds)
     raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
     # 照合はプロンプトに載せた範囲ではなく全文に対して行う
     # (頭 3000 字しか渡していなくても、後ろに出てくる語なら採用してよい)
     haystack = "\n".join(text for _, text in docs)
-    kept, dropped = filter_candidates(parse_candidates(raw), haystack, limit=limit)
+    kept, dropped = filter_candidates(
+        parse_candidates(raw), haystack, limit=limit, kinds=kinds
+    )
 
     for item in kept:
         files, count = _occurrences(docs, item["term"])
@@ -508,14 +648,16 @@ async def extract_terms_from_documents(
         item["first_locator"] = locator
         # 初出の場面。ネタバレを避けるとき (spoiler=first) はこれだけを AI に渡す
         item["first_context"] = first_context
-    # 複数のファイルに出てくる語ほど辞書化の価値が高い
-    kept.sort(key=lambda i: (-i["file_count"], -i["count"]))
+    # 種別のまとまりは崩さず、その中で「多くのファイルに出てくる語」を上に出す
+    order = {k: i for i, k in enumerate(kinds)}
+    kept.sort(key=lambda i: (order.get(i["kind"], len(order)), -i["file_count"], -i["count"]))
 
     return {
         "candidates": kept,
         "dropped": dropped,
         "files_used": used,
         "files_skipped": skipped,
+        "kinds": kinds,
     }
 
 
@@ -526,16 +668,19 @@ async def draft_entry(
     source: str = "",
     spoiler: str = "full",
     scope_folder: str | None = None,
+    kind: str = "",
 ) -> EntryDraft:
     """選択テキストから辞書エントリの下書きを作る。保存はしない。
 
     ``scope_folder`` を渡すと、保存先（全体 / そのフォルダだけ）も選ばせる。
+    ``kind`` は抽出時の種別（``EXTRACT_KINDS``）。保存先の下敷きに使う。
     """
     term = term.strip()
     if not term:
         raise AIError("用語が空です")
     prompt = build_prompt(
-        term, context, source=source, spoiler=spoiler, scope_folder=scope_folder
+        term, context, source=source, spoiler=spoiler,
+        scope_folder=scope_folder, kind=kind,
     )
     raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
     data = parse_draft(raw)

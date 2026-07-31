@@ -20,6 +20,7 @@ from . import (
     documents,
     fetcher,
     picker,
+    relations,
     render,
     sites,
     store,
@@ -98,6 +99,8 @@ class DraftRequest(BaseModel):
     #: どちらの辞書に入れるか。"auto" なら AI に選ばせる。
     #: カテゴリマスターを触るかの判断にも使う
     scope: str = AUTO_SCOPE
+    #: 抽出時の種別 (ai.EXTRACT_KINDS のキー)。保存先の下敷きにする
+    kind: str = ""
 
 
 class FetchRequest(BaseModel):
@@ -108,11 +111,14 @@ class ExtractRequest(BaseModel):
     text: str = ""
     source: str = ""
     limit: int = 12
+    #: 何を抜き出すか (ai.EXTRACT_KINDS のキー)。空なら ai.DEFAULT_KINDS
+    kinds: list[str] = []
 
 
 class ExtractFolderRequest(BaseModel):
     limit: int = 20
     max_files: int = 40
+    kinds: list[str] = []
 
 
 class CategoryRequest(BaseModel):
@@ -209,6 +215,10 @@ def _entry_payload(entry: Entry, *, linker: Linker | None = None) -> dict:
     data["definition_html"] = definition_html
     data["summary_html"] = render.md_to_html(entry.summary) if entry.summary else ""
     data["examples_html"] = [render.md_to_html(x) for x in entry.examples]
+    # 関係は片側にしか書かないので、書かれていない側にも見えるよう両方向を返す
+    entries = store.load_all()
+    data["relations_resolved"] = relations.resolved_relations(entry, entries)
+    data["backlinks"] = relations.backlinks(entry, entries)
     return data
 
 
@@ -244,6 +254,11 @@ def page_viewer() -> FileResponse:
 @app.get("/glossary", include_in_schema=False)
 def page_glossary() -> FileResponse:
     return _page("glossary.html")
+
+
+@app.get("/graph", include_in_schema=False)
+def page_graph() -> FileResponse:
+    return _page("graph.html")
 
 
 @app.get("/glossary/{ref:path}", include_in_schema=False)
@@ -307,6 +322,28 @@ def update_category(name: str, req: CategoryUpdateRequest) -> dict:
 @app.delete("/api/categories/{name}", status_code=204)
 def delete_category(name: str) -> None:
     store.delete_category(name)
+
+
+# --------------------------------------------------------------------------- #
+# API: 相関図
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/graph")
+def graph(
+    category: str | None = None,
+    scope: str | None = None,
+    spoilers: bool = False,
+) -> dict:
+    """エントリ間の関係をノードと辺で返す。配置はクライアントの仕事。
+
+    ``spoilers=False`` （既定）では ``reveal`` が書かれた関係を出さない。
+    伏せた本数は ``hidden`` で返すので、UI は「黙って欠けている」状態にはならない。
+    """
+    if scope is not None and scope not in (GLOBAL_SCOPE, LOCAL_SCOPE):
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    return relations.build_graph(
+        store.load_all(), scope=scope, category=category, spoilers=spoilers
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -579,6 +616,28 @@ async def fetch_url(req: FetchRequest) -> dict:
 # API: AI 下書き
 # --------------------------------------------------------------------------- #
 
+@app.get("/api/ai/kinds")
+def ai_kinds() -> dict:
+    """抽出で選べる種別。**何を抜き出すかを先に決める**ための一覧。
+
+    種別を指定しないと AI は語義説明のできる語ばかり挙げ、登場人物が丸ごと
+    落ちる。UI はここを引いてチェックボックスを出す。
+    """
+    return {
+        "kinds": [
+            {
+                "key": key,
+                "label": spec["label"],
+                # プロンプト用の ** を落とした素の文を返す (UI にそのまま出る)
+                "hint": ai.plain_hint(key),
+                "scope": spec["scope"],
+            }
+            for key, spec in ai.EXTRACT_KINDS.items()
+        ],
+        "default": list(ai.DEFAULT_KINDS),
+    }
+
+
 @app.post("/api/ai/extract")
 async def ai_extract(req: ExtractRequest) -> dict:
     """表示中の文書から候補語を挙げる（1 回の呼び出しで済ませる）。
@@ -590,7 +649,10 @@ async def ai_extract(req: ExtractRequest) -> dict:
         raise HTTPException(503, "claude CLI が見つかりません。手動入力で登録してください。")
     try:
         return await ai.extract_terms(
-            req.text, source=req.source, limit=max(1, min(req.limit, 30))
+            req.text,
+            source=req.source,
+            limit=max(1, min(req.limit, 30)),
+            kinds=req.kinds,
         )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc
@@ -625,7 +687,7 @@ async def ai_extract_folder(req: ExtractFolderRequest) -> dict:
 
     try:
         result = await ai.extract_terms_from_documents(
-            docs, limit=max(1, min(req.limit, 40))
+            docs, limit=max(1, min(req.limit, 40)), kinds=req.kinds
         )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc
@@ -661,13 +723,21 @@ async def ai_draft(req: DraftRequest) -> dict:
 
     if spoiler == "position":
         # AI を呼ばない。初出位置だけ埋めて、本文はユーザーが書く
+        # 保存先は抽出時の種別だけが手がかり (人物・独自語ならこのフォルダの辞書)。
+        # 種別も無ければ全体の辞書に置く
+        hinted = ai.EXTRACT_KINDS.get(req.kind, {}).get("scope", "")
+        if auto_scope:
+            scope = hinted if hinted in (GLOBAL_SCOPE, LOCAL_SCOPE) else GLOBAL_SCOPE
+            if scope == LOCAL_SCOPE and not store.local_available():
+                scope = GLOBAL_SCOPE
+        else:
+            scope = req.scope
         draft = EntryDraft(
             term=req.term,
             source=req.source,
             first_file=req.file,
             first_locator=locator,
-            # 保存先を選ぶ材料が無いので、聞かれていれば全体の辞書にしておく
-            scope=GLOBAL_SCOPE if auto_scope else req.scope,
+            scope=scope,
         )
         return {
             "draft": draft.model_dump(),
@@ -688,6 +758,7 @@ async def ai_draft(req: DraftRequest) -> dict:
             spoiler=spoiler,
             # 自動のときだけ保存先も選ばせる。フォルダ名が判断材料になる
             scope_folder=config.content_dir().name if auto_scope else None,
+            kind=req.kind,
         )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc

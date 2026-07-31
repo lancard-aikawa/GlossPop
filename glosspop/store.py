@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 import yaml
+from pydantic import BaseModel
 
 from . import categories, config, render
 from .models import (
@@ -21,6 +22,7 @@ from .models import (
     CategoryNameError,
     Entry,
     EntryDraft,
+    make_ref,
     normalize_category,
     now_iso,
     slugify,
@@ -36,10 +38,12 @@ _FM_KEYS = (
     "summary",
     "examples",
     "related",
+    "relations",
     "tags",
     "source",
     "first_file",
     "first_locator",
+    "former_refs",
     "created_at",
     "updated_at",
 )
@@ -79,6 +83,19 @@ def parse_markdown(text: str) -> tuple[dict, str]:
     return {}, text.strip()
 
 
+def _plain(value: object) -> object:
+    """yaml.safe_dump に渡せる素の値にする。
+
+    ``relations`` は pydantic モデルのリストなので dict に落とし、そのうえで
+    空の項目を落とす（``label: ''`` が全行に並ぶとファイルが読めなくなる）。
+    """
+    if isinstance(value, BaseModel):
+        return {k: v for k, v in value.model_dump().items() if v not in ("", [], None)}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return value
+
+
 def dump_markdown(entry: Entry) -> str:
     meta = {}
     for key in _FM_KEYS:
@@ -86,7 +103,7 @@ def dump_markdown(entry: Entry) -> str:
         # 空文字 / 空リストは書かない (ファイルをノイズで埋めない)
         if value in ("", [], None):
             continue
-        meta[key] = value
+        meta[key] = _plain(value)
     front = yaml.safe_dump(
         meta,
         allow_unicode=True,
@@ -336,6 +353,9 @@ def save(draft: EntryDraft, *, ref: str | None = None) -> Entry:
         category = normalize_category(draft.category or "未分類")
 
         old_path: Path | None = None
+        # 過去に名乗っていた ref。参照側を書き換えずに済ませるための転送情報で、
+        # **下書きの値ではなくファイルの値を正とする**（部分的な PUT で消えないように）
+        former: list[str] = []
         if ref is None:
             scope = draft.scope
             created = now_iso()
@@ -344,7 +364,9 @@ def save(draft: EntryDraft, *, ref: str | None = None) -> Entry:
             old_path = path_for_ref(ref)
             if not old_path.exists():
                 raise StoreError(f"見つかりません: {ref}")
-            created = _entry_from_file(old_path, scope).created_at
+            existing = _entry_from_file(old_path, scope)
+            created = existing.created_at
+            former = list(existing.former_refs)
 
         if scope == LOCAL_SCOPE and not local_available():
             raise StoreError("ローカル辞書に保存できません（フォルダが開かれていません）")
@@ -365,9 +387,14 @@ def save(draft: EntryDraft, *, ref: str | None = None) -> Entry:
         else:
             slug = _allocate_slug(category, draft.term, scope)
 
+        new_ref = make_ref(scope, category, slug)
+        if ref is not None and ref != new_ref:
+            former.append(ref)     # カテゴリ移動: 旧 ref を転送先として残す
+
         data = draft.model_dump()
         data["category"] = category
         data["scope"] = scope
+        data["former_refs"] = [r for r in former if r != new_ref]
         # 保存時に本文を 1 文 1 行へ整える。ファイル自体が読みやすくなり、
         # git の差分も文単位になる
         data["definition"] = render.soften_paragraphs(data["definition"])
@@ -422,11 +449,16 @@ def move(ref: str, category: str | None = None, *, scope: str | None = None) -> 
 
         old_path = path_for_ref(ref)
         slug = _allocate_slug(target_category, entry.term, target_scope)
+        new_ref = make_ref(target_scope, target_category, slug)
+        # **参照側は書き換えない。** 旧 ref を転送先として残せば、他エントリの
+        # relations はそのまま解決し続ける (wiki のリダイレクトと同じ考え方)。
+        # 全エントリを書き換えて回るより、壊れる余地がはるかに小さい
         moved = entry.model_copy(
             update={
                 "category": target_category,
                 "scope": target_scope,
                 "slug": slug,
+                "former_refs": [r for r in [*entry.former_refs, entry.ref] if r != new_ref],
                 "updated_at": now_iso(),
             }
         )

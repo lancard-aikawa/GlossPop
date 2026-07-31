@@ -1,0 +1,259 @@
+"""エントリ間の関係の解決と、相関図に渡すグラフの組み立て。
+
+参照 (``Relation.to``) は **wiki の名前と同じ感覚**で書ける。``カテゴリ/slug`` の
+ref でも、用語名そのままでもよい。ID を別に持たない代わりに、ここが揺れを吸収する:
+
+- 正規化 (``normalize_link``) で空白と全角/半角の違いを潰す
+- 改名・カテゴリ移動で捨てた ``former_refs`` も受ける (wiki のリダイレクト)
+- 用語名で書かれたときは、**書いた側のカテゴリ → 同じ辞書 → 全体** の順に絞る
+
+**絞りきれないときは黙ってどれかに寄せない。** 同じ用語名がカテゴリ違いで
+併存できる以上、寄せた瞬間に相関図の辺と本文のリンク先が食い違う。
+``Resolution.ambiguous`` に候補を全部入れて返し、UI に出させる。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from .linker import entry_url
+from .models import GLOBAL_SCOPE, Entry
+
+
+@dataclass
+class Resolution:
+    """参照 1 件の解決結果。
+
+    ``entry`` が ``None`` なら未解決。``ambiguous`` が空でなければ「候補は
+    あるが 1 つに決まらない」（＝書き手がカテゴリまで書く必要がある）。
+    """
+
+    target: str
+    entry: Entry | None = None
+    ambiguous: list[Entry] = field(default_factory=list)
+
+    @property
+    def missing(self) -> bool:
+        return self.entry is None
+
+    @property
+    def reason(self) -> str:
+        if self.entry is not None:
+            return ""
+        if self.ambiguous:
+            names = "、".join(e.path_label for e in self.ambiguous)
+            return f"どれを指すか決まりません（{names}）。「カテゴリ/slug」で書いてください"
+        return "まだ登録されていません"
+
+
+def resolve(target: str, entries: list[Entry], *, origin: Entry | None = None) -> Resolution:
+    """参照文字列 1 件を解決する。
+
+    ``origin`` は参照を書いた側のエントリ。同カテゴリを優先するために使う。
+    """
+    key = (target or "").strip().casefold()
+    if not key:
+        return Resolution(target=target)
+
+    # 1. ref そのもの。いまの ref を旧 ref より優先する
+    #    （消えたエントリの旧名を、別のエントリが引き継いでいることがある）
+    for e in entries:
+        if e.ref.casefold() == key:
+            return Resolution(target=target, entry=e)
+    for e in entries:
+        if any(r.casefold() == key for r in e.former_refs):
+            return Resolution(target=target, entry=e)
+
+    # 2. 用語名 / 別名。候補が複数なら書き手の文脈で絞る
+    hits = [e for e in entries if any(s.casefold() == key for s in e.surfaces)]
+    if not hits:
+        return Resolution(target=target)
+    if len(hits) == 1:
+        return Resolution(target=target, entry=hits[0])
+
+    for narrow in _narrowings(origin):
+        picked = [e for e in hits if narrow(e)]
+        if len(picked) == 1:
+            return Resolution(target=target, entry=picked[0])
+    return Resolution(target=target, ambiguous=hits)
+
+
+def _narrowings(origin: Entry | None):
+    """候補を絞る述語を、優先順に返す。"""
+    if origin is not None:
+        yield lambda e: e.scope == origin.scope and e.category == origin.category
+        yield lambda e: e.scope == origin.scope
+    yield lambda e: e.scope == GLOBAL_SCOPE
+
+
+# --------------------------------------------------------------------------- #
+# グラフ
+# --------------------------------------------------------------------------- #
+
+def _node(entry: Entry, *, inside: bool) -> dict:
+    return {
+        "ref": entry.ref,
+        "term": entry.term,
+        "reading": entry.reading,
+        "summary": entry.summary,
+        "category": entry.category,
+        "subcategory": entry.subcategory,
+        "scope": entry.scope,
+        "path_label": entry.path_label,
+        "url": entry_url(entry),
+        # 絞り込みの外にいるが、辺の相手として出す必要があるノード
+        "outside": not inside,
+        "missing": False,
+    }
+
+
+def _missing_node(target: str) -> dict:
+    return {
+        "ref": f"?{target}",
+        "term": target,
+        "reading": "",
+        "summary": "",
+        "category": "",
+        "subcategory": "",
+        "scope": "",
+        "path_label": "未登録",
+        # wiki の赤リンク。押したらその語で登録に入れるよう検索へ飛ばす
+        "url": f"/glossary?q={target}",
+        "outside": True,
+        "missing": True,
+    }
+
+
+def build_graph(
+    entries: list[Entry],
+    *,
+    scope: str | None = None,
+    category: str | None = None,
+    spoilers: bool = False,
+) -> dict:
+    """相関図に渡す ``{nodes, edges, broken, hidden}`` を作る。
+
+    ``scope`` / ``category`` は図に載せる範囲。範囲外のエントリでも、辺の相手に
+    なっていれば ``outside`` 付きのノードとして足す（辺が宙に浮かないように）。
+
+    ``spoilers=False`` のとき、``reveal`` が書かれた関係は **出さずに数だけ返す**。
+    相関図は本文より先を一望させてしまうので、既定は伏せる側に倒す。
+    どこで判明するかを機械で比較する手段が無い以上、「いつ」ではなく
+    「判明位置が明記されているか」で切るのが、嘘をつかない唯一の線引き。
+    """
+    inside = [
+        e for e in entries
+        if (scope is None or e.scope == scope)
+        and (category is None or e.category == category)
+    ]
+    nodes: dict[str, dict] = {e.ref: _node(e, inside=True) for e in inside}
+    edges: list[dict] = []
+    broken: list[dict] = []
+    hidden = 0
+
+    for entry in inside:
+        for rel in entry.relations:
+            if rel.reveal and not spoilers:
+                hidden += 1
+                continue
+            res = resolve(rel.to, entries, origin=entry)
+            if res.entry is None:
+                broken.append({
+                    "from": entry.ref,
+                    "from_term": entry.term,
+                    "to": rel.to,
+                    "reason": res.reason,
+                    "candidates": [
+                        {"ref": e.ref, "path_label": e.path_label, "url": entry_url(e)}
+                        for e in res.ambiguous
+                    ],
+                })
+                nodes.setdefault(f"?{rel.to}", _missing_node(rel.to))
+                target_ref = f"?{rel.to}"
+            else:
+                target_ref = res.entry.ref
+                nodes.setdefault(target_ref, _node(res.entry, inside=False))
+
+            edges.append({
+                "from": entry.ref,
+                "to": target_ref,
+                "label": rel.label,
+                "back": rel.back,
+                "rank": rel.rank,
+                "mutual": rel.mutual,
+                "reveal": rel.reveal,
+                "missing": res.entry is None,
+            })
+
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "broken": broken,
+        # 黙って伏せない: 何本隠したかは必ず返す
+        "hidden": hidden,
+    }
+
+
+def resolved_relations(entry: Entry, entries: list[Entry]) -> list[dict]:
+    """1 エントリの関係を、辞書ページに出せる形にして返す。
+
+    解決できたものは相手の URL を、できなかったものは理由を付ける。
+    """
+    out: list[dict] = []
+    for rel in entry.relations:
+        res = resolve(rel.to, entries, origin=entry)
+        item = {
+            **rel.model_dump(),
+            "mutual": rel.mutual,
+            "missing": res.missing,
+            "reason": res.reason,
+            "candidates": [
+                {"ref": e.ref, "path_label": e.path_label, "url": entry_url(e)}
+                for e in res.ambiguous
+            ],
+        }
+        if res.entry is not None:
+            item["ref"] = res.entry.ref
+            item["url"] = entry_url(res.entry)
+            item["term"] = res.entry.term
+            item["path_label"] = res.entry.path_label
+        else:
+            item["ref"] = ""
+            item["url"] = f"/glossary?q={rel.to}"
+            item["term"] = rel.to
+            item["path_label"] = "未登録"
+        out.append(item)
+    return out
+
+
+def backlinks(entry: Entry, entries: list[Entry]) -> list[dict]:
+    """このエントリを指している側の関係。
+
+    関係は片側にしか書かないので、書かれていない側の辞書ページでは
+    これを出さないと関係が見えない（＝両側に書きたくなって二重管理になる）。
+    """
+    out: list[dict] = []
+    for other in entries:
+        if other.ref == entry.ref:
+            continue
+        for rel in other.relations:
+            res = resolve(rel.to, entries, origin=other)
+            if res.entry is None or res.entry.ref != entry.ref:
+                continue
+            out.append({
+                "ref": other.ref,
+                "term": other.term,
+                "url": entry_url(other),
+                "path_label": other.path_label,
+                # 表示は「相手 → 自分」の向きに直す。back が無ければ一方的
+                "label": rel.back,
+                "incoming": rel.label,
+                "mutual": rel.mutual,
+                "rank": _flip_rank(rel.rank),
+                "reveal": rel.reveal,
+            })
+    return out
+
+
+def _flip_rank(rank: str) -> str:
+    return {"上": "下", "下": "上"}.get(rank, rank)

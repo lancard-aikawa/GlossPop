@@ -449,7 +449,11 @@ dialog.sheet footer {
   display: flex;
   gap: 8px;
   align-items: center;
+  /* 項目が増えると横幅が足りなくなる。詰めずに折り返す
+     (詰めるとボタンの文字が縦に割れて読めなくなる) */
+  flex-wrap: wrap;
 }
+dialog.sheet footer button { white-space: nowrap; }
 dialog.sheet footer .spacer { flex: 1; }
 
 .status { font-size: 12px; color: var(--fg-dim); }
@@ -657,3 +661,119 @@ dialog.sheet .cat-manager footer { flex-wrap: wrap; }
   border-bottom: 0;
 }
 .ext-link[hidden] { display: none; }
+
+/* ---------------------------------------------------------------- 抽出の種別 */
+/* 「何を抜き出すか」を先に決めさせる段。ここを飛ばすと AI は語義説明のできる
+   語ばかり挙げ、登場人物がまるごと落ちる */
+.kind-picker {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px 12px;
+  margin: 0 0 14px;
+  background: var(--panel-2);
+}
+.kind-picker legend {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  padding: 0 4px;
+}
+.kind-picker:disabled { opacity: .55; }
+.kind-list { display: flex; flex-direction: column; gap: 6px; }
+label.check.kind { align-items: baseline; flex-wrap: wrap; }
+.kind-label { font-weight: 600; }
+label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
+.cand-list .cand-group {
+  border-bottom: 0;
+  padding: 12px 0 2px;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+
+/* ---------------------------------------------------------------- 関係 */
+/* 関係は片側にしか書かない。逆向きは「指している側」として出す */
+.rel-list { list-style: none; margin: 0 0 10px; padding: 0; }
+.rel-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rel-row:last-child { border-bottom: 0; }
+.rel-arrow { color: var(--fg-faint); font-size: 15px; width: 1.2em; text-align: center; }
+.rel-label { font-weight: 600; }
+.rel-rank, .rel-reveal {
+  font-size: 11px;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.rel-reveal { color: var(--warn); border-color: var(--warn); }
+.rel-sub {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin: 18px 0 4px;
+  font-weight: 600;
+}
+/* wiki の赤リンク: まだ書いていない相手 */
+.chip.missing {
+  border-style: dashed;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.rel-form {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.rel-form-line { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+.rel-form-line input { flex: 1 1 180px; width: auto; }
+.rel-form-line input.narrow { flex: 0 1 160px; }
+.rel-form .hint { margin: 0; }
+
+/* ---------------------------------------------------------------- 相関図 */
+.graph-toolbar { margin-bottom: 10px; }
+.graph-canvas {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  /* 図は横に伸びる。ページ本体を横スクロールさせない */
+  overflow: auto;
+  padding: 4px;
+}
+/* 図が箱より狭いときは中央に。広いときは margin が効かず、箱側が横スクロールする */
+.rel-graph { display: block; margin: 0 auto; }
+.rel-node rect {
+  fill: var(--panel-2);
+  stroke: var(--border-strong);
+  stroke-width: 1.5;
+}
+.rel-node text { fill: var(--fg); font: 600 13px var(--sans); }
+.rel-node a { cursor: pointer; }
+.rel-node a:hover rect { stroke: var(--accent); fill: var(--accent-soft); }
+.rel-node.outside rect { fill: transparent; stroke-dasharray: 2 3; }
+.rel-node.missing rect { stroke: var(--danger); stroke-dasharray: 4 3; fill: transparent; }
+.rel-node.missing text { fill: var(--danger); }
+.rel-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.5; }
+.rel-edge.missing { stroke: var(--danger); stroke-dasharray: 4 3; }
+.rel-edge.reveal { stroke: var(--warn); stroke-dasharray: 6 3; }
+.rel-arrowhead { fill: var(--border-strong); }
+/* 線の上に載るので、背景色で縁取りして読めるようにする */
+.rel-edge-label {
+  fill: var(--fg-dim);
+  font: 11px var(--sans);
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}

@@ -532,3 +532,102 @@ class TestSpoilerLevels:
             encoding="utf-8"
         )
         assert "first_file: 第一章.md" in saved
+
+
+# --------------------------------------------------------------------------- #
+# 関係と相関図
+# --------------------------------------------------------------------------- #
+
+def _person(client, term: str, **extra) -> str:
+    body = {"term": term, "category": "登場人物", **extra}
+    return client.post("/api/entries", json=body).json()["ref"]
+
+
+def test_graph_returns_nodes_and_edges(client):
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    client.put(
+        f"/api/entries/{ref_path(a)}",
+        json={
+            "term": "ジョバンニ",
+            "category": "登場人物",
+            "relations": [{"to": b, "label": "親友", "back": "親友", "rank": "対等"}],
+        },
+    )
+    g = client.get("/api/graph", params={"category": "登場人物"}).json()
+    assert {n["term"] for n in g["nodes"]} == {"ジョバンニ", "カムパネルラ"}
+    assert g["edges"][0]["mutual"] is True
+    assert g["broken"] == []
+
+
+def test_graph_hides_revealed_relations_by_default(client):
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    client.put(
+        f"/api/entries/{ref_path(a)}",
+        json={
+            "term": "ジョバンニ",
+            "category": "登場人物",
+            "relations": [{"to": b, "label": "実は兄弟", "reveal": "第6章"}],
+        },
+    )
+    hidden = client.get("/api/graph", params={"category": "登場人物"}).json()
+    assert hidden["edges"] == [] and hidden["hidden"] == 1   # 黙って消さない
+    shown = client.get(
+        "/api/graph", params={"category": "登場人物", "spoilers": True}
+    ).json()
+    assert [e["label"] for e in shown["edges"]] == ["実は兄弟"]
+
+
+def test_graph_rejects_an_unknown_scope(client):
+    assert client.get("/api/graph", params={"scope": "どこか"}).status_code == 400
+
+
+def test_entry_detail_carries_relations_both_ways(client):
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    client.put(
+        f"/api/entries/{ref_path(a)}",
+        json={
+            "term": "ジョバンニ",
+            "category": "登場人物",
+            "relations": [{"to": "カムパネルラ", "label": "親友", "back": "親友"}],
+        },
+    )
+    forward = client.get(f"/api/entries/{ref_path(a)}").json()
+    assert forward["relations_resolved"][0]["term"] == "カムパネルラ"
+    assert forward["relations_resolved"][0]["missing"] is False
+    # 書いていない側にも見える (両側に書かせない)
+    back = client.get(f"/api/entries/{ref_path(b)}").json()
+    assert [x["term"] for x in back["backlinks"]] == ["ジョバンニ"]
+
+
+def test_relations_survive_a_category_move(client):
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    client.put(
+        f"/api/entries/{ref_path(a)}",
+        json={
+            "term": "ジョバンニ",
+            "category": "登場人物",
+            "relations": [{"to": b, "label": "親友"}],
+        },
+    )
+    client.post(f"/api/move/{ref_path(b)}", json={"category": "主要人物"})
+    detail = client.get(f"/api/entries/{ref_path(a)}").json()
+    # 参照側は書き換えていない。旧 ref が転送として効いている
+    assert detail["relations_resolved"][0]["missing"] is False
+    assert detail["relations_resolved"][0]["ref"].startswith("主要人物/")
+
+
+def test_extract_kinds_are_listed_for_the_ui(client):
+    body = client.get("/api/ai/kinds").json()
+    keys = [k["key"] for k in body["kinds"]]
+    assert "person" in keys and "term" in keys
+    assert body["default"] == list(ai.DEFAULT_KINDS)
+
+
+def test_extract_kind_hints_have_no_prompt_markup(client):
+    """種別の説明は UI にそのまま出る。プロンプト用の ** を混ぜない。"""
+    for kind in client.get("/api/ai/kinds").json()["kinds"]:
+        assert "**" not in kind["hint"]
