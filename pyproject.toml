@@ -1,6 +1,6 @@
 [project]
 name = "glosspop"
-version = "0.2.3"
+version = "0.3.0"
 description = "選択したテキストを AI が辞書化し、以後の表示で自動リンク＋吹き出し表示するブラウザビューア"
 readme = "README.md"
 requires-python = ">=3.11"
