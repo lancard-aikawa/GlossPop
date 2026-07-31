@@ -21,10 +21,12 @@ from xml.etree import ElementTree
 
 from . import render
 
-#: 読める拡張子 (app.CONTENT_SUFFIXES と揃える)
-TEXT_SUFFIXES = (".txt", ".text", ".log", ".rst")
-MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdown")
-HTML_SUFFIXES = (".html", ".htm", ".xhtml")
+#: 専用の読み方をする拡張子。ほかは `render.resolve_kind()` の判定に任せる。
+#:
+#: **「ビューアで開ける拡張子」の一覧をここに置かないこと。** それは
+#: `app.CONTENT_SUFFIXES` と `viewer.js` の `OPENABLE` の 2 か所が持っている。
+#: ここに 3 つめの一覧を作ると、どれが正なのか分からなくなる（実際、誰も参照して
+#: いない一覧が置かれていて `.xhtml` や `.rst` が開けるように読めてしまっていた）。
 EPUB_SUFFIXES = (".epub",)
 PDF_SUFFIXES = (".pdf",)
 
@@ -58,6 +60,9 @@ class Document:
     text: str                                   # /api/render に渡す本文
     segments: list[tuple[str, str]] = field(default_factory=list)  # (位置ラベル, 素のテキスト)
     title: str = ""
+    #: 読めずに飛ばした部分 (epub の章など)。**黙って落とさないための報告用**。
+    #: 一部だけ欠けた本文は「全部読めている」と区別が付かないので UI に出す
+    skipped: list[str] = field(default_factory=list)
 
     @property
     def plain(self) -> str:
@@ -229,9 +234,12 @@ def read_epub(path: Path) -> Document:
             hrefs, title = _spine_hrefs(zf, opf)
             parts: list[str] = []
             segments: list[tuple[str, str]] = []
+            skipped: list[str] = []
             for i, href in enumerate(hrefs, start=1):
                 data = _read_member(zf, href)
                 if data is None:
+                    # zip に無い章。黙って飛ばすと「全部読めた」と区別が付かない
+                    skipped.append(href)
                     continue
                 body = clean_fragment(decode(data))
                 if not body.strip():
@@ -244,7 +252,9 @@ def read_epub(path: Path) -> Document:
 
     if not segments:
         raise DocumentError("epub に読める本文がありません")
-    return Document(kind="html", text="\n".join(parts), segments=segments, title=title)
+    return Document(
+        kind="html", text="\n".join(parts), segments=segments, title=title, skipped=skipped
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -260,6 +260,20 @@ def test_epub_percent_encoded_hrefs_are_decoded(tmp_path):
     assert doc.locate("本文1") == "第1章"
 
 
+def test_epub_reports_unreadable_chapters(tmp_path):
+    """zip に無い章は飛ばすが、飛ばしたことは黙っていない。"""
+    path = make_epub(tmp_path / "missing.epub", [("一", "本文いち"), ("二", "本文に")])
+    with zipfile.ZipFile(path) as src:
+        items = {n: src.read(n) for n in src.namelist() if n != "OEBPS/c1.xhtml"}
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in items.items():
+            zf.writestr(name, data)
+
+    doc = documents.read(path)
+    assert "本文いち" in doc.plain
+    assert doc.skipped == ["OEBPS/c1.xhtml"]
+
+
 def test_epub_chapter_heading_is_not_duplicated(tmp_path):
     """本文に見出しがあるのに足すと、画面に同じ見出しが 2 つ並ぶ。"""
     path = make_epub(tmp_path / "dup.epub", [("一、午后の授業", "本文")])

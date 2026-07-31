@@ -13,7 +13,7 @@ import json
 import sys
 
 from . import categories, config, store
-from .models import CategoryNameError, EntryDraft
+from .models import CategoryNameError, EntryDraft, normalize_category
 
 
 def _resolve(target: str):
@@ -109,9 +109,12 @@ def cmd_add(args: argparse.Namespace) -> int:
         }
 
     draft = EntryDraft.model_validate(data)
-    category = draft.category or "未分類"
-    # 同名でもカテゴリが違えば別エントリ。衝突判定は同一カテゴリ内だけ
-    existing = store.find_in_category(category, draft.term)
+    # store.save() が使う形に揃えてから引く。揃えないと、保存側が正規化した結果と
+    # 衝突するのに「無い」と判定して StoreError で落ちる
+    category = normalize_category(draft.category or "未分類")
+    # 同名でもカテゴリが違えば別エントリ。衝突判定は同一カテゴリ・同一スコープ内だけ
+    # (--json で scope を渡せるので、グローバル決め打ちで引かない)
+    existing = store.find_in_category(category, draft.term, draft.scope)
 
     if existing is not None and not args.update:
         others = [e for e in store.find_by_surface(draft.term) if e.ref != existing.ref]
@@ -298,13 +301,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _use_utf8_when_piped() -> None:
-    """パイプに出すときだけ UTF-8 に固定する。
+    """パイプ越しの入出力を UTF-8 に固定する。
 
     凍結した exe はコンソールのコードページ (日本語 Windows なら CP932) で書くので、
     ``glosspop add --json -`` の出力を他のツールが受けると壊れた文字列になる。
     コンソールへ直接出す場合は既定のまま（UTF-8 で書くと CP932 のコンソールが化ける）。
+
+    **stdin も同じ。** ここを外すと ``sys.stdin.read()`` がロケール (CP932) で復号し、
+    UTF-8 で流し込んだ日本語がサロゲートに化けたまま**そのまま保存される**。
+    ``echo '{"term":"冪等"}' | glosspop add --json -`` はスキルが使う経路そのものなので、
+    黙って壊れた見出し語のエントリができる。ファイル入力 (``@path``) は最初から
+    UTF-8 決め打ちで読んでいるので、揃えるのが正しい。
     """
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         try:
             if not stream.isatty():
                 stream.reconfigure(encoding="utf-8")

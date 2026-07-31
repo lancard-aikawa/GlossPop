@@ -458,6 +458,16 @@ async function openContent(path) {
       title: res.title || "",
     });
     markCurrentFile(path);
+    // 一部だけ欠けた本文は「全部読めている」と区別が付かないので必ず知らせる
+    // (setSource が note を消すので、そのあとで出す)
+    if (res.skipped?.length) {
+      note(
+        `読めなかった章が ${res.skipped.length} 件あります: ` +
+          res.skipped.slice(0, 5).join("、") +
+          (res.skipped.length > 5 ? " ほか" : ""),
+        "error"
+      );
+    }
   } catch (err) {
     // リンクを辿って失敗したときは、いま読んでいる文書を壊さない
     if (source) note(`開けません: ${err.message}`, "error");

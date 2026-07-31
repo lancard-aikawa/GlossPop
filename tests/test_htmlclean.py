@@ -100,6 +100,16 @@ def test_article_inside_main_does_not_restart_the_body():
     assert "前置き" in out and "記事" in out
 
 
+def test_content_after_main_is_kept():
+    """``</main>`` の後ろに本文が続くページで、そこを捨てない。
+
+    採るのは「最初の main/article の中身から先」。前を捨てるのはナビや
+    ヘッダを落とすためで、後ろを捨てる理由は無い（捨てると本文が減る）。
+    """
+    out = clean("<body><nav>ナビ</nav><main><p>本文</p></main><p>あとがき</p></body>")
+    assert "本文" in out and "あとがき" in out
+    assert "ナビ" not in out
+
 
 def test_falls_back_to_whole_body():
     out = clean("<body><div><p>ふつうの本文</p></div></body>")

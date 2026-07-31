@@ -558,6 +558,8 @@ def read_content(rel: str) -> dict:
         # epub は HTML、pdf はテキストになる。拡張子から推測させない
         "kind": doc.kind,
         "title": doc.title,
+        # 読めなかった章。黙って欠けた本文を出さないための報告
+        "skipped": doc.skipped,
     }
 
 
