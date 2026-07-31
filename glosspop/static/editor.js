@@ -104,19 +104,28 @@ function build() {
   return dialog;
 }
 
-/** 保存先 (自動 / 全体 / このフォルダ) の選択肢を整える。編集中は動かせない。 */
+/** 編集を開いた時点の保存先。変わっていたら保存後に移動する。 */
+let originalScope = "";
+
+/** 保存先 (自動 / 全体 / このフォルダ) の選択肢を整える。 */
 async function paintScope(selected, editing) {
   // 編集中は実際の保存先を出す。新規は既定で AI に選ばせる
-  refs.scope.value = editing ? (selected === "local" ? "local" : "global") : (selected || "auto");
-  refs.scope.disabled = editing;
+  originalScope = selected === "local" ? "local" : "global";
+  refs.scope.value = editing ? originalScope : (selected || "auto");
+  refs.scope.disabled = false;
+  // 既存エントリに「AI が選ぶ」は無い（もう決まっている）
+  const auto = refs.scope.querySelector('option[value="auto"]');
+  auto.hidden = auto.disabled = editing;
   try {
     const health = await api("/api/health");
     // URL を読んでいるときは、ローカル = その URL の辞書
     const local = refs.scope.querySelector('option[value="local"]');
     local.textContent = health.reading_url ? "この URL の辞書" : "このフォルダだけ";
-    local.disabled = !health.local_glossary_dir;
+    // いま開いているフォルダ / URL の辞書が無ければ移せない。ただし自分がそこに
+    // 入っている場合は、選択肢として出しておかないと現在地を表示できない
+    local.disabled = !health.local_glossary_dir && originalScope !== "local";
     refs.scopeHint.textContent = editing
-      ? "保存先は変えられません（登録し直してください）"
+      ? scopeMoveHint(health)
       : health.reading_url
         ? health.local_glossary_dir
           ? `この URL の辞書: ${health.local_glossary_dir}`
@@ -125,6 +134,21 @@ async function paintScope(selected, editing) {
   } catch {
     refs.scopeHint.textContent = "";
   }
+  refs.scope.onchange = editing ? () => { refs.scopeHint.textContent = scopeMoveHint(null); } : null;
+}
+
+/** 編集中の保存先の説明。変更されていれば「移動する」ことを明示する。 */
+function scopeMoveHint(health) {
+  if (refs.scope.value !== originalScope) {
+    const to = refs.scope.value === "local"
+      ? refs.scope.querySelector('option[value="local"]').textContent
+      : "全体の辞書";
+    return `保存すると「${to}」へファイルごと移動します`;
+  }
+  const where = health?.local_glossary_dir;
+  return originalScope === "local" && where
+    ? `いまの保存先: ${where}`
+    : "変えるとファイルごと別の辞書へ移動します";
 }
 
 /** マスターを読み直してカテゴリ選択肢を作る。 */
@@ -368,9 +392,17 @@ export async function openEntryEditor({
       refs.save.disabled = refs.draft.disabled = true;
       setStatus(refs.status, "保存中", "busy");
       try {
-        const saved = targetRef
+        let saved = targetRef
           ? await api(`/api/entries/${encodePath(targetRef)}`, { method: "PUT", body: draft })
           : await api("/api/entries", { method: "POST", body: draft });
+        // 辞書間の移動は更新では起きない (ref の位置が正)。中身を保存してから
+        // 明示的に移す。ref が変わるので、呼び出し側は新しいほうを見ること
+        if (targetRef && draft.scope !== originalScope) {
+          saved = await api(`/api/move/${encodePath(saved.ref)}`, {
+            method: "POST",
+            body: { scope: draft.scope },
+          });
+        }
         invalidatePopupCache();
         finish(saved);
       } catch (err) {

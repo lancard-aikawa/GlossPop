@@ -384,17 +384,59 @@ def save(draft: EntryDraft, *, ref: str | None = None) -> Entry:
         return entry
 
 
-def move(ref: str, category: str) -> Entry:
-    """エントリを別カテゴリへ移す。"""
-    entry = get(ref)
-    if entry is None:
-        raise StoreError(f"見つかりません: {ref}")
-    draft = EntryDraft(**{
-        k: v for k, v in entry.model_dump().items()
-        if k not in ("slug", "created_at", "updated_at")
-    })
-    draft.category = normalize_category(category)
-    return save(draft, ref=ref)
+def move(ref: str, category: str | None = None, *, scope: str | None = None) -> Entry:
+    """エントリを別カテゴリ / 別の辞書へ移す。片方だけでも両方でも指定できる。
+
+    **``save()`` と違ってスコープをまたげるのがここ。** ``save()`` は更新時に
+    ``ref`` の位置を正とする（下書きに載った古い ``scope`` で勝手にファイルが
+    動かないように）ので、辞書間の移し替えはこの明示的な操作でだけ行う。
+
+    移動先に書いてから移動元を消す。作成日時は引き継ぎ、更新日時だけ進める。
+    """
+    with _lock:
+        entry = get(ref)
+        if entry is None:
+            raise StoreError(f"見つかりません: {ref}")
+
+        target_category = normalize_category(category) if category else entry.category
+        target_scope = scope or entry.scope
+        if target_scope not in SCOPES:
+            raise StoreError(f"不明な保存先です: {target_scope}")
+        if (target_category, target_scope) == (entry.category, entry.scope):
+            return entry
+
+        if target_scope == LOCAL_SCOPE and not local_available():
+            raise StoreError(
+                "このフォルダの辞書に移せません"
+                "（フォルダを開くか、この URL の辞書を作ってください）"
+            )
+        clash = find_in_category(target_category, entry.term, target_scope)
+        if clash is not None and clash.ref != ref:
+            raise StoreError(
+                f"「{entry.term}」は移動先の「{target_category}」に既に登録されています"
+            )
+        # カテゴリマスターはグローバル辞書のもの。ローカルへ移すときは触らない
+        # （フォルダ固有のカテゴリでマスターを汚さない。save() と同じ判断）
+        if target_scope == GLOBAL_SCOPE:
+            categories.ensure(target_category, subcategory=entry.subcategory)
+
+        old_path = path_for_ref(ref)
+        slug = _allocate_slug(target_category, entry.term, target_scope)
+        moved = entry.model_copy(
+            update={
+                "category": target_category,
+                "scope": target_scope,
+                "slug": slug,
+                "updated_at": now_iso(),
+            }
+        )
+        target = path_for(target_category, slug, target_scope)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(target, dump_markdown(moved))
+        if old_path != target:
+            old_path.unlink(missing_ok=True)
+        invalidate()
+        return moved
 
 
 def delete(ref: str) -> bool:

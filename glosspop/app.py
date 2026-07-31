@@ -135,7 +135,11 @@ class CategoryUpdateRequest(BaseModel):
 
 
 class MoveRequest(BaseModel):
-    category: str
+    """カテゴリ / 保存先の移動。省略した項目はそのまま。"""
+
+    category: str = ""
+    #: global | local。辞書間の移し替えはここでだけ行う（更新では動かさない）
+    scope: str = ""
 
 
 class ContentRootRequest(BaseModel):
@@ -375,7 +379,7 @@ def update_entry(ref: str, draft: EntryDraft) -> dict:
 @app.post("/api/move/{ref:path}")
 def move_entry(ref: str, req: MoveRequest) -> dict:
     try:
-        entry = store.move(ref, req.category)
+        entry = store.move(ref, req.category or None, scope=req.scope or None)
     except store.StoreError as exc:
         raise HTTPException(409, str(exc)) from exc
     return _entry_payload(entry)

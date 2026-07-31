@@ -133,6 +133,86 @@ class TestApi:
         assert updated.json()["scope"] == "local"
         assert updated.json()["summary"] == "書き換え"
 
+    def test_move_to_the_local_dictionary(self, client):
+        ref = client.post("/api/entries", json={**self.ENTRY, "category": "人名"}).json()["ref"]
+        moved = client.post(f"/api/move/{ref}", json={"scope": "local"})
+        assert moved.status_code == 200
+        assert moved.json()["ref"] == ".local/人名/太郎"
+        # 移動先に在って、移動元は消えている
+        assert (config.CONTENT_DIR / ".glosspop" / "glossary" / "人名" / "太郎.md").exists()
+        assert not (config.GLOSSARY_DIR / "人名" / "太郎.md").exists()
+        assert client.get(f"/api/entries/{ref}").status_code == 404
+
+    def test_move_back_to_the_global_dictionary(self, client):
+        ref = client.post("/api/entries", json={**self.ENTRY, "scope": "local"}).json()["ref"]
+        moved = client.post(f"/api/move/{ref}", json={"scope": "global"}).json()
+        assert moved["ref"] == "登場人物/太郎"
+        assert moved["scope"] == "global"
+        assert not (config.CONTENT_DIR / ".glosspop" / "glossary" / "登場人物" / "太郎.md").exists()
+
+    def test_move_keeps_the_content_and_the_creation_time(self, client):
+        created = client.post("/api/entries", json={**self.ENTRY, "category": "人名"}).json()
+        moved = client.post(f"/api/move/{created['ref']}", json={"scope": "local"}).json()
+        assert moved["definition"] == created["definition"]
+        assert moved["summary"] == created["summary"]
+        assert moved["created_at"] == created["created_at"]
+
+    def test_move_can_change_the_category_and_the_scope_at_once(self, client):
+        ref = client.post("/api/entries", json={**self.ENTRY, "category": "人名"}).json()["ref"]
+        moved = client.post(f"/api/move/{ref}", json={"category": "登場人物", "scope": "local"}).json()
+        assert moved["ref"] == ".local/登場人物/太郎"
+
+    def test_move_to_local_does_not_touch_the_category_master(self, client):
+        from glosspop import categories
+
+        ref = client.post("/api/entries", json={**self.ENTRY, "category": "人名"}).json()["ref"]
+        client.post(f"/api/move/{ref}", json={"category": "登場人物", "scope": "local"})
+        # 「登場人物」はフォルダ固有のカテゴリ。マスターに残すと他の文書で邪魔になる
+        assert "登場人物" not in categories.names()
+
+    def test_move_back_registers_the_category_in_the_master(self, client):
+        from glosspop import categories
+
+        ref = client.post("/api/entries", json={**self.ENTRY, "scope": "local"}).json()["ref"]
+        client.post(f"/api/move/{ref}", json={"scope": "global"})
+        assert "登場人物" in categories.names()
+
+    def test_move_is_rejected_when_the_destination_already_has_the_term(self, client):
+        client.post("/api/entries", json={**self.ENTRY, "scope": "local"})
+        ref = client.post("/api/entries", json=self.ENTRY).json()["ref"]
+        res = client.post(f"/api/move/{ref}", json={"scope": "local"})
+        assert res.status_code == 409
+        assert "既に登録されています" in res.json()["detail"]
+        # 失敗したら元のまま残っていること
+        assert client.get(f"/api/entries/{ref}").status_code == 200
+
+    def test_move_to_local_is_rejected_without_a_local_dictionary(self, client):
+        """URL を読んでいて、その URL の辞書がまだ無いとき。
+
+        ローカル辞書が無い状態で移すと行き先が決まらない。URL 側は辞書を勝手に
+        作らないので、ここは必ず起きうる。
+        """
+        ref = client.post("/api/entries", json=self.ENTRY).json()["ref"]
+        client.post("/api/url-context", json={"url": "https://docs.python.org/3/"})
+        res = client.post(f"/api/move/{ref}", json={"scope": "local"})
+        assert res.status_code == 409
+        assert "辞書に移せません" in res.json()["detail"]
+        assert client.get(f"/api/entries/{ref}").status_code == 200
+
+    def test_move_lands_in_the_url_dictionary_when_reading_a_url(self, client):
+        ref = client.post("/api/entries", json=self.ENTRY).json()["ref"]
+        client.post("/api/url-context", json={"url": "https://docs.python.org/3/library/os.html"})
+        client.post("/api/url-dictionary", json={"prefix": "docs.python.org/3/library"})
+        moved = client.post(f"/api/move/{ref}", json={"scope": "local"}).json()
+        assert moved["ref"].startswith(".local/")
+        assert "sites" in moved["path"] and "docs.python.org" in moved["path"]
+
+    def test_category_only_move_still_works(self, client):
+        """scope を送らない従来のリクエストが壊れていないこと。"""
+        ref = client.post("/api/entries", json={**self.ENTRY, "scope": "local"}).json()["ref"]
+        moved = client.post(f"/api/move/{ref}", json={"category": "脇役"}).json()
+        assert moved["ref"] == ".local/脇役/太郎"   # ローカルのまま
+
     def test_local_and_global_same_term_are_both_returned(self, client):
         client.post("/api/entries", json={**self.ENTRY, "scope": "local"})
         client.post("/api/entries", json={**self.ENTRY, "category": "人名"})
