@@ -9,5 +9,9 @@ __pycache__/
 .playwright-mcp/
 build/
 dist/
+
+# 辞書テスト用カテゴリ
+文学/
+
 # 専用ウィンドウ (glosspop app) のブラウザプロファイル。data/ 自体は追跡している
 data/window/
