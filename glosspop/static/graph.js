@@ -15,6 +15,10 @@ const categorySelect = document.getElementById("category");
 const spoilerCheck = document.getElementById("spoilers");
 const draftButton = document.getElementById("draft");
 
+//: 2 つの ref をつないで組の鍵にするための区切り。カテゴリ名も slug も
+//: "<" ">" を弾いているので、ref の中身と衝突しない
+const SEP = "<>";
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 // ノードの箱。日本語は 1 文字がほぼ全角なので、文字数から幅を見積もる
@@ -197,6 +201,11 @@ function marker(id, className) {
 //: 文字が重なるので、辺ごとにずらす（実際に読めなくなった）
 const LABEL_SPOTS = [0.5, 0.34, 0.66, 0.42, 0.58];
 
+/** 同じ段のノードを結ぶ弧の高さ。**描画と余白の計算で同じ値を使う。** */
+function sameRowLift(from, to, parallel) {
+  return Math.min(90, 24 + Math.abs(to.x - from.x) * 0.18) + parallel * 22;
+}
+
 /**
  * @param {number} index    全体での通し番号。ラベルを線上でずらすのに使う
  * @param {number} parallel 同じ 2 ノードを結ぶ何本目か。0 なら 1 本目。
@@ -219,7 +228,7 @@ function drawEdge(edge, pos, index = 0, parallel = 0) {
   };
   let d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
   if (sameRow) {
-    const lift = Math.min(90, 24 + Math.abs(end.x - start.x) * 0.18) + parallel * 22;
+    const lift = sameRowLift(start, end, parallel);
     mid.x = (start.x + end.x) / 2;
     mid.y = start.y - lift * 0.78;
     d = `M ${start.x} ${start.y} Q ${mid.x} ${start.y - lift} ${end.x} ${end.y}`;
@@ -319,23 +328,38 @@ function draw(graph) {
     ? layeredLayout(nodes, edges, level)
     : circleLayout(nodes);
 
+  // 同じ 2 ノードを結ぶ辺が何本目か。弧の高さもラベル位置もこれで決まる
+  const pairs = new Map();
+  const parallels = edges.map((edge) => {
+    const key = [edge.from, edge.to].sort().join(SEP);
+    const n = pairs.get(key) || 0;
+    pairs.set(key, n + 1);
+    return n;
+  });
+
+  // **同じ段を結ぶ弧は最上段より上へ出る。** そのぶんを viewBox の上に足さないと、
+  // いちばん上の行の関係ラベルが枠外で切れる（実際にそうなった）
+  let overhead = 0;
+  edges.forEach((edge, i) => {
+    const a = pos.get(edge.from);
+    const b = pos.get(edge.to);
+    if (!a || !b || Math.abs(a.y - b.y) >= 1) return;
+    // 弧の頂点とラベルの高さが、箱の上端からどれだけ上に出るか
+    overhead = Math.max(overhead, sameRowLift(a, b, parallels[i]) + 16 - (a.y - a.h / 2));
+  });
+  overhead = Math.ceil(Math.max(0, overhead));
+
   const root = svg("svg", {
     class: "rel-graph",
-    viewBox: `0 0 ${Math.ceil(width)} ${Math.ceil(height)}`,
+    viewBox: `0 ${-overhead} ${Math.ceil(width)} ${Math.ceil(height) + overhead}`,
     width: Math.ceil(width),
-    height: Math.ceil(height),
+    height: Math.ceil(height) + overhead,
     role: "img",
     "aria-label": "用語の相関図",
   });
   root.append(svg("defs", {}, [marker("arrow", "rel-arrowhead")]));
   // 辺を先に置いてノードを上に重ねる (線がラベルを横切らないように)
-  const pairs = new Map();   // 同じ 2 ノードを結ぶ辺の本数を数えながら描く
-  edges.forEach((edge, i) => {
-    const key = [edge.from, edge.to].sort().join(" ");
-    const parallel = pairs.get(key) || 0;
-    pairs.set(key, parallel + 1);
-    root.append(drawEdge(edge, pos, i, parallel));
-  });
+  edges.forEach((edge, i) => root.append(drawEdge(edge, pos, i, parallels[i])));
   for (const node of nodes) root.append(drawNode(node, pos));
   canvas.replaceChildren(root);
 }
@@ -354,7 +378,7 @@ async function loadCategories() {
     el("option", { value: "", text: "すべてのカテゴリ" }),
     ...withEntries.map((n) =>
       el("option", {
-        value: `${n.scope} ${n.category}`,
+        value: `${n.scope}/${n.category}`,
         text: n.scope === "local" ? `📁 ${n.category}` : n.category,
       })
     )
@@ -364,14 +388,18 @@ async function loadCategories() {
     const hit = withEntries.find(
       (n) => n.category === wanted && (!currentScope || n.scope === currentScope)
     );
-    if (hit) categorySelect.value = `${hit.scope} ${hit.category}`;
+    if (hit) categorySelect.value = `${hit.scope}/${hit.category}`;
   }
 }
 
 function selection() {
   if (!categorySelect.value) return { category: null, scope: null };
-  const [scope, category] = categorySelect.value.split(" ");
-  return { category, scope };
+  // カテゴリ名に空白は使えるが "/" は使えない。最初の "/" で 1 回だけ割る
+  const cut = categorySelect.value.indexOf("/");
+  return {
+    scope: categorySelect.value.slice(0, cut),
+    category: categorySelect.value.slice(cut + 1),
+  };
 }
 
 function paintNotes(graph) {

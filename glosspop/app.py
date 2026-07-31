@@ -137,6 +137,10 @@ class RelationsDraftRequest(BaseModel):
     scope: str = ""             # global | local
     limit: int = 20
     max_files: int = 40
+    #: 読ませる本文。渡されればフォルダを読まずにこれを使う。
+    #: URL を読んでいるときはフォルダに本文が無いので、この経路が唯一の手段になる
+    text: str = ""
+    source: str = ""
     #: first なら各用語の初出の場面だけを渡す（position は関係を作れないので不可）
     spoiler: str = ""
 
@@ -417,9 +421,15 @@ async def ai_relations(req: RelationsDraftRequest) -> dict:
     if len(target) < 2:
         raise HTTPException(400, "関係を探すには、その範囲に 2 語以上の登録が要ります")
 
-    docs, unread, base = _read_content_docs(req.max_files)
-    if not docs:
-        raise HTTPException(400, f"読める文書がありません: {base}")
+    if req.text.strip():
+        # 表示中の文書をそのまま読む。URL を読んでいるときはフォルダに本文が
+        # 無い（sites/ にあるのは辞書だけ）ので、この経路でしか下書きできない
+        docs = [(req.source or "表示中の文書", req.text)]
+        unread: list[str] = []
+    else:
+        docs, unread, base = _read_content_docs(req.max_files)
+        if not docs:
+            raise HTTPException(400, f"読める文書がありません: {base}")
 
     spoiler = req.spoiler if req.spoiler in config.SPOILER_LEVELS else config.SPOILER_DEFAULT
     if spoiler == "position":

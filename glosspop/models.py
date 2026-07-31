@@ -7,7 +7,7 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 UNCATEGORIZED = "未分類"
 
@@ -168,8 +168,8 @@ class EntryBase(BaseModel):
     summary: str = ""
     definition: str = ""
     examples: list[str] = Field(default_factory=list)
-    related: list[str] = Field(default_factory=list)
-    #: 他のエントリとの関係（向き・上下・一言）。相関図と辞書ページに出す
+    #: 他のエントリとの関係（向き・上下・一言）。相関図と辞書ページに出す。
+    #: 旧 ``related``（向きも一言も無いただの名前の並び）はここに吸収する
     relations: list[Relation] = Field(default_factory=list)
     #: 改名・カテゴリ移動で捨てた古い ref。wiki のリダイレクトと同じ役割で、
     #: 参照側を書き換えずに済ませるために持つ (relations.resolve() が見る)
@@ -180,7 +180,32 @@ class EntryBase(BaseModel):
     first_file: str = ""        # content ルートからの相対パス
     first_locator: str = ""     # 表示用の位置 ("L.42" / "p.42" / "第3章" など)
 
-    @field_validator("aliases", "examples", "related", "tags", mode="before")
+    @model_validator(mode="before")
+    @classmethod
+    def _absorb_related(cls, data: object) -> object:
+        """旧 ``related`` を ``relations`` に畳む。
+
+        「この語と繋がっている語」を 2 か所に書けると、どちらに書くか毎回迷ううえ、
+        ``related`` に書いたぶんは相関図に出ない。入り口で 1 つにまとめる。
+
+        ファイル・API・CLI のどの経路から来ても通るように、ここ 1 か所でやる。
+        既存の ``relations`` が正で、同じ行き先なら ``Relation`` の検証が潰す。
+        """
+        if not isinstance(data, dict):
+            return data
+        legacy = data.get("related")
+        if not legacy:
+            return data
+        data = dict(data)
+        names = [legacy] if isinstance(legacy, str) else list(legacy)
+        data["relations"] = [
+            *(data.get("relations") or []),
+            *({"to": str(n)} for n in names if str(n).strip()),
+        ]
+        data.pop("related", None)
+        return data
+
+    @field_validator("aliases", "examples", "tags", mode="before")
     @classmethod
     def _normalize_lists(cls, v: object) -> list[str]:
         if v is None:

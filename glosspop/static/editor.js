@@ -2,7 +2,9 @@
 import { api, defaultSpoiler, el, esc, isHttpUrl, rememberSpoiler, setStatus } from "./base.js";
 import { invalidatePopupCache } from "./popup.js";
 
-const LIST_FIELDS = ["aliases", "related", "tags"];
+// 関連語 (related) は relations に畳んだ。関係は向きと一言が要るので、
+// カンマ区切りの 1 行では書けない —— 辞書ページの「関係」から足す
+const LIST_FIELDS = ["aliases", "tags"];
 const NEW_CATEGORY = "/new";  // "/" はカテゴリ名で禁止なので実名と衝突しない番兵
 
 let dialog = null;
@@ -58,12 +60,8 @@ function build() {
         <div class="field-row">
           <label class="field"><span>使用例 (1 行 1 件)</span>
             <textarea data-ref="examples" rows="3"></textarea></label>
-          <div>
-            <label class="field"><span>関連語 (カンマ区切り)</span>
-              <input type="text" data-ref="related" autocomplete="off"></label>
-            <label class="field"><span>タグ (カンマ区切り)</span>
-              <input type="text" data-ref="tags" autocomplete="off"></label>
-          </div>
+          <label class="field"><span>タグ (カンマ区切り)</span>
+            <input type="text" data-ref="tags" autocomplete="off"></label>
         </div>
         <label class="field"><span>出典</span>
           <input type="text" data-ref="source" autocomplete="off">

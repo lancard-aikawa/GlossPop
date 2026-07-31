@@ -699,3 +699,31 @@ def test_relations_draft_needs_two_entries(client):
     res = client.post("/api/ai/relations", json={"category": "登場人物"})
     assert res.status_code == 400
     assert "2 語以上" in res.json()["detail"]
+
+
+def test_relations_draft_can_read_the_displayed_document(client, monkeypatch):
+    """URL を読んでいるときはフォルダに本文が無い。表示中の本文を渡せること。"""
+    import json as _json
+
+    from glosspop import ai
+
+    _person(client, "ジョバンニ")
+    _person(client, "カムパネルラ")
+    seen = {}
+
+    def fake(prompt):
+        seen["prompt"] = prompt
+        return _json.dumps([
+            {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友", "back": "親友"}
+        ])
+
+    monkeypatch.setattr(ai, "_run_claude", fake)
+    monkeypatch.setattr(ai, "available", lambda: True)
+    body = client.post("/api/ai/relations", json={
+        "category": "登場人物",
+        "spoiler": "full",
+        "text": "ジョバンニとカムパネルラは親友だった。",
+        "source": "https://example.com/gingatetsudo",
+    }).json()
+    assert [r["to_term"] for r in body["relations"]] == ["カムパネルラ"]
+    assert "ジョバンニとカムパネルラは親友だった。" in seen["prompt"]

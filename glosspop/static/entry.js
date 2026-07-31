@@ -53,13 +53,6 @@ function section(title, children) {
   return el("section", { class: "entry-section" }, [el("h2", { text: title }), ...[].concat(children)]);
 }
 
-function relatedChip(name) {
-  const hits = index.get(name.toLowerCase()) || [];
-  if (hits.length === 1) return chip(name, hits[0].url);
-  // 同名が複数カテゴリにある / 未登録 → 検索に飛ばす
-  const label = hits.length > 1 ? `${name} (${hits.length})` : name;
-  return chip(label, `/glossary?q=${encodeURIComponent(name)}`);
-}
 
 // --------------------------------------------------------------------------- //
 // 関係
@@ -282,10 +275,6 @@ function render(entry) {
 
   if (entry.examples_html?.length) {
     parts.push(section("使用例", el("div", { class: "doc", html: entry.examples_html.join("") })));
-  }
-
-  if (entry.related?.length) {
-    parts.push(section("関連語", el("div", { class: "chips" }, entry.related.map(relatedChip))));
   }
 
   parts.push(relationsSection(entry));

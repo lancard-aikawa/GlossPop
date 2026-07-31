@@ -297,7 +297,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--summary", help="吹き出しに出す 1〜2 文")
     a.add_argument("--definition", help="本文 Markdown ('-' で stdin, '@path' でファイル)")
     a.add_argument("--examples", help="カンマ区切りの使用例")
-    a.add_argument("--related", help="カンマ区切りの関連語")
+    # 旧名。EntryBase が relations へ畳むので、指定すると向きも一言も無い関係になる
+    a.add_argument("--related", help="カンマ区切りの関連語（relations に取り込まれる）")
     a.add_argument("--tags", help="カンマ区切りのタグ")
     a.add_argument("--source", help="出典 (ファイル名など)")
     a.add_argument("--update", action="store_true", help="既存エントリを上書きする")

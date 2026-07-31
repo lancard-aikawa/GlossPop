@@ -37,7 +37,8 @@ _FM_KEYS = (
     "subcategory",
     "summary",
     "examples",
-    "related",
+    # 旧 "related" は書き出さない。読み込み時に relations へ畳まれるので、
+    # 次に保存した時点で自動的に移行する (migrate_layout と同じ考え方)
     "relations",
     "tags",
     "source",

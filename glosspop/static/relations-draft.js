@@ -81,16 +81,22 @@ function makeRow(rel) {
  * @param {object} o
  * @param {string} [o.category] 対象カテゴリ（空なら辞書全体）
  * @param {string} [o.scope]    global | local（空なら両方）
+ * @param {string} [o.text]     読ませる本文。渡すとフォルダではなくこれを読む
+ *   （URL を読んでいるときはフォルダに本文が無いので、これが唯一の経路）
+ * @param {string} [o.source]   本文の出典（ファイル名や URL）
  * @returns {Promise<number>} 書き込んだ関係の本数
  */
-export async function openRelationsDialog({ category = "", scope = "" } = {}) {
+export async function openRelationsDialog({
+  category = "", scope = "", text = "", source = "",
+} = {}) {
   build();
   refs.list.replaceChildren();
   refs.dropped.hidden = true;
   refs.stop.hidden = refs.toggle.hidden = true;
   const where = category ? `「${category}」` : "辞書全体";
+  const from = text ? (source ? `「${source}」` : "表示中の文書") : "開いているフォルダの本文";
   refs.lead.textContent =
-    `${where}に登録済みの用語どうしの関係を、開いているフォルダの本文から探します。` +
+    `${where}に登録済みの用語どうしの関係を、${from}から探します。` +
     "用語は作りません（すでに登録されているものだけを結びます）。";
   // 既定は初出の場面だけ。相関図は本文より先を一望させるので、伏せる側に倒す
   const remembered = await defaultSpoiler();
@@ -132,7 +138,7 @@ export async function openRelationsDialog({ category = "", scope = "" } = {}) {
       controller = new AbortController();
       const res = await api("/api/ai/relations", {
         method: "POST",
-        body: { category, scope, spoiler: refs.spoiler.value },
+        body: { category, scope, text, source, spoiler: refs.spoiler.value },
         signal: controller.signal,
       });
       controller = null;

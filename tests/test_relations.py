@@ -300,3 +300,54 @@ class TestResolvedRelations:
         out = relations.resolved_relations(entry, store.load_all())
         assert out[0]["missing"] is False and out[0]["term"] == "カムパネルラ"
         assert out[1]["missing"] is True and out[1]["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# 旧 related の吸収
+#
+# 「この語と繋がっている語」を 2 か所に書けると、どちらに書くか迷ううえ、
+# related に書いたぶんは相関図に出ない。入り口で 1 つにまとめる。
+# --------------------------------------------------------------------------- #
+
+class TestRelatedAbsorption:
+    def test_related_becomes_a_relation_without_a_label(self):
+        entry = Entry.model_validate({"term": "冪等", "related": ["リトライ", "副作用"]})
+        assert [r.to for r in entry.relations] == ["リトライ", "副作用"]
+        assert all(r.label == "" and not r.mutual for r in entry.relations)
+        assert not hasattr(entry, "related")
+
+    def test_a_single_string_is_accepted(self):
+        assert [r.to for r in Entry.model_validate({"term": "X", "related": "Y"}).relations] == ["Y"]
+
+    def test_existing_relations_win(self):
+        """先に書かれている関係の一言を、related が上書きしない。"""
+        entry = Entry.model_validate({
+            "term": "ジョバンニ",
+            "relations": [{"to": "カムパネルラ", "label": "親友"}],
+            "related": ["カムパネルラ"],
+        })
+        assert len(entry.relations) == 1
+        assert entry.relations[0].label == "親友"
+
+    def test_an_old_file_migrates_on_the_next_save(self, add_entry):
+        """読み込み時に畳まれ、保存すると related はファイルから消える。"""
+        entry = add_entry("冪等", category="プログラミング")
+        path = store.path_for_ref(entry.ref)
+        path.write_text(
+            "---\nterm: 冪等\nrelated:\n  - リトライ\n---\n\n本文\n", encoding="utf-8"
+        )
+        store.invalidate()
+
+        loaded = store.get(entry.ref)
+        assert loaded is not None
+        assert [r.to for r in loaded.relations] == ["リトライ"]
+
+        store.save(
+            EntryDraft(term=loaded.term, category=loaded.category, relations=[
+                r.model_dump() for r in loaded.relations
+            ]),
+            ref=loaded.ref,
+        )
+        text = path.read_text(encoding="utf-8")
+        assert "related:" not in text
+        assert "to: リトライ" in text

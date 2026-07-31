@@ -22,6 +22,7 @@ glosspop = "glosspop.cli:main"
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+    "playwright>=1.40",
 ]
 build = [
     "pyinstaller>=6.10",

@@ -4,11 +4,27 @@
 // 相関図はカテゴリ単位でしか壊れを見せないので、横断して集めるのがこのページ。
 // 壊れた参照は「次に書くべきエントリ」でもあるので、そこから登録に入れる。
 import { api, el, paintEntryCount, setStatus } from "./base.js";
+import { encodePath, openEntryEditor } from "./editor.js";
+import { invalidatePopupCache } from "./popup.js";
 
 const root = document.getElementById("root");
 const statusNode = document.getElementById("status");
 const countNode = document.getElementById("count");
 const reloadButton = document.getElementById("reload");
+
+/** その場で編集ダイアログを開く。ページを渡り歩かせない。 */
+async function fix(ref) {
+  let entry;
+  try {
+    entry = await api(`/api/entries/${encodePath(ref)}`);
+  } catch (err) {
+    setStatus(statusNode, err.message, "error");
+    return;
+  }
+  if (!(await openEntryEditor({ ref, entry }))) return;
+  invalidatePopupCache();
+  await refresh();       // 直したぶんが消えるところまで見せる
+}
 
 /** 問題 1 件ぶんの行。直しに行ける導線を必ず付ける。 */
 function issueRow(issue) {
@@ -23,6 +39,13 @@ function issueRow(issue) {
   for (const c of issue.candidates || []) {
     bits.push(el("a", { class: "chip", href: c.url, text: c.path_label }));
   }
+  bits.push(el("span", { class: "spacer" }));
+  bits.push(el("button", {
+    type: "button",
+    class: "ghost",
+    text: "直す",
+    onclick: () => fix(issue.ref),
+  }));
   return el("li", { class: "rel-row" }, bits);
 }
 

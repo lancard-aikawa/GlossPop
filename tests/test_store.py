@@ -24,8 +24,10 @@ def test_roundtrip_preserves_fields(add_entry):
     loaded = store.get(saved.ref)
     assert loaded is not None
     for field in ("term", "reading", "aliases", "category", "subcategory",
-                  "summary", "definition", "examples", "related", "tags", "source"):
+                  "summary", "definition", "examples", "tags", "source"):
         assert getattr(loaded, field) == getattr(saved, field), field
+    # 旧 related は relations に畳まれている（向きも一言も無い関係になる）
+    assert [r.to for r in loaded.relations] == ["ミュータブル"]
     assert loaded.created_at == saved.created_at
 
 

@@ -1,0 +1,201 @@
+"""ブラウザで実際に動かす通しテスト。
+
+このリポジトリの機能は「登録 → 本文でリンクになる → 吹き出しが出る →
+関係が図になる」まで通して見ないと確認できない。単体テストはどれも
+その手前で止まる（HTML 文字列は正しいのに JS が落ちている、が起きる）。
+
+**手元の Chrome を使う**（``channel="chrome"``）。ブラウザを別途ダウンロードさせ
+ないため。Chrome も playwright も無い環境では丸ごと skip する —— 通常の
+``uv run pytest`` を止めないのが条件。
+
+    uv run playwright install chromium   # 手元に Chrome が無いときだけ
+"""
+
+from __future__ import annotations
+
+import socket
+import threading
+import time
+
+import pytest
+
+sync_api = pytest.importorskip("playwright.sync_api", reason="playwright が入っていません")
+
+from glosspop import config, store  # noqa: E402
+from glosspop.models import EntryDraft  # noqa: E402
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def server(isolated_dirs):
+    """使い捨ての辞書で本物のサーバを立てる。
+
+    ``isolated_dirs``（autouse fixture）が差し替えたディレクトリをそのまま使う。
+    サーバは同じプロセスの別スレッドなので、モジュール変数の差し替えが効く。
+    """
+    import uvicorn
+
+    from glosspop.app import app
+
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 20
+    while not server.started and time.time() < deadline:
+        time.sleep(0.05)
+    if not server.started:
+        pytest.fail("テスト用サーバが起動しませんでした")
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+
+@pytest.fixture
+def page(server):
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(channel="chrome")
+        except Exception as exc:                       # noqa: BLE001
+            pytest.skip(f"Chrome を起動できません: {exc}")
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+        page = context.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        try:
+            yield page
+            # JS の例外は画面に出ないことがある。黙って壊れたまま通さない
+            assert not errors, f"ページで JS エラーが出ました: {errors}"
+        finally:
+            context.close()
+            browser.close()
+
+
+@pytest.fixture
+def seeded(isolated_dirs):
+    """人物 2 人と、その名前が出てくる本文。"""
+    store.save(EntryDraft(
+        term="ジョバンニ", category="登場人物",
+        summary="活版所で働く少年。", definition="主人公。",
+    ))
+    store.save(EntryDraft(
+        term="カムパネルラ", category="登場人物",
+        summary="ジョバンニの級友。", definition="同級生。",
+    ))
+    doc = config.content_dir() / "銀河.md"
+    doc.write_text(
+        "# 午后の授業\n\nジョバンニは活版所で働いていた。カムパネルラは黙っていた。\n",
+        encoding="utf-8",
+    )
+    return doc
+
+
+def test_registered_terms_become_links_with_a_popup(page, server, seeded):
+    """登録 → 本文でリンクになる → 吹き出しが出る、まで通す。"""
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    link = page.locator("a.gloss-link", has_text="ジョバンニ").first
+    link.wait_for(timeout=15000)
+    assert page.locator("a.gloss-link").count() >= 2
+
+    link.hover()
+    popup = page.locator(".gloss-pop")
+    popup.wait_for(timeout=5000)
+    assert "活版所で働く少年" in popup.inner_text()
+
+
+def test_a_relation_can_be_added_and_shows_on_both_sides(page, server, seeded):
+    """関係は片側にだけ書き、相手のページには逆引きで出る。"""
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    page.locator("input[aria-label='関係の相手']").wait_for(timeout=15000)
+    page.fill("input[aria-label='関係の相手']", "カムパネルラ")
+    page.fill("input[aria-label='関係']", "親友")
+    page.fill("input[aria-label='逆からの関係']", "親友")
+    page.click("button:has-text('関係を足す')")
+
+    row = page.locator(".rel-list .rel-row").first
+    row.wait_for(timeout=10000)
+    assert "カムパネルラ" in row.inner_text() and "親友" in row.inner_text()
+    assert "⇄" in row.inner_text()          # back があるので相互
+
+    # 書いていない側にも見えること
+    page.goto(f"{server}/glossary/登場人物/カムパネルラ")
+    page.locator("text=この語を指している側").wait_for(timeout=10000)
+    assert "ジョバンニ" in page.locator(".rel-list").last.inner_text()
+
+
+def test_the_graph_draws_nodes_and_an_edge(page, server, seeded):
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[{"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"}],
+        ),
+        ref=a.ref,
+    )
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    assert page.locator("svg.rel-graph .rel-node").count() == 2
+    assert page.locator("svg.rel-graph .rel-edge").count() == 1
+    assert "親友" in (page.locator("svg.rel-graph").text_content() or "")
+
+
+def test_the_doctor_is_quiet_then_reports_a_broken_reference(page, server, seeded):
+    page.goto(f"{server}/doctor")
+    page.locator("#root .empty").wait_for(timeout=15000)
+    assert "直すところはありません" in page.locator("#root").inner_text()
+
+    entry = store.find_by_surface("ジョバンニ")[0]
+    store.save(
+        EntryDraft(
+            term=entry.term, category=entry.category,
+            summary=entry.summary, definition=entry.definition,
+            relations=[{"to": "いない人", "label": "兄"}],
+        ),
+        ref=entry.ref,
+    )
+    page.click("#reload")
+    page.locator(".issue-badge.error").wait_for(timeout=10000)
+    text = page.locator("#root").inner_text()
+    assert "解決できない関係" in text
+    # 壊れた参照は「次に書くべきエントリ」でもある
+    assert "いない人 を登録" in text
+
+
+def test_the_doctor_can_fix_an_entry_in_place(page, server, isolated_dirs):
+    """点検からページを渡り歩かずに直せること（直したら消えるところまで）。"""
+    store.save(EntryDraft(term="冪等", category="プログラミング", definition="本文。"))
+    page.goto(f"{server}/doctor")
+    page.locator(".issue-badge").wait_for(timeout=15000)
+    assert "要約が無い" in page.locator("#root").inner_text()
+
+    page.click("button:has-text('直す')")
+    page.locator("dialog.sheet[open]").wait_for(timeout=10000)
+    page.fill("dialog.sheet[open] [data-ref='summary']", "何度実行しても結果が同じであること。")
+    page.click("dialog.sheet[open] [data-ref='save']")
+
+    page.locator("#root .empty").wait_for(timeout=15000)
+    assert "直すところはありません" in page.locator("#root").inner_text()
+
+
+def test_the_graph_filters_by_a_category_whose_name_has_a_space(page, server, isolated_dirs):
+    """カテゴリ名に空白を使えるので、選択の値は空白で割れない。"""
+    store.save(EntryDraft(term="ジョバンニ", category="銀河 鉄道", summary="主人公。", definition="本文。"))
+    store.save(EntryDraft(term="冪等", category="プログラミング", summary="要約。", definition="本文。"))
+
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    assert page.locator("svg.rel-graph .rel-node").count() == 2
+
+    page.select_option("#category", label="銀河 鉄道")
+    page.wait_for_function(
+        "document.querySelectorAll('svg.rel-graph .rel-node').length === 1", timeout=10000
+    )
+    assert "ジョバンニ" in (page.locator("svg.rel-graph").text_content() or "")

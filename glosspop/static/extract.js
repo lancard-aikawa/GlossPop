@@ -8,6 +8,7 @@
 import { api, defaultSpoiler, el, rememberSpoiler, setStatus } from "./base.js";
 import { openEntryEditor } from "./editor.js";
 import { invalidatePopupCache } from "./popup.js";
+import { openRelationsDialog } from "./relations-draft.js";
 
 let dialog = null;
 let refs = {};
@@ -68,6 +69,7 @@ function build() {
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
         <button type="button" data-ref="stop" hidden>中止</button>
+        <button type="button" data-ref="relations" hidden>✨ 続けて関係を探す</button>
         <button type="button" data-ref="cancel">閉じる</button>
         <button type="button" class="primary" data-ref="go" hidden></button>
       </footer>
@@ -164,6 +166,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   refs.kindbox.disabled = false;
   refs.dropped.hidden = true;
   refs.go.hidden = refs.stop.hidden = refs.toggle.hidden = true;
+  refs.relations.hidden = true;
   refs.lead.textContent =
     "抜き出すものを先に選んでください。種別ごとに別々の枠で挙げるので、" +
     "人物と専門用語が枠を取り合いません。";
@@ -372,7 +375,28 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     if (saved) invalidatePopupCache();
     refs.toggle.disabled = false;
     setStatus(refs.status, `${saved} 語を保存しました`);
+    // 登録しただけでは関係が空のまま。ここで続きへ渡す
+    // （相関図まで移動して押し直させると、たいてい忘れられる）
+    refs.relations.hidden = saved < 2;
     paintGo();
+  };
+
+  /** 登録した語どうしの関係を続けて探す。同じ本文をそのまま渡す。 */
+  const onRelations = async () => {
+    const categories = [
+      ...new Set(rows.filter((r) => r.saved).map((r) => r.saved.category)),
+    ];
+    refs.relations.disabled = true;
+    try {
+      // カテゴリが 1 つに絞れるならそこだけ、混ざっていれば辞書全体で探す
+      await openRelationsDialog({
+        category: categories.length === 1 ? categories[0] : "",
+        text: folder ? "" : text,
+        source,
+      });
+    } finally {
+      refs.relations.disabled = false;
+    }
   };
 
   // 主ボタンは 1 つで、段によって役割が変わる (種別を選ぶ → 抽出 → 下書き → 保存)
@@ -404,6 +428,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   function cleanup() {
     refs.go.removeEventListener("click", onGo);
     refs.toggle.removeEventListener("click", onToggle);
+    refs.relations.removeEventListener("click", onRelations);
     refs.stop.removeEventListener("click", onStop);
     refs.cancel.removeEventListener("click", finish);
     refs.close.removeEventListener("click", finish);
@@ -411,6 +436,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   }
   refs.go.addEventListener("click", onGo);
   refs.toggle.addEventListener("click", onToggle);
+  refs.relations.addEventListener("click", onRelations);
   refs.stop.addEventListener("click", onStop);
   refs.cancel.addEventListener("click", finish);
   refs.close.addEventListener("click", finish);
