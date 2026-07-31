@@ -220,6 +220,46 @@ def test_header_is_left_alone_in_ordinary_text():
     assert documents.strip_aozora(text) == text
 
 
+def test_epub_percent_encoded_hrefs_are_decoded(tmp_path):
+    """OPF の href は IRI なので、日本語やスペースは percent-encoded で入る。
+
+    ``zipfile`` は生の名前しか受けないため、復号せずに読むと ``KeyError`` になり
+    **その章だけ黙って消える**。日本語ファイル名の epub で必ず踏む。
+    """
+    path = tmp_path / "encoded.epub"
+    files = {
+        "第一章.xhtml": "%E7%AC%AC%E4%B8%80%E7%AB%A0.xhtml",
+        "ch 2.xhtml": "ch%202.xhtml",
+        "plain.xhtml": "plain.xhtml",
+    }
+    manifest = "".join(
+        f'<item id="c{i}" href="{href}" media-type="application/xhtml+xml"/>'
+        for i, href in enumerate(files.values())
+    )
+    spine = "".join(f'<itemref idref="c{i}"/>' for i in range(len(files)))
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "META-INF/container.xml",
+            '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            '<rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
+        )
+        zf.writestr(
+            "OEBPS/content.opf",
+            '<package xmlns="http://www.idpf.org/2007/opf">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>本</dc:title></metadata>'
+            f"<manifest>{manifest}</manifest><spine>{spine}</spine></package>",
+        )
+        for i, name in enumerate(files):
+            zf.writestr(
+                f"OEBPS/{name}",
+                f"<html><body><h2>第{i + 1}章</h2><p>本文{i + 1}</p></body></html>",
+            )
+
+    doc = documents.read(path)
+    assert [label for label, _ in doc.segments] == ["第1章", "第2章", "第3章"]
+    assert doc.locate("本文1") == "第1章"
+
+
 def test_epub_chapter_heading_is_not_duplicated(tmp_path):
     """本文に見出しがあるのに足すと、画面に同じ見出しが 2 つ並ぶ。"""
     path = make_epub(tmp_path / "dup.epub", [("一、午后の授業", "本文")])

@@ -121,8 +121,17 @@ class CategoryRequest(BaseModel):
     description: str = ""
 
 
-class CategoryRenameRequest(BaseModel):
-    name: str
+class CategoryUpdateRequest(BaseModel):
+    """カテゴリの更新。**省略した項目は触らない。**
+
+    ``subcategories`` を ``[]`` 既定にすると、名前だけ変えるつもりの
+    ``{"name": ...}`` でサブカテゴリが全部消える。空リストは「全部消す」という
+    明示的な指定なので、「指定なし」と区別できる ``None`` を既定にする。
+    """
+
+    name: str = ""
+    subcategories: list[str] | None = None
+    description: str = ""
 
 
 class MoveRequest(BaseModel):
@@ -278,7 +287,7 @@ def create_category(req: CategoryRequest) -> dict:
 
 
 @app.put("/api/categories/{name}")
-def update_category(name: str, req: CategoryRequest) -> dict:
+def update_category(name: str, req: CategoryUpdateRequest) -> dict:
     current = categories.get(name)
     if current is None:
         raise HTTPException(404, f"カテゴリ「{name}」がありません")
@@ -286,7 +295,7 @@ def update_category(name: str, req: CategoryRequest) -> dict:
         store.rename_category(current.name, req.name)
         current = categories.get(req.name)
     assert current is not None
-    if req.subcategories or current.subcategories:
+    if req.subcategories is not None:
         current = categories.set_subcategories(current.name, req.subcategories)
     return current.model_dump()
 

@@ -156,6 +156,25 @@ class TestCategories:
         assert client.get(f"/api/entries/{ref_path('開発/冪等')}").status_code == 200
         assert (config.GLOSSARY_DIR / "開発" / "冪等.md").exists()
 
+    def test_rename_alone_keeps_subcategories(self, client):
+        """名前だけ変えるリクエストでサブカテゴリを巻き添えにしない。
+
+        ``subcategories`` の既定を ``[]`` にしていたため、``{"name": ...}`` だけの
+        更新で全部消えていた（ビューアは毎回現在値を送るので表面化せず、CLI や
+        スキルから叩いたときだけ黙って消える）。
+        """
+        client.post("/api/categories", json={"name": "音楽", "subcategories": ["和声", "楽器"]})
+        res = client.put("/api/categories/音楽", json={"name": "音楽理論"})
+        assert res.status_code == 200
+        assert res.json()["subcategories"] == ["和声", "楽器"]
+        assert categories.get("音楽理論").subcategories == ["和声", "楽器"]
+
+    def test_empty_subcategories_still_clears_them(self, client):
+        """``[]`` を明示したときは従来どおり全部消す（「指定なし」とは別物）。"""
+        client.post("/api/categories", json={"name": "音楽", "subcategories": ["和声"]})
+        res = client.put("/api/categories/音楽", json={"name": "音楽", "subcategories": []})
+        assert res.json()["subcategories"] == []
+
     def test_delete_requires_empty(self, client):
         client.post("/api/entries", json=ENTRY)
         assert client.delete("/api/categories/プログラミング").status_code == 400

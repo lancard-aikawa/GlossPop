@@ -76,6 +76,31 @@ def test_article_is_used_when_there_is_no_main():
     assert "脇" not in out
 
 
+def test_multiple_articles_all_survive():
+    """記事ごとに ``<article>`` が並ぶページで、前の記事が消えないこと。
+
+    2 つめ以降でも本文を取り直すと確定済みの ``parts`` を上書きしてしまい、
+    1 つめの記事が丸ごと落ちていた（``<input>`` の不具合と同じ「黙って本文が
+    消える」系統）。
+    """
+    html = (
+        "<body><nav>ナビ</nav>"
+        "<article><h2>1つめ</h2><p>最初の記事</p></article>"
+        "<article><h2>2つめ</h2><p>次の記事</p></article>"
+        "<p>記事の外</p></body>"
+    )
+    out = clean(html)
+    for kept in ("1つめ", "最初の記事", "2つめ", "次の記事", "記事の外"):
+        assert kept in out
+    assert "ナビ" not in out
+
+
+def test_article_inside_main_does_not_restart_the_body():
+    out = clean("<main><p>前置き</p><article><p>記事</p></article></main>")
+    assert "前置き" in out and "記事" in out
+
+
+
 def test_falls_back_to_whole_body():
     out = clean("<body><div><p>ふつうの本文</p></div></body>")
     assert "ふつうの本文" in out

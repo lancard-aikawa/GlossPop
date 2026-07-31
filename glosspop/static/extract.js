@@ -123,12 +123,9 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     refs.toggle.textContent = n ? "全解除" : "全選択";
   };
 
-  const finish = () => {
-    aborted = true;
-    controller?.abort();
-    cleanup();
-    dialog.close();
-  };
+  // 閉じる操作は「閉じる」ボタンだけでなく Esc でも起きる。中断・後始末・解決は
+  // すべて close イベントの側に寄せて、どちらの経路でも同じになるようにする
+  const finish = () => dialog.close();
 
   const onToggle = () => {
     const turnOn = selected(rows).length === 0;
@@ -273,10 +270,27 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   refs.close.addEventListener("click", finish);
   refs.form.addEventListener("submit", onSubmit);
 
+  // **promise は抽出を待つ前に用意する。** 抽出は数十秒かかり、その間に閉じられる。
+  // await のあとで listener を付けると close イベントを取り逃がして永久に解決せず、
+  // 呼び出し側の finally が走らないので「✨ 用語を抽出」が押せないままになる
+  let closed = null;
+  const done = new Promise((resolve) => {
+    closed = () => {
+      aborted = true;
+      controller?.abort();   // 閉じたら AI 呼び出しも止める (裏で走り続けさせない)
+      cleanup();
+      resolve(saved);
+    };
+  });
+  dialog.addEventListener("close", closed, { once: true });
+
   try {
+    controller = new AbortController();
+    const options = { method: "POST", signal: controller.signal };
     const res = folder
-      ? await api("/api/ai/extract-folder", { method: "POST", body: {} })
-      : await api("/api/ai/extract", { method: "POST", body: { text, source } });
+      ? await api("/api/ai/extract-folder", { ...options, body: {} })
+      : await api("/api/ai/extract", { ...options, body: { text, source } });
+    controller = null;
     rows = (res.candidates || []).map(makeRow);
     if (!rows.length) {
       refs.lead.textContent = "辞書に足せそうな語は見つかりませんでした。";
@@ -309,10 +323,9 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     }
     paintGo();
   } catch (err) {
-    setStatus(refs.status, err.message, "error");
+    // 閉じられて中断したときは、消えたダイアログにエラーを書きに行かない
+    if (!aborted) setStatus(refs.status, err.message, "error");
   }
 
-  return new Promise((resolve) => {
-    dialog.addEventListener("close", () => resolve(saved), { once: true });
-  });
+  return done;
 }

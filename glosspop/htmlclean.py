@@ -6,7 +6,7 @@
 * 残したタグ以外は開始・終了タグだけ落として中のテキストは残す
 * 属性は href / src / alt / title だけ残し、相対 URL を絶対化する
 * ``javascript:`` などのスキームを弾く
-* ``<main>`` / ``<article>`` があればその中身だけを採る
+* ``<main>`` / ``<article>`` があれば、**最初のひとつ**の中身から先を本文とする
 
 依存を増やしたくないので標準ライブラリの HTMLParser だけで書いている。
 完璧なサニタイザではないが、許可制なので未知のタグ・属性は必ず落ちる。
@@ -59,7 +59,11 @@ KEEP_ATTRS = {
 
 _SAFE_SCHEMES = ("http", "https", "mailto", "data:image/")
 
-#: 本文が入っていそうな順に探す
+#: 本文が入っていそうな順に探す。
+#:
+#: **見つけるのは最初のひとつだけ。** 2 つめ以降でも本文を取り直すと、確定済みの
+#: ``parts`` を上書きしてそれまでの本文が全部消える。``<article>`` を記事ごとに
+#: 並べるページ（ブログの一覧など）で最初の記事が丸ごと落ちていた。
 MAIN_CANDIDATES = ("main", "article")
 
 
@@ -98,6 +102,8 @@ class _Cleaner(HTMLParser):
         self._main_parts: list[str] | None = None
         self._main_tag: str | None = None
         self._main_depth = 0
+        # 本文を確定したか。2 つめ以降の <article> で取り直させないための番人
+        self._main_done = False
 
     # -- 出力先 ------------------------------------------------------------
     def _emit(self, text: str) -> None:
@@ -127,7 +133,7 @@ class _Cleaner(HTMLParser):
                     self.base_url = urljoin(self.base_url, value)
             return
 
-        if self._main_parts is None and tag in MAIN_CANDIDATES:
+        if not self._main_done and self._main_parts is None and tag in MAIN_CANDIDATES:
             self._main_parts = []
             self._main_tag = tag
             self._main_depth = 1
@@ -177,11 +183,13 @@ class _Cleaner(HTMLParser):
         if self._main_parts is not None and tag == self._main_tag:
             self._main_depth -= 1
             if self._main_depth == 0:
-                # main/article を閉じた: ここまでの中身を本文として確定する
+                # main/article を閉じた: ここまでの中身を本文として確定する。
+                # 以降に出てくる main/article は普通の要素として扱い、中身は
+                # そのまま後ろに足す (2 つめで取り直すと 1 つめが消える)
                 self.parts = self._main_parts
                 self._main_parts = None
                 self._main_tag = None
-                self._finished_main = True
+                self._main_done = True
             return
         if tag not in KEEP_TAGS or tag in VOID_TAGS:
             return

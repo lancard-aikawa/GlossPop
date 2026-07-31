@@ -16,6 +16,7 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import unquote
 from xml.etree import ElementTree
 
 from . import render
@@ -189,6 +190,22 @@ def _spine_hrefs(zf: zipfile.ZipFile, opf: str) -> tuple[list[str], str]:
     return hrefs, title
 
 
+def _read_member(zf: zipfile.ZipFile, href: str) -> bytes | None:
+    """manifest の href で zip の中身を読む。無ければ ``None``。
+
+    **OPF の href は IRI なので、日本語やスペースは percent-encoded で入っている。**
+    ``zipfile`` は生の名前しか受け付けないので、復号したものを先に試す。これを
+    怠ると日本語ファイル名の章が ``KeyError`` になり、**その章だけ黙って消える**
+    （章名が英数字の epub では気付けない）。
+    """
+    for name in dict.fromkeys((unquote(href), href)):
+        try:
+            return zf.read(name)
+        except KeyError:
+            continue
+    return None
+
+
 def _chapter_title(html: str, index: int) -> tuple[str, bool]:
     """(章の名前, その見出しが本文中に既にあるか) を返す。
 
@@ -213,11 +230,10 @@ def read_epub(path: Path) -> Document:
             parts: list[str] = []
             segments: list[tuple[str, str]] = []
             for i, href in enumerate(hrefs, start=1):
-                try:
-                    raw = decode(zf.read(href))
-                except KeyError:
+                data = _read_member(zf, href)
+                if data is None:
                     continue
-                body = clean_fragment(raw)
+                body = clean_fragment(decode(data))
                 if not body.strip():
                     continue
                 label, has_heading = _chapter_title(body, i)
