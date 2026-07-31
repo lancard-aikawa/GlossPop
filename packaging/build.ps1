@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   GlossPop を Windows 向けに onedir ビルドする。
 
@@ -13,11 +13,16 @@
     dev  (既定) リポジトリの content/ と data/ をそのまま入れる。手元での確認用
     dist        content/ と packaging/sample-data/ を入れる。配布用 (個人の辞書は入れない)
     none        何も入れない (初回起動時に空で作られる)
+
+.PARAMETER Fast
+  PyInstaller のキャッシュを消さない (--clean を付けない)。手元で繰り返し確かめる用。
+  実測で 48 秒 -> 21 秒。**spec や依存を変えたときは付けないこと** (古い解析結果が残る)。
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('dev', 'dist', 'none')]
-    [string]$Seed = 'dev'
+    [string]$Seed = 'dev',
+    [switch]$Fast
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +40,9 @@ if ($busy) {
 uv sync --group build
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-uv run pyinstaller packaging/glosspop.spec --noconfirm --clean --distpath dist --workpath build
+$pyi = @('packaging/glosspop.spec', '--noconfirm', '--distpath', 'dist', '--workpath', 'build')
+if (-not $Fast) { $pyi += '--clean' }
+uv run pyinstaller @pyi
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $out = Join-Path $root 'dist/GlossPop'

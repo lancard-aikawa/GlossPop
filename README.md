@@ -50,6 +50,30 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen |
   ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 ```
 
+### 確認用のショートカット
+
+よく使う操作は [`check.cmd`](check.cmd) にまとめてある（引数なしで実行するとメニュー）。
+
+```powershell
+.\check.cmd test       # テスト
+.\check.cmd app        # ソースから起動（専用ウィンドウ）
+.\check.cmd build      # exe をビルド（キャッシュを使う。約 21 秒）
+.\check.cmd rebuild    # キャッシュを消してビルド（約 48 秒）
+.\check.cmd exe        # ビルドした exe を起動して応答を確かめる
+.\check.cmd kill       # ポートの所有者を落とす
+.\check.cmd all        # test + build + exe
+```
+
+`exe` は [`packaging/check-exe.ps1`](packaging/check-exe.ps1) を呼ぶ。**凍結してからでないと
+壊れないところ**（`DATA_ROOT` の位置、`datas` の漏れ、`hiddenimports` の漏れ）を、
+release ワークフローと同じ観点で見る。`serve` で専用ウィンドウが開かないことも確かめる
+（開くと CI の起動確認が返ってこなくなる）。
+
+`check.cmd` は **ASCII のみ**で書くこと。`cmd.exe` はバッチをコンソールのコードページ
+（日本語環境では CP932）で読むので、UTF-8 の日本語は化ける。さらに CP932 の 2 バイト目が
+`0x5C` になる文字（`表` `十` `ソ` など）があると構文解析そのものが壊れる。
+日本語を書きたい処理は `.ps1` 側に置く。
+
 Windows 用の exe を自分でビルドする手順は[後述](#windows-向けビルド)。
 
 ## AI 下書きについて

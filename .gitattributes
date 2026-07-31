@@ -1,2 +1,8 @@
 # 青空文庫のサンプルは Shift_JIS。改行変換や差分表示で壊されないよう素通しにする
 content/銀河鉄道の夜.txt -text -diff
+
+# バッチは cmd.exe が CRLF 前提で読む。LF だとラベルや複数行が壊れる。
+# 中身は ASCII のみにすること (cmd.exe はコンソールのコードページで読むので、
+# UTF-8 の日本語は化け、CP932 で 2 バイト目が 0x5C になる文字は構文を壊す)
+*.cmd text eol=crlf
+*.bat text eol=crlf
