@@ -3,6 +3,7 @@ import { api, el, esc, externalLink, paintEntryCount, setStatus } from "./base.j
 import { openExtractDialog } from "./extract.js";
 import { installGlossPopup } from "./popup.js";
 import { installSelectionAdd } from "./select-add.js";
+import { available as speechAvailable, createReader } from "./speech.js";
 
 const $ = (id) => document.getElementById(id);
 const doc = $("doc");
@@ -87,6 +88,7 @@ function paintTerms(terms) {
 function setSource(next) {
   source = next;
   selection.hide();
+  reader?.reset();      // 別の文書になったので読み上げは打ち切る
   note("");
   // 描画の完了を待ちたい呼び出し元 (初出へジャンプ) があるので promise を返す
   return renderCurrent();
@@ -189,6 +191,55 @@ $("showPaste").addEventListener("click", async () => {
 });
 
 $("firstOnly").addEventListener("change", renderCurrent);
+
+// ------------------------------------------------------------- 読み上げ
+
+/** Web Speech API が無いブラウザでは、ボタンごと出さない。 */
+const reader = speechAvailable()
+  ? createReader({ root: doc, onState: paintSpeech })
+  : null;
+
+function paintSpeech(state) {
+  const bar = $("speechBar");
+  bar.hidden = !state.playing;
+  $("speak").hidden = state.playing;
+  $("speakToggle").textContent = state.paused ? "▶" : "⏸";
+  $("speakToggle").title = state.paused ? "再開" : "一時停止";
+  $("speakWhere").textContent = state.total
+    ? `${Math.min(state.index + 1, state.total)} / ${state.total} 段落`
+    : "";
+  const voice = $("speakVoice");
+  // 音声の一覧は一度だけ作る (毎回作ると選択中のものが飛ぶ)
+  if (voice.options.length !== state.voices.length) {
+    voice.replaceChildren(
+      ...state.voices.map((v) => el("option", { value: v.name, text: `${v.name} (${v.lang})` }))
+    );
+  }
+  if (state.voiceName) voice.value = state.voiceName;
+  $("speakRate").value = String(state.rate);
+}
+
+if (reader) {
+  reader.prepare().then((voices) => {
+    // 音声が 1 つも無い環境では読み上げられないので出さない
+    if (!voices.length) $("speak").dataset.unsupported = "1";
+  });
+  $("speak").addEventListener("click", () => {
+    if ($("speak").dataset.unsupported) {
+      note("この環境には読み上げに使える音声がありません。", "error");
+      return;
+    }
+    if (!reader.start()) note("読み上げる本文がありません。", "error");
+  });
+  $("speakToggle").addEventListener("click", () => reader.toggle());
+  $("speakStop").addEventListener("click", () => reader.stop());
+  $("speakPrev").addEventListener("click", () => reader.step(-1));
+  $("speakNext").addEventListener("click", () => reader.step(1));
+  $("speakVoice").addEventListener("change", (ev) => reader.setVoice(ev.target.value));
+  $("speakRate").addEventListener("change", (ev) => reader.setRate(Number(ev.target.value)));
+  // ページを離れても喋り続けるのを防ぐ (speechSynthesis はページより長生きする)
+  window.addEventListener("pagehide", () => reader.stop());
+}
 
 // 候補を挙げて、選んだ語をまとめて登録する (表示中の文書 / フォルダ全体)
 async function runExtract(button, options) {

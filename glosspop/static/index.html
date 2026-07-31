@@ -84,7 +84,24 @@
       <div class="check-row">
         <p class="hint" id="docMeta"></p>
         <span class="spacer"></span>
+        <button type="button" id="speak" title="本文を読み上げる (辞書のリンクと吹き出しはそのまま使える)" hidden>▶ 読み上げ</button>
         <button type="button" id="extract" title="この文書から辞書化する語を挙げる">✨ 用語を抽出</button>
+      </div>
+      <div class="check-row speech-bar" id="speechBar" hidden>
+        <button type="button" id="speakPrev" title="前の段落">◀◀</button>
+        <button type="button" id="speakToggle" title="一時停止 / 再開">⏸</button>
+        <button type="button" id="speakNext" title="次の段落">▶▶</button>
+        <button type="button" id="speakStop" title="読み上げをやめる">■</button>
+        <select id="speakVoice" class="auto-width" aria-label="音声"></select>
+        <select id="speakRate" class="auto-width" aria-label="速さ">
+          <option value="0.8">0.8x</option>
+          <option value="1" selected>1.0x</option>
+          <option value="1.2">1.2x</option>
+          <option value="1.5">1.5x</option>
+          <option value="2">2.0x</option>
+        </select>
+        <span class="spacer"></span>
+        <span class="hint" id="speakWhere"></span>
       </div>
       <p class="status" id="docStatus" hidden></p>
     </div>

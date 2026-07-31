@@ -491,6 +491,16 @@ dialog.sheet footer .spacer { flex: 1; }
 @keyframes gloss-flash { to { outline-color: transparent; } }
 @media (prefers-reduced-motion: reduce) { .gloss-flash { animation: none; } }
 
+/* 読み上げ。いま読んでいるブロックを地色で示す。
+   自動リンクの下線と喧嘩しないよう、outline ではなく背景で出す */
+.speech-bar { margin-top: 6px; }
+.speech-bar button { padding: 2px 8px; }
+.doc .speaking {
+  background: var(--accent-soft);
+  border-radius: 3px;
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
 /* まとめて登録ダイアログの候補一覧 */
 .cand-list { list-style: none; margin: 0 0 12px; padding: 0; }
 .cand-list li {
