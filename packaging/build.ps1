@@ -62,6 +62,18 @@ foreach ($name in $seeds.Keys) {
     }
 }
 
+# 配布用では、フォルダに置かれた辞書 (.glosspop) を持ち出さない。
+# content/ は丸ごとコピーするので、手元で作ったフォルダ辞書がそのまま zip に入る。
+# CI はクリーンチェックアウト (.glosspop は gitignore) なので出ないが、
+# **手元でビルドしたものを配ると混入する**。実際に 22 語が入っていた
+if ($Seed -eq 'dist') {
+    Get-ChildItem $out -Recurse -Force -Directory -Filter '.glosspop' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Write-Host "外した: $($_.FullName.Substring($out.Length + 1)) (フォルダ辞書は配布物に入れない)"
+            Remove-Item $_.FullName -Recurse -Force
+        }
+}
+
 Write-Host ""
 Write-Host "ビルド完了: $out"
 Write-Host "  起動: .\dist\GlossPop\glosspop.exe          (= app / 専用ウィンドウが開く)"
