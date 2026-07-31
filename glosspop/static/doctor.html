@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlossPop — 辞書の点検</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="/">Gloss<span>Pop</span></a>
+  <nav class="topnav">
+    <a href="/">ビューア</a>
+    <a href="/glossary">辞書</a>
+    <a href="/graph">相関図</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="meta" id="count"></span>
+</div>
+
+<div class="page">
+  <div class="page-inner">
+    <div class="entry-head">
+      <h1>辞書の点検</h1>
+      <p class="summary">
+        壊れているものだけを挙げます。カテゴリ違いの同名や、関係が書かれていない語は
+        正常なので出しません。
+      </p>
+    </div>
+    <div class="toolbar">
+      <button type="button" id="reload">もう一度点検する</button>
+      <span class="spacer"></span>
+      <span class="status" id="status"></span>
+    </div>
+    <div id="root">
+      <p class="empty">点検中…</p>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/static/doctor.js"></script>
+</body>
+</html>

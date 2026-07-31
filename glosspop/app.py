@@ -17,6 +17,7 @@ from . import (
     ai,
     categories,
     config,
+    doctor,
     documents,
     fetcher,
     picker,
@@ -26,7 +27,14 @@ from . import (
     store,
 )
 from .linker import Linker, entry_url
-from .models import GLOBAL_SCOPE, LOCAL_SCOPE, CategoryNameError, Entry, EntryDraft
+from .models import (
+    GLOBAL_SCOPE,
+    LOCAL_SCOPE,
+    CategoryNameError,
+    Entry,
+    EntryDraft,
+    Relation,
+)
 
 CONTENT_SUFFIXES = {
     ".md", ".markdown", ".mdown", ".txt",
@@ -119,6 +127,39 @@ class ExtractFolderRequest(BaseModel):
     limit: int = 20
     max_files: int = 40
     kinds: list[str] = []
+
+
+class RelationsDraftRequest(BaseModel):
+    """登録済みの用語どうしの関係を AI に下書きさせる。"""
+
+    #: 関係を探す範囲。空なら辞書全体
+    category: str = ""
+    scope: str = ""             # global | local
+    limit: int = 20
+    max_files: int = 40
+    #: first なら各用語の初出の場面だけを渡す（position は関係を作れないので不可）
+    spoiler: str = ""
+
+
+class RelationItem(BaseModel):
+    """1 本の関係。``from_ref`` の側に書き足す。"""
+
+    from_ref: str
+    to: str
+    label: str = ""
+    back: str = ""
+    rank: str = ""
+    reveal: str = ""
+
+
+class RelationsApplyRequest(BaseModel):
+    """下書きから選んだ関係をまとめて書き込む。
+
+    1 本ずつ PUT させないのは、同じエントリに複数の関係が付くとき、
+    クライアント側の読み書きが競って先に書いたぶんを消すため。
+    """
+
+    relations: list[RelationItem] = []
 
 
 class CategoryRequest(BaseModel):
@@ -261,6 +302,11 @@ def page_graph() -> FileResponse:
     return _page("graph.html")
 
 
+@app.get("/doctor", include_in_schema=False)
+def page_doctor() -> FileResponse:
+    return _page("doctor.html")
+
+
 @app.get("/glossary/{ref:path}", include_in_schema=False)
 def page_entry(ref: str) -> FileResponse:
     return _page("entry.html")
@@ -344,6 +390,113 @@ def graph(
     return relations.build_graph(
         store.load_all(), scope=scope, category=category, spoilers=spoilers
     )
+
+
+def _relation_scope(category: str, scope: str) -> list[Entry]:
+    """関係を探す対象のエントリ。範囲指定が空なら辞書全体。"""
+    if scope and scope not in (GLOBAL_SCOPE, LOCAL_SCOPE):
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    return [
+        e for e in store.load_all()
+        if (not category or e.category == category) and (not scope or e.scope == scope)
+    ]
+
+
+@app.post("/api/ai/relations")
+async def ai_relations(req: RelationsDraftRequest) -> dict:
+    """登録済みの用語どうしの関係を下書きする。用語は作らない。
+
+    関係のデータ構造だけあっても 1 本ずつ手で書くことになり、図が空のまま
+    終わる。ここが埋める側。**保存はしない** —— 選んで書き込むのは
+    ``/api/relations`` の仕事。
+    """
+    if not ai.available():
+        raise HTTPException(503, "claude CLI が見つかりません。関係は手で書けます。")
+
+    target = _relation_scope(req.category, req.scope)
+    if len(target) < 2:
+        raise HTTPException(400, "関係を探すには、その範囲に 2 語以上の登録が要ります")
+
+    docs, unread, base = _read_content_docs(req.max_files)
+    if not docs:
+        raise HTTPException(400, f"読める文書がありません: {base}")
+
+    spoiler = req.spoiler if req.spoiler in config.SPOILER_LEVELS else config.SPOILER_DEFAULT
+    if spoiler == "position":
+        # 位置だけでは関係は作れない。全文ではなく初出の場面に倒す
+        spoiler = "first"
+
+    try:
+        result = await ai.draft_relations(
+            store.load_all(),
+            docs,
+            scope=target,
+            limit=max(1, min(req.limit, 40)),
+            spoiler=spoiler,
+        )
+    except ai.AIError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    result["spoiler"] = spoiler
+    result["files_skipped"] = unread
+    result["terms"] = [e.term for e in target]
+    return result
+
+
+@app.post("/api/relations")
+def apply_relations(req: RelationsApplyRequest) -> dict:
+    """選ばれた関係をまとめて書き込む。
+
+    **エントリ単位でまとめて保存する。** 1 本ずつ書くと、同じエントリに複数の
+    関係が付いたときに後の書き込みが前のものを消す。
+    """
+    by_source: dict[str, list[RelationItem]] = {}
+    for item in req.relations:
+        by_source.setdefault(item.from_ref, []).append(item)
+
+    applied = 0
+    results: list[dict] = []
+    for ref, items in by_source.items():
+        entry = store.get(ref)
+        if entry is None:
+            results.append({"ref": ref, "ok": False, "detail": f"見つかりません: {ref}"})
+            continue
+        draft = EntryDraft.model_validate(entry.model_dump())
+        # 既存の関係を残したまま足す。同じ行き先は Relation の検証が 1 本に潰す
+        draft.relations = [
+            *entry.relations,
+            *(Relation.model_validate(i.model_dump(exclude={"from_ref"})) for i in items),
+        ]
+        try:
+            saved = store.save(draft, ref=ref)
+        except store.StoreError as exc:
+            results.append({"ref": ref, "ok": False, "detail": str(exc)})
+            continue
+        added = len(saved.relations) - len(entry.relations)
+        applied += added
+        results.append({
+            "ref": saved.ref,
+            "ok": True,
+            "term": saved.term,
+            "added": added,
+            "url": entry_url(saved),
+        })
+    return {"applied": applied, "results": results}
+
+
+# --------------------------------------------------------------------------- #
+# API: 点検
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/doctor")
+def run_doctor() -> dict:
+    """辞書全体を点検する。壊れているものだけを返す。
+
+    参照を名前で書ける（ID を持たない）ぶん、書き間違いや相手の削除で静かに
+    切れる。``/api/graph`` はカテゴリ単位でしか壊れを返さないので、横断して
+    集める受け皿がここ。
+    """
+    return doctor.check(store.load_all())
 
 
 # --------------------------------------------------------------------------- #
@@ -668,20 +821,7 @@ async def ai_extract_folder(req: ExtractFolderRequest) -> dict:
     if not ai.available():
         raise HTTPException(503, "claude CLI が見つかりません。手動入力で登録してください。")
 
-    max_files = max(1, min(req.max_files, 200))
-    docs: list[tuple[str, str]] = []
-    unread: list[str] = []
-    base = config.content_dir()
-    for path in _iter_content_files(base):
-        rel = path.relative_to(base).as_posix()
-        if len(docs) >= max_files:
-            unread.append(rel)
-            continue
-        try:
-            docs.append((rel, documents.read(path).plain))
-        except (OSError, documents.DocumentError):
-            unread.append(rel)
-
+    docs, unread, base = _read_content_docs(req.max_files)
     if not docs:
         raise HTTPException(400, f"読める文書がありません: {base}")
 
@@ -695,6 +835,27 @@ async def ai_extract_folder(req: ExtractFolderRequest) -> dict:
     result["root"] = str(base)
     result["files_skipped"] = [*result["files_skipped"], *unread]
     return result
+
+
+def _read_content_docs(max_files: int) -> tuple[list[tuple[str, str]], list[str], Path]:
+    """開いているフォルダの文書を読む。返すのは (読めたもの, 読まなかったもの, ルート)。
+
+    読まなかったファイルを返すのは、黙って切らないため（呼び出し側が UI に出す）。
+    """
+    limit = max(1, min(max_files, 200))
+    docs: list[tuple[str, str]] = []
+    unread: list[str] = []
+    base = config.content_dir()
+    for path in _iter_content_files(base):
+        rel = path.relative_to(base).as_posix()
+        if len(docs) >= limit:
+            unread.append(rel)
+            continue
+        try:
+            docs.append((rel, documents.read(path).plain))
+        except (OSError, documents.DocumentError):
+            unread.append(rel)
+    return docs, unread, base
 
 
 def _first_seen_in_file(rel: str, term: str) -> tuple[str, str]:

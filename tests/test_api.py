@@ -631,3 +631,71 @@ def test_extract_kind_hints_have_no_prompt_markup(client):
     """種別の説明は UI にそのまま出る。プロンプト用の ** を混ぜない。"""
     for kind in client.get("/api/ai/kinds").json()["kinds"]:
         assert "**" not in kind["hint"]
+
+
+# --------------------------------------------------------------------------- #
+# 関係の一括書き込みと点検
+# --------------------------------------------------------------------------- #
+
+def test_apply_relations_merges_into_the_source_entry(client):
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    c = _person(client, "ザネリ")
+    res = client.post("/api/relations", json={
+        "relations": [
+            {"from_ref": a, "to": b, "label": "親友", "back": "親友"},
+            {"from_ref": a, "to": c, "label": "同級生"},
+        ]
+    })
+    assert res.status_code == 200
+    assert res.json()["applied"] == 2
+    detail = client.get(f"/api/entries/{ref_path(a)}").json()
+    assert [r["term"] for r in detail["relations_resolved"]] == ["カムパネルラ", "ザネリ"]
+
+
+def test_apply_relations_keeps_what_was_already_there(client):
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    c = _person(client, "ザネリ")
+    client.put(f"/api/entries/{ref_path(a)}", json={
+        "term": "ジョバンニ", "category": "登場人物",
+        "relations": [{"to": b, "label": "親友"}],
+    })
+    client.post("/api/relations", json={
+        "relations": [{"from_ref": a, "to": c, "label": "同級生"}]
+    })
+    detail = client.get(f"/api/entries/{ref_path(a)}").json()
+    assert [r["term"] for r in detail["relations_resolved"]] == ["カムパネルラ", "ザネリ"]
+
+
+def test_apply_relations_reports_a_missing_source(client):
+    body = client.post("/api/relations", json={
+        "relations": [{"from_ref": "登場人物/いない", "to": "だれか", "label": "x"}]
+    }).json()
+    assert body["applied"] == 0
+    assert body["results"][0]["ok"] is False
+
+
+def test_doctor_is_quiet_on_a_healthy_dictionary(client):
+    client.post("/api/entries", json=ENTRY)
+    body = client.get("/api/doctor").json()
+    assert body["issues"] == [] and body["checked"] == 1
+
+
+def test_doctor_reports_a_broken_relation(client):
+    a = _person(client, "ジョバンニ")
+    client.put(f"/api/entries/{ref_path(a)}", json={
+        "term": "ジョバンニ", "category": "登場人物",
+        "summary": "主人公。", "definition": "本文。",
+        "relations": [{"to": "いない人", "label": "兄"}],
+    })
+    body = client.get("/api/doctor").json()
+    assert [i["kind"] for i in body["issues"]] == ["broken_relation"]
+    assert body["errors"] == 1
+
+
+def test_relations_draft_needs_two_entries(client):
+    _person(client, "ジョバンニ")
+    res = client.post("/api/ai/relations", json={"category": "登場人物"})
+    assert res.status_code == 400
+    assert "2 語以上" in res.json()["detail"]

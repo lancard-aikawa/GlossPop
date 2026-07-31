@@ -4,6 +4,7 @@
 // すでにあるうえ、`rank`（上下）で層が決まるので、決定的に置けば足りる。
 // 乱数も収束待ちも無いぶん、同じ辞書なら毎回同じ絵になる。
 import { api, el, paintEntryCount, setStatus } from "./base.js";
+import { openRelationsDialog } from "./relations-draft.js";
 
 const canvas = document.getElementById("canvas");
 const notes = document.getElementById("notes");
@@ -12,6 +13,7 @@ const statusNode = document.getElementById("status");
 const countNode = document.getElementById("count");
 const categorySelect = document.getElementById("category");
 const spoilerCheck = document.getElementById("spoilers");
+const draftButton = document.getElementById("draft");
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -409,11 +411,25 @@ async function refresh() {
   }
 }
 
+async function onDraft() {
+  const { category, scope } = selection();
+  draftButton.disabled = true;
+  try {
+    // 書き込まれたぶんを図に反映する。0 本でも状態は描き直しておく
+    if (await openRelationsDialog({ category: category || "", scope: scope || "" })) {
+      await refresh();
+    }
+  } finally {
+    draftButton.disabled = false;
+  }
+}
+
 async function main() {
   paintEntryCount(countNode);
   await loadCategories();
   categorySelect.addEventListener("change", refresh);
   spoilerCheck.addEventListener("change", refresh);
+  draftButton.addEventListener("click", onDraft);
   await refresh();
 }
 

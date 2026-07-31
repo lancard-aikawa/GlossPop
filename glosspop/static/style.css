@@ -777,3 +777,19 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   stroke-width: 3px;
   stroke-linejoin: round;
 }
+
+/* ---------------------------------------------------------------- 点検 */
+.issue-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--accent-fg);
+  background: var(--fg-faint);
+}
+.issue-badge.error { background: var(--danger); color: #fff; }
+.issue-badge.warn { background: var(--warn); color: #fff; }
+.issue-detail { color: var(--fg-dim); font-size: 13px; }

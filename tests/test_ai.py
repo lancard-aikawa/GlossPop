@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from glosspop import ai
@@ -265,3 +267,161 @@ class TestSpoilerControl:
 
     def test_prompt_is_unrestricted_by_default(self):
         assert "ネタバレの禁止" not in ai.build_prompt("太郎", "文脈")
+
+
+# --------------------------------------------------------------------------- #
+# 関係の下書き
+#
+# 関係のデータ構造だけあっても 1 本ずつ手で書くことになり、図が空のまま終わる。
+# ここが埋める側。**AI の申告をそのまま信じない**部分を主に見る。
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def cast(add_entry):
+    giovanni = add_entry("ジョバンニ", category="登場人物", summary="主人公。")
+    campanella = add_entry("カムパネルラ", category="登場人物", summary="友人。")
+    return giovanni, campanella
+
+
+class TestRelationsPrompt:
+    def test_lists_only_the_target_terms(self, cast):
+        from glosspop import store
+        prompt = ai.build_relations_prompt(store.load_all(), "本文")
+        assert "ジョバンニ" in prompt and "カムパネルラ" in prompt
+        # 用語を作る作業ではないと明示する（AI は平気で新しい名前を足す）
+        assert "一覧に無い語を勝手に足さないこと" in prompt
+
+    def test_forbids_reveal_when_only_the_first_scene_is_given(self, cast):
+        from glosspop import store
+        entries = store.load_all()
+        first = ai.build_relations_prompt(entries, "本文", spoiler="first")
+        assert "ネタバレの禁止" in first
+        assert "**必ず空文字にすること**" in first
+        full = ai.build_relations_prompt(entries, "本文", spoiler="full")
+        assert "ネタバレの禁止" not in full
+
+    def test_lists_pairs_that_already_have_a_relation(self, cast):
+        from glosspop import store
+        from glosspop.models import EntryDraft
+        giovanni, campanella = cast
+        store.save(
+            EntryDraft(term=giovanni.term, category=giovanni.category,
+                       relations=[{"to": campanella.ref, "label": "親友"}]),
+            ref=giovanni.ref,
+        )
+        entries = store.load_all()
+        prompt = ai.build_relations_prompt(entries, "本文", existing=ai.existing_pairs(entries, entries))
+        assert "すでに書かれている関係" in prompt
+        assert "ジョバンニ—カムパネルラ" in prompt
+
+
+class TestFilterRelations:
+    def _filter(self, raw, **kwargs):
+        from glosspop import store
+        entries = store.load_all()
+        kwargs.setdefault("scope", entries)
+        kwargs.setdefault("limit", 10)
+        return ai.filter_relations(raw, entries, **kwargs)
+
+    def test_resolves_both_ends_to_refs(self, cast):
+        giovanni, campanella = cast
+        kept, _ = self._filter([
+            {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友", "back": "親友"}
+        ])
+        assert kept[0]["from_ref"] == giovanni.ref
+        assert kept[0]["to_ref"] == campanella.ref
+        assert kept[0]["mutual"] is True
+
+    def test_drops_a_term_that_is_not_registered(self, cast):
+        kept, dropped = self._filter([
+            {"from": "ジョバンニ", "to": "知らない人", "label": "兄"}
+        ])
+        assert kept == []
+        assert "登録された用語ではありません" in dropped[0]["reason"]
+
+    def test_drops_a_self_relation(self, cast):
+        kept, dropped = self._filter([
+            {"from": "ジョバンニ", "to": "ジョバンニ", "label": "自分"}
+        ])
+        assert kept == [] and dropped[0]["reason"] == "自分自身への関係"
+
+    def test_drops_a_pair_that_already_has_a_relation(self, cast):
+        from glosspop import store
+        from glosspop.models import EntryDraft
+        giovanni, campanella = cast
+        store.save(
+            EntryDraft(term=giovanni.term, category=giovanni.category,
+                       relations=[{"to": campanella.ref, "label": "親友"}]),
+            ref=giovanni.ref,
+        )
+        # 向きを逆にしても同じ組とみなすこと（2 本目の辺を生やさない）
+        kept, dropped = self._filter([
+            {"from": "カムパネルラ", "to": "ジョバンニ", "label": "親友"}
+        ])
+        assert kept == [] and dropped[0]["reason"] == "すでに関係が書かれています"
+
+    def test_drops_the_same_pair_twice(self, cast):
+        kept, dropped = self._filter([
+            {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友"},
+            {"from": "カムパネルラ", "to": "ジョバンニ", "label": "親友"},
+        ])
+        assert len(kept) == 1
+        assert dropped[0]["reason"] == "同じ組が 2 回挙がりました"
+
+    def test_strips_reveal_when_not_allowed(self, cast):
+        kept, _ = self._filter(
+            [{"from": "ジョバンニ", "to": "カムパネルラ", "label": "実は兄弟", "reveal": "第9章"}],
+            allow_reveal=False,
+        )
+        assert kept[0]["reveal"] == ""
+
+    def test_normalizes_rank(self, cast):
+        kept, _ = self._filter([
+            {"from": "ジョバンニ", "to": "カムパネルラ", "label": "弟子", "rank": "上位"}
+        ])
+        assert kept[0]["rank"] == "上"
+
+    def test_respects_the_limit(self, add_entry, cast):
+        add_entry("ザネリ", category="登場人物")
+        kept, dropped = self._filter([
+            {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友"},
+            {"from": "ジョバンニ", "to": "ザネリ", "label": "同級生"},
+        ], limit=1)
+        assert len(kept) == 1 and "上限" in dropped[0]["reason"]
+
+
+class TestDraftRelations:
+    @pytest.mark.anyio
+    async def test_needs_two_entries(self, add_entry, monkeypatch):
+        add_entry("ジョバンニ", category="登場人物")
+        from glosspop import store
+        monkeypatch.setattr(ai, "_run_claude", lambda prompt: "[]")
+        with pytest.raises(ai.AIError):
+            await ai.draft_relations(store.load_all(), [("a.md", "本文")])
+
+    @pytest.mark.anyio
+    async def test_returns_validated_relations(self, cast, monkeypatch):
+        from glosspop import store
+        monkeypatch.setattr(ai, "_run_claude", lambda prompt: json.dumps([
+            {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友", "back": "親友"},
+            {"from": "ジョバンニ", "to": "存在しない人", "label": "兄"},
+        ]))
+        docs = [("a.md", "ジョバンニとカムパネルラは友達だった。")]
+        result = await ai.draft_relations(store.load_all(), docs)
+        assert [r["to_term"] for r in result["relations"]] == ["カムパネルラ"]
+        assert len(result["dropped"]) == 1
+
+    @pytest.mark.anyio
+    async def test_first_scene_mode_only_sends_the_first_appearance(self, cast, monkeypatch):
+        """全文を渡すと、後で明かされる関係が図に出る。"""
+        from glosspop import store
+        seen = {}
+
+        def capture(prompt):
+            seen["prompt"] = prompt
+            return "[]"
+
+        monkeypatch.setattr(ai, "_run_claude", capture)
+        docs = [("a.md", "ジョバンニが出た。\n\nカムパネルラが出た。\n\n実は二人は兄弟だった。")]
+        await ai.draft_relations(store.load_all(), docs, spoiler="first")
+        assert "実は二人は兄弟だった" not in seen["prompt"]

@@ -14,8 +14,9 @@ from pathlib import Path
 
 from anyio import to_thread
 
-from . import config, store
-from .models import UNCATEGORIZED, EntryDraft
+from . import config, relations, store
+from .linker import entry_url
+from .models import UNCATEGORIZED, Entry, EntryDraft, Relation
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
@@ -659,6 +660,258 @@ async def extract_terms_from_documents(
         "files_skipped": skipped,
         "kinds": kinds,
     }
+
+
+# --------------------------------------------------------------------------- #
+# 関係の下書き
+#
+# 関係のデータ構造だけあっても、1 本ずつ手で書くことになって図が空のまま終わる。
+# **登録済みの用語を渡して、その間の関係だけを 1 回で挙げさせる**のがここ。
+# 用語そのものは作らない（それは extract の仕事）。
+# --------------------------------------------------------------------------- #
+
+_RELATION_SCHEMA_HINT = """[
+  {
+    "from": "関係を書く側の用語。**下の一覧にある表記そのまま**",
+    "to": "相手の用語。**下の一覧にある表記そのまま**",
+    "label": "from から見た to の一言 (10 字程度)",
+    "back": "to から見た from の一言。一方的な関係なら空文字",
+    "rank": "to が from から見て 上 / 下 / 対等 のいずれか。決められなければ空文字",
+    "reveal": "REVEAL_DESC",
+    "why": "根拠になる本文を 1 文そのまま抜き出す"
+  }
+]"""
+
+
+def build_relations_prompt(
+    entries: list[Entry],
+    text: str,
+    *,
+    existing: list[tuple[str, str]] | None = None,
+    limit: int = 20,
+    spoiler: str = "full",
+) -> str:
+    """登録済みの用語どうしの関係を挙げさせるプロンプト。"""
+    listed = "\n".join(
+        f"- {e.term}" + (f" — {e.summary}" if e.summary else "")
+        for e in entries
+    )
+    reveal_desc = (
+        "この関係が本文で判明する位置 (「第6章」など)。分からなければ空文字"
+        if spoiler != "first"
+        else "**必ず空文字にすること**"
+    )
+
+    parts = [
+        "あなたは用語辞書の編集者です。次の文書を読み、"
+        "**すでに登録されている用語どうしの関係**を挙げてください。",
+        "",
+        "## 対象の用語",
+        "**この一覧にあるものだけ**を `from` と `to` に使ってください。"
+        "一覧に無い語を勝手に足さないこと（関係だけを作る作業で、用語は作りません）。",
+        listed,
+        "",
+        "## 書き方",
+        "すべて **`from` から `to` を見た向き**で書きます。基準を 1 つに固定しているので、"
+        "`label` も `back` も `rank` も同じ向きで読めるようにしてください。",
+        "",
+        "- 相互の関係（互いに認識している）なら `back` にも一言を入れる",
+        "- 一方的な関係（片思い、一方が知らない）なら `back` は空文字",
+        "- 同じ 2 つの用語の組は **1 回だけ**。向きを変えて 2 行書かないこと",
+        "- 本文から読み取れる関係だけを書く。推測で埋めないこと",
+        f"- 多くても {limit} 件まで。確かなものを優先する",
+    ]
+    if existing:
+        pairs = "、".join(f"{a}—{b}" for a, b in existing[:200])
+        parts += ["", "## すでに書かれている関係（挙げないこと）", pairs]
+    if spoiler == "first":
+        parts += [
+            "",
+            "## ネタバレの禁止",
+            "**渡した抜粋は各用語が初めて出てくる場面だけです。それ以降の展開は"
+            "知らないものとして書いてください。**",
+            "後で明かされる関係（正体、血縁、裏切りなど）には触れず、"
+            "この時点で分かる関係だけを書くこと。",
+        ]
+    parts += [
+        "",
+        "## 文書",
+        (text or "").strip()[:16000],
+        "",
+        "## 出力形式",
+        "次の JSON 配列だけを出力してください。前置き・後置きの文章は書かないこと。",
+        "確かな関係が無ければ空の配列 [] を返してください。",
+        _RELATION_SCHEMA_HINT.replace("REVEAL_DESC", reveal_desc),
+    ]
+    return "\n".join(parts)
+
+
+def existing_pairs(entries: list[Entry], scope: list[Entry]) -> list[tuple[str, str]]:
+    """すでに関係が書かれている組を**用語名で**返す。プロンプトに載せる用。"""
+    out: list[tuple[str, str]] = []
+    for entry in scope:
+        for rel in entry.relations:
+            res = relations.resolve(rel.to, entries, origin=entry)
+            other = res.entry.term if res.entry is not None else rel.to
+            out.append((entry.term, other))
+    return out
+
+
+def existing_ref_pairs(entries: list[Entry], scope: list[Entry]) -> set[tuple[str, str]]:
+    """すでに関係が書かれている組を **ref で**返す。重複の判定用。
+
+    プロンプト用 (``existing_pairs``) と別にしているのは、**照合を用語名でやると
+    成立しないため**。同じ用語名がカテゴリ違いで併存できるので名前では一意にならず、
+    かたや新しい候補は解決済みの ref で持っている。突き合わせる鍵を揃えないと
+    「すでにある関係」を素通しして、同じ組に 2 本目の辺が生える（実際に踏んだ）。
+    """
+    out: set[tuple[str, str]] = set()
+    for entry in scope:
+        for rel in entry.relations:
+            res = relations.resolve(rel.to, entries, origin=entry)
+            if res.entry is not None:
+                out.add(_pair_key(entry.ref, res.entry.ref))
+    return out
+
+
+def _pair_key(a: str, b: str) -> tuple[str, str]:
+    """向きを無視した組の鍵。同じ組を 2 度書かせないために使う。"""
+    return tuple(sorted((a.casefold(), b.casefold())))  # type: ignore[return-value]
+
+
+def filter_relations(
+    raw: list[dict],
+    entries: list[Entry],
+    *,
+    scope: list[Entry],
+    limit: int,
+    allow_reveal: bool = True,
+) -> tuple[list[dict], list[dict]]:
+    """AI が挙げた関係をそのまま信じずに整える。
+
+    候補語のときと同じ発想で、**通すと壊れるもの**を先に落とす:
+
+    - 一覧に無い用語（AI は平気で本文中の別の名前を返す）
+    - 自分自身への関係（図に描けない）
+    - すでに書かれている組（重複した辺になる）
+    - 同じ組の 2 度目（向きを変えて 2 行書いてくることがある）
+
+    落とした理由を付けて返すのは、「なぜこの関係が出てこないのか」を UI で
+    説明できるようにするため。
+    """
+    known = existing_ref_pairs(entries, scope)
+    seen: set[tuple[str, str]] = set()
+    kept: list[dict] = []
+    dropped: list[dict] = []
+
+    for item in raw:
+        src = str(item.get("from") or "").strip()
+        dst = str(item.get("to") or "").strip()
+        if not src or not dst:
+            continue
+
+        rel = Relation.model_validate({
+            "to": dst,
+            "label": item.get("label"),
+            "back": item.get("back"),
+            "rank": item.get("rank"),
+            "reveal": item.get("reveal") if allow_reveal else "",
+        })
+        record = {
+            "from": src,
+            "to": rel.to,
+            "label": rel.label,
+            "back": rel.back,
+            "rank": rel.rank,
+            "reveal": rel.reveal,
+            "mutual": rel.mutual,
+            "why": str(item.get("why") or "").strip()[:400],
+        }
+
+        from_hit = relations.resolve(src, entries)
+        if from_hit.entry is None:
+            dropped.append({**record, "reason": f"「{src}」は登録された用語ではありません"})
+            continue
+        to_hit = relations.resolve(rel.to, entries, origin=from_hit.entry)
+        if to_hit.entry is None:
+            dropped.append({**record, "reason": f"「{rel.to}」は登録された用語ではありません"})
+            continue
+        if from_hit.entry.ref == to_hit.entry.ref:
+            dropped.append({**record, "reason": "自分自身への関係"})
+            continue
+
+        key = _pair_key(from_hit.entry.ref, to_hit.entry.ref)
+        if key in known:
+            dropped.append({**record, "reason": "すでに関係が書かれています"})
+            continue
+        if key in seen:
+            dropped.append({**record, "reason": "同じ組が 2 回挙がりました"})
+            continue
+        if len(kept) >= limit:
+            dropped.append({**record, "reason": f"上限 {limit} 件を超えた"})
+            continue
+
+        seen.add(key)
+        # 解決済みの ref で持たせる。保存時に名前を引き直さずに済み、
+        # 同名がカテゴリ違いで併存していても取り違えない
+        record["from_ref"] = from_hit.entry.ref
+        record["from_term"] = from_hit.entry.term
+        record["from_url"] = entry_url(from_hit.entry)
+        record["to_ref"] = to_hit.entry.ref
+        record["to_term"] = to_hit.entry.term
+        record["to_url"] = entry_url(to_hit.entry)
+        kept.append(record)
+
+    return kept, dropped
+
+
+async def draft_relations(
+    entries: list[Entry],
+    docs: list[tuple[str, str]],
+    *,
+    scope: list[Entry] | None = None,
+    limit: int = 20,
+    spoiler: str = "full",
+) -> dict:
+    """登録済みの用語どうしの関係を下書きする。保存はしない。
+
+    ``entries`` は辞書全体（参照解決に使う）、``scope`` は関係を探す対象。
+    """
+    scope = scope if scope is not None else entries
+    if len(scope) < 2:
+        raise AIError("関係を探すには、同じ範囲に 2 語以上の登録が要ります")
+
+    if spoiler == "first":
+        # 各用語の初出の場面だけを繋いで渡す。全文を渡すと、後で明かされる
+        # 関係（正体・血縁）が図に出てしまう
+        chunks = []
+        for entry in scope:
+            _, _, context = _first_seen(docs, entry.term)
+            if context:
+                chunks.append(f"### {entry.term} の初出\n{context}")
+        text = "\n\n".join(chunks)
+    else:
+        text, _, _ = combine_documents(docs)
+
+    if not text.strip():
+        raise AIError("読める本文がありません")
+
+    prompt = build_relations_prompt(
+        scope,
+        text,
+        existing=existing_pairs(entries, scope),
+        limit=limit,
+        spoiler=spoiler,
+    )
+    raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
+    kept, dropped = filter_relations(
+        parse_candidates(raw),
+        entries,
+        scope=scope,
+        limit=limit,
+        allow_reveal=spoiler != "first",
+    )
+    return {"relations": kept, "dropped": dropped}
 
 
 async def draft_entry(
