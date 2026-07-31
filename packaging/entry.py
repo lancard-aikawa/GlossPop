@@ -2,8 +2,9 @@
 
 ``glosspop/__main__.py`` は相対 import (``from .cli import main``) を使うので、
 PyInstaller にトップレベルスクリプトとして渡すと import に失敗する。
-ここでは絶対 import で叩く。引数なしで起動したら ``serve`` 扱いにするのは
-``python -m glosspop`` と同じ。
+ここでは絶対 import で叩く。**引数なしで起動したら ``app`` 扱い**にする
+（exe をダブルクリックする人に「ブラウザで URL を開く」をさせない）。
+CLI として使うぶんには従来どおり ``glosspop.exe list`` のように叩ける。
 """
 
 from __future__ import annotations
@@ -18,4 +19,4 @@ if __name__ == "__main__":
     # これを呼ばないと、何かが multiprocessing を使った瞬間にサーバが
     # 無限に立ち上がる
     multiprocessing.freeze_support()
-    raise SystemExit(main(sys.argv[1:] or ["serve"]))
+    raise SystemExit(main(sys.argv[1:] or ["app"]))

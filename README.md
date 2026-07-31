@@ -17,11 +17,15 @@ Python のインストールは要らない。
    チェック（`Unblock-File .\GlossPop-*.zip` でも可）。署名していないので、これをしないと
    起動時に SmartScreen の警告が出る
 3. 好きな場所に展開し、`GlossPop\glosspop.exe` を実行する
-4. ブラウザで **http://127.0.0.1:8765/** を開く
+4. **専用ウィンドウが自動で開く**（タブもアドレスバーも無い。中身は Edge）
 5. 一覧の `ようこそ.md` を開く。サンプルの用語が 3 語入っているので、そのまま
    自動リンクと吹き出し（同じ表記が 2 つの意味を持つ例も）を試せる
 
-止めるときはコンソールで `Ctrl+C`（閉じるだけでも終了する）。
+ウィンドウが開かないときは、ブラウザで **http://127.0.0.1:8765/** を開けばよい
+（アプリモードで開ける Edge / Chrome が無い場合は既定のブラウザで開く）。
+
+止めるときはコンソールで `Ctrl+C`（閉じるだけでも終了する）。**ウィンドウを閉じても
+サーバは止まらない**ので、使い終わったらコンソールも閉じること。
 
 `glosspop.exe` だけ取り出しても動かない。`_internal\` と同じフォルダに置いたまま使うこと。
 辞書は exe と同じ場所の `data\glossary\` に貯まるので、フォルダごとコピーすれば別の PC へ
@@ -32,7 +36,8 @@ Python のインストールは要らない。
 
 ```powershell
 uv sync
-uv run glosspop serve                   # http://127.0.0.1:8765/
+uv run glosspop app                     # 専用ウィンドウで開く
+uv run glosspop serve                   # 開くだけ (ブラウザは自分で) http://127.0.0.1:8765/
 uv run glosspop serve --port 9000       # ポートを変える
 uv run glosspop serve --reload          # 開発用 (ソース変更で再起動)
 ```
@@ -437,7 +442,8 @@ glosspop/
   fetcher.py    URL 取得
   htmlclean.py  外部 HTML の本文抽出とサニタイズ
   ai.py         claude CLI サブプロセス呼び出し
-  cli.py        serve / add / list / show / move / rm / categories
+  cli.py        app / serve / add / list / show / move / rm / categories
+  appwindow.py  専用ウィンドウ (ブラウザのアプリモード) の起動
   static/
     viewer.js      ビューア
     glossary.js    辞書一覧
@@ -465,9 +471,10 @@ Python も uv も入っていない PC で動かすなら、PyInstaller で oned
 
 ```
 dist\GlossPop\
-  glosspop.exe    引数なしで起動 = serve
+  glosspop.exe    引数なしで起動 = app (専用ウィンドウが開く)
   _internal\      Python ランタイムと依存 (触らない)
   data\glossary\  辞書        ← exe の隣に読み書きされる
+  data\window\    専用ウィンドウのブラウザプロファイル (消しても支障はない)
   content\        既定で開くフォルダ (.md / .txt / .html)
 ```
 

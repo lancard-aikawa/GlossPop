@@ -9,3 +9,5 @@ __pycache__/
 .playwright-mcp/
 build/
 dist/
+# 専用ウィンドウ (glosspop app) のブラウザプロファイル。data/ 自体は追跡している
+data/window/

@@ -52,6 +52,28 @@ def _emit(data: object) -> None:
 # サブコマンド
 # --------------------------------------------------------------------------- #
 
+def _open_window_later(args: argparse.Namespace, url: str) -> None:
+    """サーバが listen したら専用ウィンドウを開く（別スレッド）。
+
+    **窓の寿命は追えない。** 起動した ``msedge.exe`` はブラウザ本体を別プロセスで
+    生んですぐ終了するので、こちらの ``Popen`` を ``wait()`` しても「窓が閉じた」
+    ことにはならない（一度これで「窓は開いたままサーバだけ落ちる」を作った）。
+    サーバを止めるのは Ctrl+C。
+    """
+    import threading
+
+    from . import appwindow
+
+    def run() -> None:
+        if not appwindow.wait_until_ready(args.host, args.port):
+            print("サーバの起動を確認できませんでした。ウィンドウは開きません。", file=sys.stderr)
+            return
+        if appwindow.open_window(url) is None:
+            print("アプリモードで開けるブラウザが無いので既定のブラウザで開きました。", file=sys.stderr)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -62,8 +84,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print("--reload は exe 版では使えません。無視します。", file=sys.stderr)
         reload = False
 
+    open_window = getattr(args, "open", False)
+
     config.ensure_dirs()
-    print(f"GlossPop: http://{args.host}:{args.port}/", file=sys.stderr)
+    url = f"http://{args.host}:{args.port}/"
+    print(f"GlossPop: {url}", file=sys.stderr)
     print(f"  辞書   : {config.GLOSSARY_DIR}", file=sys.stderr)
     print(f"  カテゴリ: {config.CATEGORIES_FILE}", file=sys.stderr)
     print(f"  content: {config.CONTENT_DIR}", file=sys.stderr)
@@ -73,6 +98,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
         target = "glosspop.app:app"   # reloader はプロセスを作り直すので文字列でないと渡せない
     else:
         from .app import app as target  # 文字列 import は exe 版で解決できない
+
+    if open_window:
+        _open_window_later(args, url)
 
     uvicorn.run(
         target,
@@ -245,12 +273,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="glosspop", description="GlossPop 辞書ビューア")
     sub = p.add_subparsers(dest="command", required=True)
 
-    s = sub.add_parser("serve", help="ビューアを起動する")
-    s.add_argument("--host", default="127.0.0.1")
-    s.add_argument("--port", type=int, default=8765)
-    s.add_argument("--reload", action="store_true")
-    s.add_argument("--log-level", default="info")
-    s.set_defaults(func=cmd_serve)
+    def add_serve_options(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--host", default="127.0.0.1")
+        parser.add_argument("--port", type=int, default=8765)
+        parser.add_argument("--reload", action="store_true")
+        parser.add_argument("--log-level", default="info")
+
+    s = sub.add_parser("serve", help="ビューアを起動する（ブラウザは自分で開く）")
+    add_serve_options(s)
+    s.set_defaults(func=cmd_serve, open=False)
+
+    w = sub.add_parser("app", help="ビューアを起動して専用ウィンドウで開く")
+    add_serve_options(w)
+    w.set_defaults(func=cmd_serve, open=True)
 
     a = sub.add_parser("add", help="辞書に用語を登録する")
     a.add_argument("--json", metavar="SPEC", help="エントリ全体を JSON で渡す ('-' で stdin, '@path' でファイル)")

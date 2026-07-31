@@ -57,5 +57,5 @@ foreach ($name in $seeds.Keys) {
 
 Write-Host ""
 Write-Host "ビルド完了: $out"
-Write-Host "  起動: .\dist\GlossPop\glosspop.exe          (= serve)"
+Write-Host "  起動: .\dist\GlossPop\glosspop.exe          (= app / 専用ウィンドウが開く)"
 Write-Host "  辞書: .\dist\GlossPop\data\glossary\"

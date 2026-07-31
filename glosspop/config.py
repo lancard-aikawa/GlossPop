@@ -40,6 +40,11 @@ CONTENT_DIR = _env_path("GLOSSPOP_CONTENT_DIR", DATA_ROOT / "content")
 #: 静的ファイル
 STATIC_DIR = PACKAGE_DIR / "static"
 
+#: 専用ウィンドウ（ブラウザのアプリモード）が使うプロファイル。
+#: 普段のブラウザと混ぜないためと、窓の寿命を親から追えるようにするため
+#: （`appwindow` の docstring 参照）。localStorage もここに貯まる
+WINDOW_PROFILE_DIR = _env_path("GLOSSPOP_WINDOW_PROFILE_DIR", DATA_ROOT / "data" / "window")
+
 #: claude CLI の場所 (見つからなければ AI 下書き機能だけが無効になる)
 CLAUDE_BIN = os.environ.get("GLOSSPOP_CLAUDE_BIN") or shutil.which("claude")
 
