@@ -9,6 +9,7 @@ __pycache__/
 .playwright-mcp/
 build/
 dist/
+sandbox/
 
 # 辞書テスト用カテゴリ
 文学/
