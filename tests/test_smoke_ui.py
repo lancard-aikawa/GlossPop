@@ -68,6 +68,43 @@ def server(isolated_dirs):
         updates.invalidate()
 
 
+def _watch_page(page) -> dict[str, list[str]]:
+    """画面の裏で起きたことを集める。
+
+    見るのは 3 つとも「**落ちた理由がここにしか残らない**」もの:
+
+    - ``pageerror`` … JS の例外。握り潰されると画面には何も出ない
+    - ``console`` の error … 例外にならない失敗（fetch の握り潰しなど）
+    - 通信 … 繋がらなかった要求と、4xx / 5xx を返した応答
+
+    「要素が出てこない」の原因はたいていこのどれかで、**待ち時間の切れた
+    タイムアウトだけが残ると原因が消える**（リリースで実際に踏んだ）。
+    """
+    seen: dict[str, list[str]] = {"js": [], "console": [], "network": []}
+    page.on("pageerror", lambda e: seen["js"].append(str(e)))
+    page.on(
+        "console",
+        lambda m: m.type == "error" and seen["console"].append(m.text),
+    )
+    page.on(
+        "requestfailed",
+        lambda r: seen["network"].append(f"{r.method} {r.url} → {r.failure}"),
+    )
+    page.on(
+        "response",
+        lambda r: r.status >= 400 and seen["network"].append(f"{r.status} {r.url}"),
+    )
+    return seen
+
+
+def _notes(seen: dict[str, list[str]]) -> list[str]:
+    labels = {"js": "JS の例外", "console": "console の error", "network": "通信の失敗"}
+    return [
+        f"{labels[key]}:\n  " + "\n  ".join(lines)
+        for key, lines in seen.items() if lines
+    ]
+
+
 @pytest.fixture
 def page(server):
     with sync_api.sync_playwright() as p:
@@ -77,15 +114,22 @@ def page(server):
             pytest.skip(f"Chrome を起動できません: {exc}")
         context = browser.new_context(viewport={"width": 1280, "height": 900})
         page = context.new_page()
-        errors: list[str] = []
-        page.on("pageerror", lambda e: errors.append(str(e)))
+        seen = _watch_page(page)
         try:
             yield page
-            # JS の例外は画面に出ないことがある。黙って壊れたまま通さない
-            assert not errors, f"ページで JS エラーが出ました: {errors}"
         finally:
+            # **本体が落ちたときは、ここで出さないと原因が残らない。**
+            # fixture は**テスト本体の例外を受け取れない**（pytest は例外を
+            # generator へ投げ込まず、teardown を普通に進める）ので、`except` で
+            # 拾って例外に書き添える手は使えない —— 実際に書いてみて、`else` の
+            # ほうが走ることを確かめた。失敗したテストの出力は pytest が
+            # 「Captured stdout teardown」として出すので、そこへ流す
+            for note in _notes(seen):
+                print(note)
             context.close()
             browser.close()
+        # JS の例外は画面に出ないことがある。黙って壊れたまま通さない
+        assert not seen["js"], f"ページで JS エラーが出ました: {seen['js']}"
 
 
 @pytest.fixture

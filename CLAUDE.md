@@ -685,6 +685,13 @@ CI には無いので 503 で止まり、**手元で通ったテストだけが�
 - Chrome も playwright も無ければ丸ごと skip する。**通常の `uv run pytest` を
   止めないこと**が条件
 - ページの JS 例外は `pageerror` で拾って失敗させている。画面に出ない例外を通さない
+- **本体が落ちたときの手掛かりは teardown で `print` する**（`_watch_page`）。
+  JS の例外・console の error・4xx / 5xx と繋がらなかった要求を集めてある。
+  **fixture はテスト本体の例外を受け取れない** —— pytest は例外を generator へ
+  投げ込まず teardown を普通に進めるので、`except` で拾って `add_note` する手は
+  効かない（`else` のほうが走る。実際に書いて確かめた）。失敗したテストの出力は
+  pytest が「Captured stdout teardown」として出すので、そこへ流している。
+  これが無いと「要素が 15 秒出てこない」だけが残り、**原因が消える**
 - 要素は `data-ref` で掴む。ボタンの文言で掴むと、文言を変えるたびに落ちる
 - **待つ対象を広く取らない。** `svg.rel-graph` の `textContent` にはノードの
   `<title>` に入れた要約まで混ざるので、「図に『級友』が出るまで待つ」が**最初から
