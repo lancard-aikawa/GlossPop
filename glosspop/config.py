@@ -257,6 +257,55 @@ def _is_cache(rel: Path) -> bool:
     )
 
 
+#: 隣を探すときに見るディレクトリ数の上限。アプリを雑多なフォルダの下に置かれても
+#: 走査で固まらないように
+MAX_SIBLING_SCAN = 60
+
+
+def count_entries(root: Path) -> int:
+    """``<root>/data/glossary`` にある .md の数。壊れていても数えるだけ。"""
+    base = root / "data" / "glossary"
+    if not base.is_dir():
+        return 0
+    try:
+        return sum(1 for _ in base.glob("*/*.md"))
+    except OSError:
+        return 0
+
+
+def find_data_candidates(limit: int = 5) -> list[dict]:
+    """**隣のフォルダに置き去りになっているデータ**を探す。
+
+    新しい版を隣に展開して既定のまま起動すると、辞書は旧フォルダに残ったままで
+    **消えたように見える**。これが更新でいちばん怖い事故なので、見つけて案内する。
+
+    探すのはアプリと同じ階層だけ（深く潜らない）。いま使っている場所と、
+    語が 1 つも無いフォルダは候補にしない。
+    """
+    if count_entries(DATA_ROOT) > 0:
+        return []          # いま中身があるなら黙る
+    here = {Path(DATA_ROOT).resolve(), Path(APP_DIR).resolve()}
+    out: list[dict] = []
+    try:
+        siblings = sorted(APP_DIR.parent.iterdir())[:MAX_SIBLING_SCAN]
+    except OSError:
+        return []
+    for path in siblings:
+        if len(out) >= limit:
+            break
+        try:
+            if not path.is_dir() or path.resolve() in here:
+                continue
+        except OSError:
+            continue
+        count = count_entries(path)
+        if count:
+            out.append({"path": str(path), "name": path.name, "entry_count": count})
+    # 語数の多いものを先に
+    out.sort(key=lambda c: -c["entry_count"])
+    return out
+
+
 def copy_data_root(src: Path, dst: Path) -> dict:
     """データ一式を新しい場所へ**複製する**。元は消さない。
 

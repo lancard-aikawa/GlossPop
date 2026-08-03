@@ -24,6 +24,14 @@ function build() {
         <button type="button" class="ghost" data-ref="close" aria-label="閉じる">✕</button>
       </header>
       <div class="body">
+        <section class="entry-section" data-ref="importBox" hidden>
+          <h2>隣のフォルダにデータがあります</h2>
+          <p class="hint">
+            新しい版を隣に展開して起動すると、辞書は前のフォルダに残ったままになります。
+            ここから引き継げます（<strong>元は消しません</strong>）。
+          </p>
+          <ul class="rel-list" data-ref="imports"></ul>
+        </section>
         <section class="entry-section">
           <h2>データの保存先</h2>
           <p class="hint">
@@ -87,6 +95,12 @@ function build() {
             </span>
           </label>
           <p class="hint" data-ref="updateState"></p>
+          <div class="setting-row setting-row-plain" data-ref="downloadRow" hidden>
+            <button type="button" data-ref="download">⬇ 新しい版を隣に展開する</button>
+            <span class="hint">
+              いまのフォルダは触りません。展開したら、そちらを起動してください。
+            </span>
+          </div>
         </section>
         <p class="notice" data-ref="result" hidden></p>
       </div>
@@ -110,6 +124,27 @@ const PATH_LABELS = {
   content: "読む文書（既定のフォルダ）",
   window_profile: "専用ウィンドウの設定・お気に入り",
 };
+
+/** 隣に置き去りのデータを出す。更新で「辞書が消えた」ように見える状態の救済。 */
+function paintImports(info, onImport) {
+  const candidates = info.import_candidates || [];
+  refs.importBox.hidden = !candidates.length;
+  refs.imports.replaceChildren(
+    ...candidates.map((c) =>
+      el("li", { class: "rel-row" }, [
+        el("span", { class: "rel-label", text: `${c.name}（${c.entry_count} 語）` }),
+        el("span", { class: "issue-detail", text: c.path }),
+        el("span", { class: "spacer" }),
+        el("button", {
+          type: "button",
+          class: "primary",
+          text: "引き継ぐ",
+          onclick: () => onImport(c),
+        }),
+      ])
+    )
+  );
+}
 
 /** 保存先の外に出ているものを知らせる。複製に乗らないので黙らない。 */
 function paintOutside(info) {
@@ -173,6 +208,8 @@ async function paintUpdate() {
   // 失敗は隠さない。ただし本体には関係が無いので淡く出すだけ
   else if (info.error) bits.push("いまは確認できませんでした。");
   refs.updateState.textContent = bits.join(" ");
+  // 新しい版があるときだけ出す（無いときに押させても「最新です」と言うだけ）
+  refs.downloadRow.hidden = !info.newer;
 }
 
 export async function openSettingsDialog() {
@@ -191,6 +228,40 @@ export async function openSettingsDialog() {
   const onTheme = () => applyTheme(refs.theme.value);
 
   const onMode = () => syncMode();
+
+  /** 隣のフォルダからデータを引き継ぐ。元は消さない。 */
+  const onImport = async (candidate) => {
+    setStatus(refs.status, "引き継ぎ中", "busy");
+    try {
+      const res = await api("/api/import", { method: "POST", body: { path: candidate.path } });
+      refs.result.hidden = false;
+      refs.result.textContent =
+        `${candidate.name} から ${res.copy.copied.length} 件を引き継ぎました` +
+        `（元のデータは残っています）。GlossPop を一度終了して、開き直してください。`;
+      setStatus(refs.status, "引き継ぎました（再起動が必要です）");
+      refs.importBox.hidden = true;
+    } catch (err) {
+      setStatus(refs.status, err.message, "error");
+    }
+  };
+
+  /** 新しい版を隣に展開する。**自分自身は置き換えない。** */
+  const onDownload = async () => {
+    refs.download.disabled = true;
+    setStatus(refs.status, "ダウンロード中（数十秒かかります）", "busy");
+    try {
+      const res = await api("/api/update/download", { method: "POST" });
+      refs.result.hidden = false;
+      refs.result.textContent =
+        `${res.version} を「${res.dir}」に展開しました（${res.files} ファイル` +
+        `${res.verified ? "、ハッシュを確認済み" : ""}）。` +
+        "そちらの glosspop.exe を起動してください。いまのフォルダはそのまま残っています。";
+      setStatus(refs.status, "展開しました");
+    } catch (err) {
+      setStatus(refs.status, err.message, "error");
+    }
+    refs.download.disabled = false;
+  };
 
   // 更新の確認は切り替えた時点で保存する（保存ボタンは保存先だけの話なので）
   const onUpdateToggle = async () => {
@@ -257,6 +328,13 @@ export async function openSettingsDialog() {
         }
       }
       lines.push("GlossPop を一度終了して、開き直してください。");
+      // 旧フォルダをどうすればいいか言わないと、消していいのか分からないまま残る
+      if (res.copied_from) {
+        lines.push(
+          `元のデータは「${res.copied_from}」に残っています。` +
+            "新しい場所で問題が無いことを確かめてから、手で片付けてください。"
+        );
+      }
       refs.result.hidden = false;
       refs.result.textContent = lines.join(" ");
       setStatus(refs.status, "保存しました（再起動が必要です）");
@@ -271,6 +349,7 @@ export async function openSettingsDialog() {
   refs.modeApp.addEventListener("change", onMode);
   refs.modeCustom.addEventListener("change", onMode);
   refs.theme.addEventListener("change", onTheme);
+  refs.download.addEventListener("click", onDownload);
   refs.updateCheck.addEventListener("change", onUpdateToggle);
   refs.path.addEventListener("input", onMode);
   refs.pick.addEventListener("click", onPick);
@@ -283,6 +362,7 @@ export async function openSettingsDialog() {
     info = await api("/api/settings");
     paintPaths(info);
     paintMode(info);
+    paintImports(info, onImport);
     refs.where.textContent = `設定ファイル: ${info.settings_file}`;
     paintOutside(info);
     refs.locked.hidden = !info.env_locked;
@@ -308,6 +388,7 @@ export async function openSettingsDialog() {
         refs.modeApp.removeEventListener("change", onMode);
         refs.modeCustom.removeEventListener("change", onMode);
         refs.theme.removeEventListener("change", onTheme);
+        refs.download.removeEventListener("click", onDownload);
         refs.updateCheck.removeEventListener("change", onUpdateToggle);
         refs.path.removeEventListener("input", onMode);
         refs.pick.removeEventListener("click", onPick);

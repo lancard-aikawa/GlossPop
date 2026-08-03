@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -178,3 +179,59 @@ class TestCacheIsNotCarriedOver:
         # 黙って落とさず件数は返す
         assert report["cache_skipped"] == 5
         assert report["skipped"] == []
+
+
+class TestFindDataCandidates:
+    """更新後に「辞書が消えた」ように見える状態の検出。
+
+    新しい版を隣に展開して既定のまま起動すると、辞書は旧フォルダに残ったまま。
+    これが更新でいちばん怖い事故なので、見つけて案内する。
+    """
+
+    def _install(self, root: Path, entries: int) -> Path:
+        d = root / "data" / "glossary" / "テスト"
+        d.mkdir(parents=True)
+        for i in range(entries):
+            (d / f"語{i}.md").write_text("本文", encoding="utf-8")
+        return root
+
+    def test_finds_a_sibling_with_data(self, tmp_path, monkeypatch):
+        new = tmp_path / "GlossPop-0.5.0"
+        new.mkdir()
+        self._install(tmp_path / "GlossPop-0.4.0", 3)
+        monkeypatch.setattr(config, "APP_DIR", new)
+        monkeypatch.setattr(config, "DATA_ROOT", new)
+        found = config.find_data_candidates()
+        assert [c["name"] for c in found] == ["GlossPop-0.4.0"]
+        assert found[0]["entry_count"] == 3
+
+    def test_stays_quiet_when_we_already_have_data(self, tmp_path, monkeypatch):
+        new = self._install(tmp_path / "GlossPop-0.5.0", 1)
+        self._install(tmp_path / "GlossPop-0.4.0", 3)
+        monkeypatch.setattr(config, "APP_DIR", new)
+        monkeypatch.setattr(config, "DATA_ROOT", new)
+        assert config.find_data_candidates() == []
+
+    def test_does_not_offer_the_folder_we_are_using(self, tmp_path, monkeypatch):
+        new = tmp_path / "GlossPop-0.5.0"
+        new.mkdir()
+        monkeypatch.setattr(config, "APP_DIR", new)
+        monkeypatch.setattr(config, "DATA_ROOT", new)
+        assert config.find_data_candidates() == []
+
+    def test_orders_by_how_much_is_in_there(self, tmp_path, monkeypatch):
+        new = tmp_path / "GlossPop-0.5.0"
+        new.mkdir()
+        self._install(tmp_path / "GlossPop-0.3.0", 2)
+        self._install(tmp_path / "GlossPop-0.4.0", 7)
+        monkeypatch.setattr(config, "APP_DIR", new)
+        monkeypatch.setattr(config, "DATA_ROOT", new)
+        assert [c["entry_count"] for c in config.find_data_candidates()] == [7, 2]
+
+    def test_ignores_folders_without_a_dictionary(self, tmp_path, monkeypatch):
+        new = tmp_path / "GlossPop-0.5.0"
+        new.mkdir()
+        (tmp_path / "無関係").mkdir()
+        monkeypatch.setattr(config, "APP_DIR", new)
+        monkeypatch.setattr(config, "DATA_ROOT", new)
+        assert config.find_data_candidates() == []

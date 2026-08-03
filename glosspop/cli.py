@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import categories, config, store
 from .models import CategoryNameError, EntryDraft, normalize_category
@@ -247,6 +248,33 @@ def cmd_move(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """別のフォルダのデータをいまの保存先へ引き継ぐ。
+
+    新しい版を隣に展開して起動すると、辞書は旧フォルダに残ったままで消えたように
+    見える。UI を開かずに済ませたいときと、スクリプトから回したいとき用。
+    """
+    source = Path(args.source).expanduser()
+    if not source.is_dir():
+        print(f"フォルダがありません: {source}", file=sys.stderr)
+        return 1
+    target = Path(config.DATA_ROOT)
+    try:
+        report = config.copy_data_root(source, target)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(f"{source} -> {target}")
+    print(f"  複製: {len(report['copied'])} 件")
+    if report["cache_skipped"]:
+        print(f"  キャッシュ {report['cache_skipped']} 件は運びません（作り直されます）")
+    for item in report["skipped"]:
+        print(f"  複製できず: {item['path']} ({item['reason']})", file=sys.stderr)
+    print("元のデータは残しています。問題が無ければ手で片付けてください。")
+    return 1 if report["skipped"] else 0
+
+
 def cmd_categories(args: argparse.Namespace) -> int:
     if args.add:
         category = categories.ensure(args.add, description=args.description or "")
@@ -332,6 +360,11 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--rename", nargs=2, metavar=("OLD", "NEW"), help="カテゴリ名を変える")
     c.add_argument("--remove", metavar="NAME", help="空のカテゴリを削除する")
     c.set_defaults(func=cmd_categories)
+
+    m = sub.add_parser("migrate", help="別のフォルダのデータを引き継ぐ（元は消さない）")
+    m.add_argument("--from", dest="source", required=True, metavar="DIR",
+                   help="引き継ぎ元（旧バージョンのフォルダ）")
+    m.set_defaults(func=cmd_migrate)
 
     return p
 

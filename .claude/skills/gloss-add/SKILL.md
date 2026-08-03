@@ -131,7 +131,7 @@ JSON の例:
   "summary": "生成後に状態を変更できないデータのこと。変更したい場合は新しい値を作り直す。",
   "definition": "生成後に内部状態を変更できないデータ構造やオブジェクトを指す。...",
   "examples": ["Python の `tuple` はイミュータブルなので dict のキーにできる。"],
-  "related": ["ミュータブル", "副作用"],
+  "relations": [{"to": "ミュータブル", "label": "対になる概念"}],
   "tags": ["設計原則"],
   "source": "docs/architecture.md"
 }
@@ -165,6 +165,7 @@ uv run glosspop categories --add 音楽            # 用語 0 件でもカテゴ
 uv run glosspop categories --rename 旧名 新名     # ディレクトリごと改名
 uv run glosspop categories --remove 音楽         # 空のカテゴリだけ削除できる
 uv run glosspop serve                           # ビューアを起動 (http://127.0.0.1:8765/)
+uv run glosspop migrate --from "C:\旧\GlossPop"  # 別フォルダのデータを引き継ぐ
 ```
 
 ## 保存先を変える

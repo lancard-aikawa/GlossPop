@@ -20,6 +20,7 @@ from . import (
     doctor,
     documents,
     fetcher,
+    installer,
     picker,
     relations,
     render,
@@ -200,6 +201,12 @@ class SettingsRequest(BaseModel):
     data_root: str = ""
     #: いまの保存先の中身を新しい場所へ複製するか（元は消さない）
     copy_existing: bool = True
+
+
+class ImportRequest(BaseModel):
+    """別のフォルダからデータを引き継ぐ。元は消さない。"""
+
+    path: str
 
 
 class UpdateCheckRequest(BaseModel):
@@ -405,6 +412,8 @@ def _settings_payload() -> dict:
         "portable": Path(config.DATA_ROOT) == Path(config.APP_DIR),
         # 環境変数で個別に外へ出されているもの。複製に乗らないので UI に出す
         "outside": _outside_data_root(),
+        # 隣に置き去りのデータ。更新後に「辞書が消えた」ように見える状態の救済
+        "import_candidates": config.find_data_candidates(),
         "paths": {
             "glossary": str(config.GLOSSARY_DIR),
             "categories": str(config.CATEGORIES_FILE),
@@ -420,6 +429,36 @@ def get_settings() -> dict:
     return _settings_payload()
 
 
+@app.post("/api/import")
+def import_data(req: ImportRequest) -> dict:
+    """別のフォルダのデータを、いまの保存先へ引き継ぐ。
+
+    新しい版を隣に展開して既定のまま起動すると、辞書は旧フォルダに残ったままで
+    **消えたように見える**。その救済がここ。元は消さない。
+
+    **効くのは次の起動から** —— `store` が読み込み済みのものを見ているので、
+    ここで差し替えると一覧とキャッシュが食い違う。
+    """
+    try:
+        source = Path(req.path).expanduser().resolve()
+    except OSError as exc:
+        raise HTTPException(400, f"使えないパスです: {req.path}") from exc
+    if not source.is_dir():
+        raise HTTPException(404, f"フォルダがありません: {source}")
+    try:
+        report = config.copy_data_root(source, Path(config.DATA_ROOT))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    store.invalidate()
+    return {
+        "from": str(source),
+        "to": str(config.DATA_ROOT),
+        "copy": report,
+        # 読み込み済みのものと食い違うので、開き直してもらう
+        "restart_required": True,
+    }
+
+
 @app.get("/api/update")
 async def check_update(force: bool = False) -> dict:
     """新しい版が出ているかを返す。**失敗しても 200 で、error に理由を入れる。**
@@ -428,6 +467,23 @@ async def check_update(force: bool = False) -> dict:
     出ていくのを避けるため（テストの TestClient も lifespan を走らせる）。
     """
     return await updates.check(force=force)
+
+
+@app.post("/api/update/download")
+async def download_update() -> dict:
+    """新しい版を落として**アプリの隣に**展開する。起動も置き換えもしない。
+
+    自分自身を差し替えないのは、動いている exe を置き換えられないことと、
+    署名なしバイナリの自己書き換えがウイルス対策ソフトに嫌われること、
+    `Program Files` では昇格が要ることの 3 つを避けるため。旧フォルダは
+    そのまま残るので、問題があれば戻れる。
+    """
+    if not updates.enabled():
+        raise HTTPException(409, "更新の確認が切ってあります。⚙ から有効にしてください。")
+    try:
+        return await to_thread.run_sync(installer.install_latest, abandon_on_cancel=True)
+    except installer.InstallError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @app.put("/api/update")

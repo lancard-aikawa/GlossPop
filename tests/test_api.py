@@ -837,3 +837,44 @@ def test_settings_warns_about_paths_outside_the_root(client, settings_env, tmp_p
     """環境変数で外に出ているものは複製に乗らない。黙らずに名前で知らせる。"""
     monkeypatch.setattr(config, "GLOSSARY_DIR", tmp_path_factory.mktemp("外の辞書"))
     assert "全体の辞書" in client.get("/api/settings").json()["outside"]
+
+
+def test_import_brings_data_from_another_folder(client, settings_env, tmp_path_factory):
+    """更新後に「辞書が消えた」状態の救済。元は消さない。"""
+    old = tmp_path_factory.mktemp("旧バージョン")
+    d = old / "data" / "glossary" / "プログラミング"
+    d.mkdir(parents=True)
+    (d / "冪等.md").write_text("---\nterm: 冪等\n---\n\n本文\n", encoding="utf-8")
+
+    body = client.post("/api/import", json={"path": str(old)}).json()
+    assert body["restart_required"] is True
+    assert (config.GLOSSARY_DIR / "プログラミング" / "冪等.md").exists()
+    assert (d / "冪等.md").exists()          # 元は残す
+    # 引き継いだものがそのまま読める
+    assert [e["term"] for e in client.get("/api/entries").json()] == ["冪等"]
+
+
+def test_import_reports_a_missing_folder(client, settings_env, tmp_path):
+    res = client.post("/api/import", json={"path": str(tmp_path / "無い")})
+    assert res.status_code == 404
+
+
+def test_settings_lists_a_sibling_to_import_from(client, settings_env, tmp_path, monkeypatch):
+    # 隣を走査するので、並びを閉じ込めた場所に置く
+    # (tmp_path.parent は他のテストと共有していて、拾ってしまう)
+    installs = tmp_path / "installs"
+    new = installs / "GlossPop-0.5.0"
+    new.mkdir(parents=True)
+    d = installs / "GlossPop-0.4.0" / "data" / "glossary" / "テスト"
+    d.mkdir(parents=True)
+    (d / "語.md").write_text("本文", encoding="utf-8")
+
+    monkeypatch.setattr(config, "APP_DIR", new)
+    body = client.get("/api/settings").json()
+    assert [c["name"] for c in body["import_candidates"]] == ["GlossPop-0.4.0"]
+
+
+def test_download_is_refused_when_the_check_is_off(client, settings_env):
+    client.put("/api/update", json={"enabled": False})
+    res = client.post("/api/update/download")
+    assert res.status_code == 409
