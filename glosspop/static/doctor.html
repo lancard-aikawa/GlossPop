@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GlossPop — 辞書の点検</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<script>
+// 描画の前にテーマを当てる。あとから当てると、暗いテーマのとき一瞬白く光る。
+// キー名は base.js の THEME_KEY と同じ
+try {
+  const t = localStorage.getItem("glosspop.theme");
+  if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+} catch (e) { /* 読めなければ OS の設定に従う */ }
+</script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>

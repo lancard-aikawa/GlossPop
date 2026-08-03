@@ -50,6 +50,36 @@ export function rememberSpoiler(value) {
   }
 }
 
+// 表示テーマ。**キー名は各 HTML の head にあるインライン script と同じもの。**
+// あちらは描画前に当てるためだけの 3 行で、ここが本体
+export const THEME_KEY = "glosspop.theme";
+export const THEMES = ["system", "light", "dark"];
+
+/** いまの設定。既定は OS に合わせる。 */
+export function currentTheme() {
+  try {
+    const value = localStorage.getItem(THEME_KEY);
+    if (THEMES.includes(value)) return value;
+  } catch {
+    /* 読めなければ OS に合わせる */
+  }
+  return "system";
+}
+
+/** テーマを当てて記憶する。``system`` なら属性を外して OS の設定に戻す。 */
+export function applyTheme(value) {
+  const theme = THEMES.includes(value) ? value : "system";
+  if (theme === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  try {
+    if (theme === "system") localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, theme);
+  } catch {
+    /* 保存できなくてもその画面では効く */
+  }
+  return theme;
+}
+
 export function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]

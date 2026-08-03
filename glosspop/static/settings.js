@@ -1,4 +1,4 @@
-// 設定 — いまはデータの保存先だけ。全ページの topbar に ⚙ を差し込む。
+// 設定（データの保存先・表示テーマ・更新の確認）。全ページの topbar に差し込む。
 //
 // 既定ではデータがアプリの隣にあるので、更新のたびに手で data\ と content\ を
 // コピーすることになる（`data\window` を取りこぼすとお気に入りと設定が静かに消える）。
@@ -6,7 +6,7 @@
 //
 // 設定ファイルはアプリのフォルダの外（OS のユーザー領域）にある。中に置くと、
 // アプリを丸ごと入れ替えたときに設定ごと消えて意味が無い。
-import { api, el, setStatus } from "./base.js";
+import { api, applyTheme, currentTheme, el, setStatus } from "./base.js";
 // 更新のお知らせも topbar に出す。script タグを増やさずに済ませる
 import { lastResult, refreshUpdateNotice } from "./update.js";
 
@@ -63,6 +63,18 @@ function build() {
             <dl class="path-list" data-ref="paths"></dl>
             <p class="hint" data-ref="where"></p>
           </details>
+        </section>
+        <section class="entry-section">
+          <h2>表示</h2>
+          <div class="setting-row setting-row-plain">
+            <label class="field-inline" for="gp-theme">テーマ</label>
+            <select id="gp-theme" class="auto-width" data-ref="theme">
+              <option value="system">OS の設定に合わせる</option>
+              <option value="light">ライト</option>
+              <option value="dark">ダーク</option>
+            </select>
+          </div>
+          <p class="hint">この設定はブラウザごとに残ります（専用ウィンドウとふだんのブラウザは別勘定）。</p>
         </section>
         <section class="entry-section">
           <h2>更新の確認</h2>
@@ -166,32 +178,17 @@ async function paintUpdate() {
 export async function openSettingsDialog() {
   build();
   refs.result.hidden = true;
+  refs.theme.value = currentTheme();      // ローカルの設定なので待たずに出せる
   setStatus(refs.status, "読み込み中", "busy");
   dialog.showModal();
 
+  // **listener は await の前に付ける。** ダイアログは開いた瞬間から操作できるのに、
+  // 読み込みを待ってから付けると、その間の操作が黙って無視される（テーマを選んでも
+  // 何も起きなかった）。extract.js の close を取り逃がした件と同じ形
   let info = null;
-  try {
-    info = await api("/api/settings");
-  } catch (err) {
-    setStatus(refs.status, err.message, "error");
-    return new Promise((resolve) => dialog.addEventListener("close", () => resolve(false), { once: true }));
-  }
 
-  paintPaths(info);
-  paintMode(info);
-  refs.where.textContent = `設定ファイル: ${info.settings_file}`;
-  paintOutside(info);
-  refs.locked.hidden = !info.env_locked;
-  if (info.env_locked) {
-    refs.locked.textContent =
-      "環境変数 GLOSSPOP_DATA_ROOT が設定されているので、ここでの設定より優先されます。" +
-      "変えるには環境変数を外してください。";
-  }
-  for (const node of [refs.modeApp, refs.modeCustom, refs.path, refs.pick, refs.copy, refs.save]) {
-    node.disabled = info.env_locked;
-  }
-  await paintUpdate();
-  setStatus(refs.status, "");
+  // テーマは押した瞬間に効かせる（保存ボタンは保存先だけの話）
+  const onTheme = () => applyTheme(refs.theme.value);
 
   const onMode = () => syncMode();
 
@@ -273,6 +270,7 @@ export async function openSettingsDialog() {
   const onSubmit = (ev) => ev.preventDefault();
   refs.modeApp.addEventListener("change", onMode);
   refs.modeCustom.addEventListener("change", onMode);
+  refs.theme.addEventListener("change", onTheme);
   refs.updateCheck.addEventListener("change", onUpdateToggle);
   refs.path.addEventListener("input", onMode);
   refs.pick.addEventListener("click", onPick);
@@ -281,12 +279,35 @@ export async function openSettingsDialog() {
   refs.close.addEventListener("click", finish);
   refs.form.addEventListener("submit", onSubmit);
 
+  try {
+    info = await api("/api/settings");
+    paintPaths(info);
+    paintMode(info);
+    refs.where.textContent = `設定ファイル: ${info.settings_file}`;
+    paintOutside(info);
+    refs.locked.hidden = !info.env_locked;
+    if (info.env_locked) {
+      refs.locked.textContent =
+        "環境変数 GLOSSPOP_DATA_ROOT が設定されているので、ここでの設定より優先されます。" +
+        "変えるには環境変数を外してください。";
+    }
+    for (const node of [refs.modeApp, refs.modeCustom, refs.path, refs.pick, refs.copy, refs.save]) {
+      node.disabled = info.env_locked;
+    }
+    await paintUpdate();
+    setStatus(refs.status, "");
+  } catch (err) {
+    // 読めなくてもダイアログは閉じない（テーマだけは変えられる）
+    setStatus(refs.status, err.message, "error");
+  }
+
   return new Promise((resolve) => {
     dialog.addEventListener(
       "close",
       () => {
         refs.modeApp.removeEventListener("change", onMode);
         refs.modeCustom.removeEventListener("change", onMode);
+        refs.theme.removeEventListener("change", onTheme);
         refs.updateCheck.removeEventListener("change", onUpdateToggle);
         refs.path.removeEventListener("input", onMode);
         refs.pick.removeEventListener("click", onPick);

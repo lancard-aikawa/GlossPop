@@ -19,8 +19,13 @@
           "Noto Sans JP", Meiryo, sans-serif;
 }
 
+/* テーマは 3 通り: OS に合わせる (data-theme 無し) / light / dark。
+   **下の 2 つのダークの値は同じ内容を保つこと。** CSS にはブロックを再利用する
+   手段が無いので複製している。片方だけ直すと「OS がダークのときだけ色が違う」
+   という気づきにくい壊れ方をする。 */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #17181a;
     --panel: #1f2124;
     --panel-2: #262a2e;
@@ -37,6 +42,26 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .45);
   }
 }
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #17181a;
+  --panel: #1f2124;
+  --panel-2: #262a2e;
+  --border: #33373c;
+  --border-strong: #4a5057;
+  --fg: #e7e7e4;
+  --fg-dim: #a6a8a5;
+  --fg-faint: #7c7f7c;
+  --accent: #5eead4;
+  --accent-soft: #17403c;
+  --accent-fg: #0a1f1d;
+  --danger: #ff8a75;
+  --warn: #e0b25c;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .45);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 
@@ -876,3 +901,5 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   white-space: nowrap;
 }
 .update-notice:hover { background: var(--accent); color: var(--accent-fg); }
+.setting-row-plain { margin-left: 0; }
+.field-inline { font-size: 13px; color: var(--fg-dim); }

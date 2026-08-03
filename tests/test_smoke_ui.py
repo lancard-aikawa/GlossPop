@@ -21,7 +21,7 @@ import pytest
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="playwright が入っていません")
 
-from glosspop import config, store  # noqa: E402
+from glosspop import config, store, updates  # noqa: E402
 from glosspop.models import EntryDraft  # noqa: E402
 
 
@@ -42,6 +42,14 @@ def server(isolated_dirs):
 
     from glosspop.app import app
 
+    # **画面を開くと update.js が /api/update を叩き、サーバが GitHub を見に行く。**
+    # 確認済みの結果を入れておけば通信せずに済み、お知らせの表示も一緒に確かめられる
+    config.save_settings({
+        "update_last_checked": int(time.time()),
+        "update_latest": "v99.0.0",
+    })
+    updates.invalidate()
+
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -56,6 +64,7 @@ def server(isolated_dirs):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        updates.invalidate()
 
 
 @pytest.fixture
@@ -251,3 +260,105 @@ def test_the_settings_entry_is_labelled_and_next_to_the_nav(page, server, isolat
     # ナビの直後（＝タイトル寄り）にあること。右端の隅ではない
     assert nav["x"] < box["x"] < meta["x"]
     assert box["x"] - (nav["x"] + nav["width"]) < 40
+
+
+#: テーマで切り替わる CSS 変数。2 つのダークのブロックが一致するかを見るのに使う
+THEME_VARS = [
+    "--bg", "--panel", "--panel-2", "--border", "--border-strong",
+    "--fg", "--fg-dim", "--fg-faint", "--accent", "--accent-soft",
+    "--accent-fg", "--danger", "--warn", "--shadow",
+]
+
+_READ_VARS = """() => {
+  const s = getComputedStyle(document.documentElement);
+  return Object.fromEntries(%s.map((n) => [n, s.getPropertyValue(n).trim()]));
+}"""
+
+
+def read_theme_vars(page):
+    return page.evaluate(_READ_VARS % THEME_VARS)
+
+
+def test_the_theme_can_be_switched_and_survives_a_reload(page, server, isolated_dirs):
+    page.goto(f"{server}/glossary")
+    page.click("#settings")
+    page.locator("dialog.sheet[open] [data-ref='theme']").wait_for(timeout=15000)
+    light = read_theme_vars(page)
+
+    page.select_option("dialog.sheet[open] [data-ref='theme']", "dark")
+    page.wait_for_function("document.documentElement.dataset.theme === 'dark'", timeout=5000)
+    dark = read_theme_vars(page)
+    assert dark["--bg"] != light["--bg"], "ダークにしても色が変わっていない"
+
+    # 描画前に当たること（あとから当てると一瞬白く光る）
+    page.goto(f"{server}/")
+    assert page.evaluate("document.documentElement.dataset.theme") == "dark"
+    assert read_theme_vars(page)["--bg"] == dark["--bg"]
+
+    page.click("#settings")
+    page.locator("dialog.sheet[open] [data-ref='theme']").wait_for(timeout=10000)
+    page.select_option("dialog.sheet[open] [data-ref='theme']", "system")
+    page.wait_for_function("!document.documentElement.dataset.theme", timeout=5000)
+
+
+def test_both_dark_definitions_agree(server, seeded):
+    """CSS にブロックの再利用が無いのでダークの値を 2 か所に複製している。
+
+    片方だけ直すと「OS がダークのときだけ色が違う」という気づきにくい壊れ方を
+    するので、実際に描かせて突き合わせる。
+    """
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(channel="chrome")
+        except Exception as exc:                       # noqa: BLE001
+            pytest.skip(f"Chrome を起動できません: {exc}")
+        try:
+            # OS がダーク + 明示なし → メディアクエリ側
+            context = browser.new_context(color_scheme="dark")
+            page = context.new_page()
+            page.goto(f"{server}/glossary")
+            page.locator(".topbar").wait_for(timeout=15000)
+            by_media = read_theme_vars(page)
+            context.close()
+
+            # OS がライト + 明示的にダーク → :root[data-theme="dark"] 側
+            context = browser.new_context(color_scheme="light")
+            page = context.new_page()
+            page.goto(f"{server}/glossary")
+            page.locator(".topbar").wait_for(timeout=15000)
+            page.evaluate("document.documentElement.dataset.theme = 'dark'")
+            by_attribute = read_theme_vars(page)
+            context.close()
+        finally:
+            browser.close()
+
+    assert by_media == by_attribute
+
+
+def test_light_wins_over_a_dark_os(server, seeded):
+    """OS がダークでも「ライト」を選んだらライトになること。"""
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(channel="chrome")
+        except Exception as exc:                       # noqa: BLE001
+            pytest.skip(f"Chrome を起動できません: {exc}")
+        try:
+            context = browser.new_context(color_scheme="dark")
+            page = context.new_page()
+            page.goto(f"{server}/glossary")
+            page.locator(".topbar").wait_for(timeout=15000)
+            dark = read_theme_vars(page)
+            page.evaluate("document.documentElement.dataset.theme = 'light'")
+            assert read_theme_vars(page)["--bg"] != dark["--bg"]
+            context.close()
+        finally:
+            browser.close()
+
+
+def test_the_update_notice_appears(page, server, isolated_dirs):
+    """新しい版があると topbar に出る（押し付けず、リンク 1 本だけ）。"""
+    page.goto(f"{server}/glossary")
+    notice = page.locator(".topbar #update-notice")
+    notice.wait_for(timeout=15000)
+    assert "v99.0.0" in notice.inner_text()
+    assert notice.get_attribute("href").endswith("/releases/latest")
