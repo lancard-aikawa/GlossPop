@@ -259,6 +259,48 @@ class TestGraph:
         assert [e["label"] for e in g["edges"]] == ["実は兄弟"]
         assert g["hidden"] == 0
 
+    def test_edges_carry_where_the_relation_is_written(self, cast, add_entry):
+        """辺から書き手の関係にたどり着けること（図から直すのに要る）。
+
+        ``to`` は解決後の ref なので、ファイルに書いてある文字列とは違いうる。
+        直すには**書かれたままの行き先**も要る。
+        """
+        giovanni, campanella = cast
+        store.save(
+            EntryDraft(
+                term=giovanni.term, category=giovanni.category,
+                relations=[rel(to="カムパネルラ", label="親友")],
+            ),
+            ref=giovanni.ref,
+        )
+        edge = relations.build_graph(store.load_all(), category="登場人物")["edges"][0]
+        assert edge["index"] == 0
+        assert edge["rel_to"] == "カムパネルラ"          # 書かれたまま
+        assert edge["to"] == campanella.ref              # 解決後
+
+    def test_the_index_counts_hidden_relations_too(self, cast, add_entry):
+        """伏せた関係も数に入れること。
+
+        出した辺だけを数えると、判明位置つきを伏せたぶんだけ番号がずれて
+        **図から直したときに別の関係を書き換える**。黙って壊れる形なので見張る。
+        """
+        giovanni, campanella = cast
+        zanelli = add_entry("ザネリ", category="登場人物")
+        store.save(
+            EntryDraft(
+                term=giovanni.term, category=giovanni.category,
+                relations=[
+                    rel(to=campanella.ref, label="実は兄弟", reveal="第6章"),
+                    rel(to=zanelli.ref, label="同級生"),
+                ],
+            ),
+            ref=giovanni.ref,
+        )
+        g = relations.build_graph(store.load_all(), category="登場人物")
+        assert [e["label"] for e in g["edges"]] == ["同級生"]
+        assert g["edges"][0]["index"] == 1     # 伏せた 1 本ぶんずれない
+        assert g["hidden"] == 1
+
 
 class TestBacklinks:
     def test_the_side_that_did_not_write_it_still_sees_it(self, cast):

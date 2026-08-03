@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from anyio import to_thread
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from . import (
     __version__,
     ai,
+    archive,
     categories,
     config,
     doctor,
@@ -420,6 +421,8 @@ def _settings_payload() -> dict:
             "sites": str(config.SITES_DIR),
             "content": str(config.CONTENT_DIR),
             "window_profile": str(config.WINDOW_PROFILE_DIR),
+            # 取り込みの前に自動で取る控え。**場所を知らせないと戻れない**
+            "backups": str(archive.backup_dir()),
         },
     }
 
@@ -457,6 +460,44 @@ def import_data(req: ImportRequest) -> dict:
         # 読み込み済みのものと食い違うので、開き直してもらう
         "restart_required": True,
     }
+
+
+@app.get("/api/export")
+def export_glossary() -> Response:
+    """全体の辞書とカテゴリマスターを zip で返す（バックアップ / 持ち出し）。
+
+    中身は Markdown のまま。解凍すればエディタで読めることを保つため、独自形式に
+    しない。フォルダの辞書と URL ごとの辞書は含まない（それぞれ別の運び方がある）。
+    """
+    return Response(
+        content=archive.export_bytes(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{archive.export_name()}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.post("/api/import-glossary")
+async def import_glossary(request: Request) -> dict:
+    """書き出した zip で辞書を**置き換える**。
+
+    **消える操作なので、先に控えを取る**（`archive.import_bytes`）。混ぜないのは、
+    同じカテゴリの同じ用語が両側にあったときにどちらを採るか決められないため。
+
+    保存先は変わらないので再起動は要らない。読み直しはサーバ側で済ませてある。
+    """
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > archive.MAX_ARCHIVE_BYTES:
+        raise HTTPException(413, "zip が大きすぎます")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "zip が空です")
+    try:
+        return archive.import_bytes(data)
+    except archive.ArchiveError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/update")
@@ -729,6 +770,7 @@ def list_entries(
     category: str | None = None,
     subcategory: str | None = None,
     scope: str | None = None,
+    tag: str | None = None,
 ) -> list[dict]:
     needle = q.strip().casefold()
     out = []
@@ -738,6 +780,10 @@ def list_entries(
         if category is not None and e.category != category:
             continue
         if subcategory is not None and e.subcategory != subcategory:
+            continue
+        # タグは完全一致。``q`` はタグも本文も舐めるので、
+        # 「タグ名がたまたま本文に出る別の語」まで引っかかる
+        if tag is not None and tag not in e.tags:
             continue
         if needle:
             haystack = " ".join([e.term, e.reading, e.summary, e.definition, *e.aliases, *e.tags]).casefold()
@@ -749,6 +795,24 @@ def list_entries(
         card["updated_at"] = e.updated_at
         out.append(card)
     return out
+
+
+@app.get("/api/tags")
+def list_tags() -> list[dict]:
+    """使われているタグと件数。多い順、同数なら名前順。
+
+    **タグにマスターは無い。** カテゴリと違って置き場所を決めないので、
+    実際に使われているものを数え上げるしかない（``categories.yaml`` に相当する
+    ものを作ると、用語 0 件のタグが残って掃除の口が要る）。
+    """
+    counts: dict[str, int] = {}
+    for e in store.load_all():
+        for name in e.tags:
+            counts[name] = counts.get(name, 0) + 1
+    return [
+        {"name": name, "count": count}
+        for name, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
 @app.get("/api/lookup")
@@ -956,6 +1020,112 @@ def set_content_root(req: ContentRootRequest) -> dict:
         raise HTTPException(400, f"フォルダではありません: {target}")
     config.set_content_dir(target)
     return list_content()
+
+
+#: 横断検索で開くファイル数の上限。一覧 (MAX_CONTENT_FILES) より小さいのは、
+#: 一覧が stat するだけなのに対し、こちらは**中身を全部読む**ため。
+#: epub と pdf は 1 冊で数百ページある
+MAX_SEARCH_FILES = 300
+
+#: 返すヒットの総数と、1 ファイルあたりの数。1 つの長い本で埋めない
+MAX_SEARCH_HITS = 200
+MAX_HITS_PER_FILE = 5
+
+#: 抜粋の前後の文字数
+SNIPPET_LEAD = 30
+SNIPPET_TRAIL = 60
+
+
+def _snippet(text: str, start: int, end: int) -> str:
+    """一致の周りを 1 行に均して切り出す。"""
+    lead = max(0, start - SNIPPET_LEAD)
+    tail = min(len(text), end + SNIPPET_TRAIL)
+    piece = " ".join(text[lead:tail].split())
+    return ("…" if lead > 0 else "") + piece + ("…" if tail < len(text) else "")
+
+
+def _search_document(doc: documents.Document, needle: str) -> tuple[list[dict], int]:
+    """1 文書の中を探す。``(抜粋のリスト, 総ヒット数)``。
+
+    位置は章 / ページの名前があればそれを、無ければ行番号を使う
+    （``Document.locate()`` と同じ規則で、こちらは**出現ごと**に出す）。
+    """
+    hits: list[dict] = []
+    total = 0
+    for label, text in doc.segments:
+        folded = (text or "").casefold()
+        start = folded.find(needle)
+        while start >= 0:
+            total += 1
+            if len(hits) < MAX_HITS_PER_FILE:
+                end = start + len(needle)
+                hits.append({
+                    "locator": label or f"L.{text[:start].count(chr(10)) + 1}",
+                    "snippet": _snippet(text, start, end),
+                })
+            start = folded.find(needle, start + len(needle))
+    return hits, total
+
+
+@app.get("/api/content-search")
+def search_content(q: str = Query(..., min_length=1)) -> dict:
+    """開いているフォルダの**本文**を横断して探す。
+
+    一覧はファイル名しか見ていないので、「あの言い回しがどこに出てきたか」を
+    探す手段がなかった。索引は持たずにその場で読む —— 索引を持つと、外で
+    書き換えられたファイルとずれる（辞書が mtime で読み直しているのと同じ問題を、
+    こちらは本文の量で抱えることになる）。
+
+    **打ち切ったことは必ず返す。** 黙って切ると「無かった」と区別が付かない。
+    """
+    needle = q.strip().casefold()
+    base = config.content_dir()
+    results: list[dict] = []
+    skipped: list[dict] = []
+    scanned = 0
+    hit_count = 0
+    files_truncated = hits_truncated = False
+
+    if needle and base.exists():
+        for path in _iter_content_files(base):
+            if scanned >= MAX_SEARCH_FILES:
+                files_truncated = True
+                break
+            if hit_count >= MAX_SEARCH_HITS:
+                hits_truncated = True
+                break
+            scanned += 1
+            rel = path.relative_to(base).as_posix()
+            try:
+                doc = documents.read(path)
+            except (documents.DocumentError, OSError) as exc:
+                # 読めないファイルがあること自体を隠さない（「無かった」ではない）
+                skipped.append({"path": rel, "reason": str(exc)})
+                continue
+            hits, total = _search_document(doc, needle)
+            if not total:
+                continue
+            hit_count += total
+            results.append({
+                "path": rel,
+                "name": path.name,
+                "title": doc.title,
+                "count": total,
+                "hits": hits,
+            })
+
+    # 多く出てくる文書ほど上。同数ならパス順（同じ検索で並びが揺れない）
+    results.sort(key=lambda r: (-r["count"], r["path"]))
+    return {
+        "query": q.strip(),
+        "root": str(base),
+        "files_scanned": scanned,
+        "files_truncated": files_truncated,
+        "hits_truncated": hits_truncated,
+        "total_hits": hit_count,
+        "results": results,
+        "skipped": skipped,
+    }
 
 
 @app.get("/api/content/{rel:path}")

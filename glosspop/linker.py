@@ -14,6 +14,9 @@
 
 同じ表記がカテゴリ違いで複数登録されていることがあるので、リンクは
 「表記」を持たせておき、吹き出し側が表記から全件を引く。
+
+大文字小文字は原則として区別しないが、**短い全大文字の略語だけは区別する**
+(``_case_sensitive()``)。``MD`` が ``README.md`` に当たるのを防ぐため。
 """
 
 from __future__ import annotations
@@ -44,6 +47,37 @@ INLINE_TAGS = frozenset({
 _WORDISH = re.compile(r"[0-9A-Za-z_]")
 _LOOKBEHIND = r"(?<![0-9A-Za-z_])"
 _LOOKAHEAD = r"(?![0-9A-Za-z_])"
+
+#: **短い全大文字の略語だけ大文字小文字を区別する。**
+#:
+#: 照合は原則として大文字小文字を無視するが、``MD`` (Markdown の別名) のような
+#: 短い略語はそのままだと ``README.md`` の拡張子に当たる。境界チェックは
+#: 「英数字以外なら通す」ので ``.`` が境界として通ってしまい、README を開くと
+#: 拡張子が軒並みリンクになった。``ML`` ``DB`` など同じ形の別名を登録するたびに
+#: 同じことが起きる（インラインコードを対象に加えたことで表面化した。コード片には
+#: 拡張子やオプション名が多い）。
+#:
+#: 略語は本文でも大文字で書かれるので、ここだけ区別すれば実害なく潰せる。
+#: 代償は ``API`` を ``api`` と小文字で書いた箇所が当たらなくなること。
+#:
+#: **長さで切っているので ``HTML`` は対象外**（``.html`` には当たったまま）。
+#: 伸ばすならこの定数だけを変える。上限を外すと ``NASA`` のような全大文字の
+#: 固有名詞まで区別することになるので、必要になってから広げる。
+_ACRONYM_MAX_LEN = 3
+
+
+def _case_sensitive(variant: str) -> bool:
+    """この表記は大文字小文字を区別して照合するか。
+
+    ``isupper()`` は小文字を含めば偽になるので、``&amp;`` に展開された
+    エスケープ済みの表記 (``_variants()``) が巻き込まれることはない。
+    """
+    return (
+        len(variant) <= _ACRONYM_MAX_LEN
+        and variant.isascii()
+        and variant.isalnum()
+        and variant.isupper()
+    )
 
 # セグメントの種類
 _TEXT = "text"
@@ -78,6 +112,9 @@ def _variants(surface: str) -> list[str]:
 
 def _pattern_for(variant: str) -> str:
     pat = re.escape(variant)
+    if _case_sensitive(variant):
+        # 全体は IGNORECASE で組むので、ここだけスコープ付きで打ち消す
+        pat = f"(?-i:{pat})"
     if _WORDISH.match(variant[0]):
         pat = _LOOKBEHIND + pat
     if _WORDISH.match(variant[-1]):

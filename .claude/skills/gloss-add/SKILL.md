@@ -159,6 +159,7 @@ uv run glosspop add --json @/tmp/gloss-entry.json --update
 ```bash
 uv run glosspop list                            # 人が読む形式で一覧
 uv run glosspop list --category "プログラミング"
+uv run glosspop list --folder "/path/to/フォルダ" # フォルダの辞書も混ぜて出す (📁 付き)
 uv run glosspop move ソース --to 料理             # カテゴリ移動（ファイルごと動く）
 uv run glosspop rm ソース --category 料理         # 削除
 uv run glosspop categories --add 音楽            # 用語 0 件でもカテゴリを作れる
@@ -168,9 +169,45 @@ uv run glosspop serve                           # ビューアを起動 (http://
 uv run glosspop migrate --from "C:\旧\GlossPop"  # 別フォルダのデータを引き継ぐ
 ```
 
-## 保存先を変える
+## 保存先を選ぶ（全体 / フォルダ）
 
-`GLOSSPOP_GLOSSARY_DIR` を設定すると辞書の置き場所が変わる。別プロジェクトの
+辞書は 2 つある。**既定は全体の辞書**（`data/glossary/`）で、これまでどおり
+何も付けなければそちらに入る。
+
+| 保存先 | 置き場所 | 有効範囲 |
+| --- | --- | --- |
+| 全体（既定） | `data/glossary/` | どの文書を開いても効く |
+| そのフォルダ | `<フォルダ>/.glosspop/glossary/` | そのフォルダを開いている間だけ |
+
+**フォルダ側に入れるのは、そのフォルダを離れると意味を成さない語だけ**にする
+（小説の登場人物、その現場だけで通じる略語）。判断の基準は「この文書を離れても
+同じ意味で通じるか」。通じるなら全体に入れる。
+
+```bash
+uv run glosspop add --json @/tmp/gloss-entry.json \
+    --scope local --folder "/path/to/小説フォルダ"
+```
+
+- **`--folder` が必須**。CLI には「開いているフォルダ」が無いので、どのフォルダかを
+  渡さないと既定の content フォルダに書かれる（書いた場所は stderr に出る）
+- 渡すのは**文書のあるフォルダ**。`.glosspop` は祖先方向でいちばん近いものが使われ、
+  無ければそのフォルダに作られる
+- `list` / `show` / `rm` / `move` にも `--folder` を付ける。**付けないとフォルダ側の
+  用語は見えない**ので、重複確認 (手順 1) をするときも忘れないこと
+- `ref` は `.local/<カテゴリ>/<slug>` の形になる
+- ローカルに入れた語はカテゴリマスターに載らない（フォルダ固有のカテゴリでマスターを
+  汚さないため）
+
+```bash
+uv run glosspop move ザネリ --to-scope local --folder "/path/to/小説フォルダ"
+uv run glosspop move ザネリ --to-scope global      # 全体へ戻す
+```
+
+URL ごとの辞書（`data/sites/`）は CLI からは扱えない。
+
+## 辞書そのものを別の場所にする
+
+`GLOSSPOP_GLOSSARY_DIR` を設定すると全体の辞書の置き場所が変わる。別プロジェクトの
 辞書を触るときは、そのプロジェクトの `data/glossary` を指すこと。
 
 ## 直接ファイルを編集してもよい
@@ -180,10 +217,6 @@ uv run glosspop migrate --from "C:\旧\GlossPop"  # 別フォルダのデータ�
 `scope` は書かない** — ディレクトリ名・ファイル名・置き場所が正なので、frontmatter に
 書いても無視される。`former_refs` も**書かない** — 移動したときに自動で積まれる転送情報で、
 手で足すものではない。
-
-なお `glosspop` CLI が書くのは**全体の辞書**（`data/glossary/`）だけ。ビューアには
-「そのフォルダを開いている間だけ有効なローカル辞書」もあるが、そちらは
-`<フォルダ>/.glosspop/glossary/` に置かれ、CLI からは触らない。
 
 `mkdir` でカテゴリのディレクトリを作っただけでも、次の読み込み時に
 `data/categories.yaml` へ自動で取り込まれる。

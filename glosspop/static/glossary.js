@@ -6,6 +6,7 @@ const $ = (id) => document.getElementById(id);
 const list = $("list");
 const qInput = $("q");
 const catFilter = $("catFilter");
+const tagFilter = $("tagFilter");
 const catDialog = $("catDialog");
 
 let tree = [];
@@ -19,7 +20,7 @@ function card(e) {
 }
 
 function paint(entries) {
-  const filtering = Boolean(qInput.value.trim() || catFilter.value);
+  const filtering = Boolean(qInput.value.trim() || catFilter.value || tagFilter.value);
   const byCategory = new Map();
   for (const e of entries) {
     if (!byCategory.has(e.category)) byCategory.set(e.category, new Map());
@@ -80,6 +81,7 @@ async function reload() {
   const params = new URLSearchParams();
   if (qInput.value.trim()) params.set("q", qInput.value.trim());
   if (catFilter.value) params.set("category", catFilter.value);
+  if (tagFilter.value) params.set("tag", tagFilter.value);
   const qs = params.toString();
   list.setAttribute("aria-busy", "true");
   try {
@@ -114,6 +116,29 @@ async function loadCategories() {
     ...tree.map((n) => el("option", { value: n.category, text: `${n.category} (${n.count})` })),
   );
   catFilter.value = current;
+}
+
+/**
+ * タグの選択肢。**マスターが無い**ので、使われているものを数えてもらう。
+ *
+ * 1 つだけ選ぶ形にしてある。複数選べるようにすると「AND か OR か」を決めることに
+ * なり、カテゴリの絞り込みとも見た目が揃わない。必要になってから広げる。
+ */
+async function loadTags() {
+  let tags = [];
+  try {
+    tags = await api("/api/tags");
+  } catch {
+    tags = [];
+  }
+  const current = tagFilter.value;
+  tagFilter.replaceChildren(
+    el("option", { value: "", text: "すべてのタグ" }),
+    ...tags.map((t) => el("option", { value: t.name, text: `#${t.name} (${t.count})` })),
+  );
+  // 選んでいたタグが最後の 1 語から外れると選択肢ごと消える。その場合は「すべて」に戻る
+  tagFilter.value = current;
+  tagFilter.disabled = !tags.length;
 }
 
 // ------------------------------------------------------------ カテゴリ管理
@@ -187,7 +212,7 @@ function paintCategoryManager() {
 }
 
 async function refreshAll() {
-  await loadCategories();
+  await Promise.all([loadCategories(), loadTags()]);
   await reload();
   paintCategoryManager();
   paintEntryCount($("count"));
@@ -229,6 +254,7 @@ qInput.addEventListener("input", () => {
   timer = setTimeout(reload, 180);
 });
 catFilter.addEventListener("change", reload);
+tagFilter.addEventListener("change", reload);
 
 $("add").addEventListener("click", async () => {
   const saved = await openEntryEditor({});
@@ -252,8 +278,10 @@ const initial = new URLSearchParams(location.search);
 qInput.value = initial.get("q") || "";
 
 paintEntryCount($("count"));
-loadCategories().then(() => {
+Promise.all([loadCategories(), loadTags()]).then(() => {
   const cat = initial.get("category");
   if (cat) catFilter.value = cat;
+  const tag = initial.get("tag");
+  if (tag) tagFilter.value = tag;
   reload();
 });

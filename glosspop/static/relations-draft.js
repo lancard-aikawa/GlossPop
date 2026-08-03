@@ -3,12 +3,10 @@
 // 関係のデータ構造だけあっても 1 本ずつ手で書くことになり、図が空のまま終わる。
 // ここがそれを埋める側。**用語は作らない**（それは extract.js の仕事）ので、
 // 下書きは 1 回の呼び出しで済む。まとめて登録のような語数ぶんのループは無い。
-import { api, defaultSpoiler, el, rememberSpoiler, setStatus } from "./base.js";
+import { api, defaultSpoiler, el, RANK_MARK, rememberSpoiler, setStatus } from "./base.js";
 
 let dialog = null;
 let refs = {};
-
-const RANK_MARK = { 上: "▲ 相手が上", 下: "▼ 相手が下", 対等: "＝ 対等" };
 
 function build() {
   if (dialog) return dialog;

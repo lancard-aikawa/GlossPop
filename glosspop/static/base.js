@@ -80,6 +80,17 @@ export function applyTheme(value) {
   return theme;
 }
 
+// 関係の上下。**値は `models.RANKS` と同じ文字列**でないとサーバが弾く。
+// 用語ページ・関係の下書き・相関図の 3 つが同じ表示をするので、正はここ 1 つ。
+// **すべて「自分から見て相手がどうか」** の向きで読む（向きの基準は 1 つに固定）
+export const RANK_OPTIONS = [
+  ["", "上下は指定しない"],
+  ["上", "相手が上"],
+  ["下", "相手が下"],
+  ["対等", "対等"],
+];
+export const RANK_MARK = { 上: "▲ 相手が上", 下: "▼ 相手が下", 対等: "＝ 対等" };
+
 export function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]

@@ -56,6 +56,27 @@ def test_ascii_word_boundary():
     assert "APIs" in out and "rapid" in out
 
 
+def test_short_uppercase_alias_does_not_match_lowercase():
+    """``MD`` が ``README.md`` の拡張子に当たらないこと。
+
+    境界チェックは「英数字以外なら通す」ので ``.`` は境界として通る。短い略語を
+    大文字小文字無視で照合していたため、README を開くと拡張子が軒並みリンクに
+    なっていた（インラインコードを対象に加えて表面化した）。
+    """
+    entries = [mk("Markdown", aliases=["MD"], slug="markdown")]
+    out, hits = link(entries, "<p>README.md と <code>docs/md/x</code> と MD 記法</p>")
+    assert out.count('class="gloss-link"') == 1
+    assert "README.md" in out and "docs/md/x" in out
+    assert ">MD</a>" in out
+    assert len(hits) == 1
+
+
+def test_long_uppercase_term_is_still_case_insensitive():
+    """区別するのは短い略語だけ。ふつうの語の照合規則は変えない。"""
+    out, _ = link([mk("Markdown", slug="markdown")], "<p>markdown で書く</p>")
+    assert ">markdown</a>" in out
+
+
 def test_longest_match_wins():
     entries = [mk("学習", slug="gakushu"), mk("機械学習", slug="ml")]
     out, _ = link(entries, "<p>機械学習</p>")

@@ -152,7 +152,11 @@ def build_graph(
     hidden = 0
 
     for entry in inside:
-        for rel in entry.relations:
+        # **番号は「伏せたものも数えた」位置。** 相関図から関係を直すとき、
+        # 書き手のエントリの relations の何番目かがそのまま鍵になる。
+        # 出した辺だけを数えると、判明位置つきを伏せたぶんだけずれて
+        # **別の関係を書き換える**（黙って壊れるので必ず enumerate から取る）
+        for index, rel in enumerate(entry.relations):
             if rel.reveal and not spoilers:
                 hidden += 1
                 continue
@@ -183,6 +187,10 @@ def build_graph(
                 "mutual": rel.mutual,
                 "reveal": rel.reveal,
                 "missing": res.entry is None,
+                # 直すのに要るもの: 書き手の何番目の関係か と、書かれている行き先。
+                # ``to`` は解決後の ref なので、ファイルに書いてある文字列とは違う
+                "index": index,
+                "rel_to": rel.to,
             })
 
     return {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from urllib.parse import quote
 
 import pytest
@@ -56,6 +57,41 @@ def test_alias_also_links(client):
     client.post("/api/entries", json=ENTRY)
     res = client.post("/api/render", json={"text": "idempotent な設計", "kind": "text"})
     assert 'class="gloss-link"' in res.json()["html"]
+
+
+def test_tag_filter_is_exact_unlike_free_text_search(client):
+    """タグの絞り込みは完全一致。``q`` と違って本文のかすりでは引っかからない。
+
+    用語ページの `#タグ` を `?q=` に流していたため、**タグ名がたまたま本文に出る
+    別の語**まで混ざっていた。それを直すのがこの絞り込み。
+    """
+    client.post("/api/entries", json={**ENTRY, "tags": ["設計原則"]})
+    client.post("/api/entries", json={
+        "term": "副作用", "category": "プログラミング",
+        "summary": "設計原則の話でよく出てくる。", "definition": "本文。", "tags": [],
+    })
+
+    tagged = client.get("/api/entries", params={"tag": "設計原則"}).json()
+    assert [e["term"] for e in tagged] == ["冪等"]
+    # 全文検索だと本文がかすった「副作用」まで出る（＝タグ絞り込みが要る理由）
+    searched = client.get("/api/entries", params={"q": "設計原則"}).json()
+    assert {e["term"] for e in searched} == {"冪等", "副作用"}
+
+
+def test_tags_are_counted_without_a_master(client):
+    client.post("/api/entries", json={**ENTRY, "tags": ["設計原則", "API"]})
+    client.post("/api/entries", json={
+        "term": "冪等", "category": "数学", "definition": "本文。", "tags": ["設計原則"],
+    })
+    assert client.get("/api/tags").json() == [
+        {"name": "設計原則", "count": 2},
+        {"name": "API", "count": 1},
+    ]
+
+
+def test_unknown_tag_returns_nothing(client):
+    client.post("/api/entries", json={**ENTRY, "tags": ["設計原則"]})
+    assert client.get("/api/entries", params={"tag": "無いタグ"}).json() == []
 
 
 def test_duplicate_in_same_category_returns_409(client):
@@ -197,6 +233,96 @@ def test_content_listing_and_read(client):
     assert listing["root"] == str(config.CONTENT_DIR)
     assert listing["is_default"] is True
     assert client.get("/api/content/sub/note.md").json()["text"] == "# ノート\n"
+
+
+def test_export_downloads_a_zip(client):
+    client.post("/api/entries", json=ENTRY)
+    res = client.get("/api/export")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "application/zip"
+    assert "glosspop-glossary-" in res.headers["content-disposition"]
+    assert res.content[:2] == b"PK"
+
+
+def test_import_replaces_the_glossary_and_keeps_a_backup(client):
+    from glosspop import archive
+
+    client.post("/api/entries", json=ENTRY)
+    exported = client.get("/api/export").content
+    client.post("/api/entries", json={**ENTRY, "term": "結果整合性"})
+    assert len(client.get("/api/entries").json()) == 2
+
+    res = client.post("/api/import-glossary", content=exported,
+                      headers={"Content-Type": "application/zip"})
+    assert res.status_code == 200, res.text
+    assert [e["term"] for e in client.get("/api/entries").json()] == ["冪等"]
+    # **再起動は要らない**（保存先は変わらないので、読み直しはサーバ側で済む）
+    assert Path(res.json()["backup"]).exists()
+    assert archive.BACKUP_DIR_NAME in res.json()["backup"]
+
+
+def test_import_of_a_foreign_zip_is_rejected(client):
+    client.post("/api/entries", json=ENTRY)
+    res = client.post("/api/import-glossary", content=b"not a zip",
+                      headers={"Content-Type": "application/zip"})
+    assert res.status_code == 400
+    assert "zip として読めません" in res.json()["detail"]
+    assert len(client.get("/api/entries").json()) == 1
+
+
+def test_import_of_an_empty_body_is_rejected(client):
+    res = client.post("/api/import-glossary", content=b"")
+    assert res.status_code == 400
+
+
+def test_content_search_finds_text_across_files(client):
+    """一覧はファイル名しか見ていないので、本文を横断して探す経路が要る。"""
+    base = config.content_dir()
+    (base / "一巻.txt").write_text("ジョバンニは活版所にいた。\n\nカムパネルラは黙っていた。\n", encoding="utf-8")
+    (base / "二巻.txt").write_text("その夜、ジョバンニは丘へ行った。\nジョバンニは走った。\n", encoding="utf-8")
+    (base / "無関係.md").write_text("# 別の話\n\n何も出てこない。\n", encoding="utf-8")
+
+    res = client.get("/api/content-search", params={"q": "ジョバンニ"}).json()
+    assert res["total_hits"] == 3
+    # 多く出てくる文書ほど上
+    assert [r["path"] for r in res["results"]] == ["二巻.txt", "一巻.txt"]
+    assert res["results"][0]["count"] == 2
+    assert "ジョバンニ" in res["results"][0]["hits"][0]["snippet"]
+    # 位置は行番号で出る（epub は章名、pdf はページ番号になる）
+    assert [h["locator"] for h in res["results"][0]["hits"]] == ["L.1", "L.2"]
+    assert res["files_scanned"] == 3
+    assert not res["files_truncated"] and not res["hits_truncated"]
+
+
+def test_content_search_is_case_insensitive_and_reports_nothing_found(client):
+    (config.content_dir() / "a.md").write_text("The API is idempotent.\n", encoding="utf-8")
+    assert client.get("/api/content-search", params={"q": "api"}).json()["total_hits"] == 1
+    empty = client.get("/api/content-search", params={"q": "存在しない語"}).json()
+    assert empty["results"] == [] and empty["total_hits"] == 0
+
+
+def test_content_search_says_when_it_stopped_early(client, monkeypatch):
+    """打ち切りは黙らない。黙ると「無かった」と区別が付かない。"""
+    from glosspop import app as app_module
+
+    base = config.content_dir()
+    for i in range(4):
+        (base / f"{i}.txt").write_text("ジョバンニ\n", encoding="utf-8")
+    monkeypatch.setattr(app_module, "MAX_SEARCH_FILES", 2)
+
+    res = client.get("/api/content-search", params={"q": "ジョバンニ"}).json()
+    assert res["files_scanned"] == 2
+    assert res["files_truncated"] is True
+
+
+def test_content_search_reports_unreadable_files(client):
+    """読めなかったファイルは「見つからなかった」ではない。"""
+    (config.content_dir() / "壊れた.epub").write_bytes(b"not a zip")
+    (config.content_dir() / "よい.txt").write_text("ジョバンニ\n", encoding="utf-8")
+
+    res = client.get("/api/content-search", params={"q": "ジョバンニ"}).json()
+    assert res["total_hits"] == 1
+    assert [s["path"] for s in res["skipped"]] == ["壊れた.epub"]
 
 
 def test_content_path_traversal_blocked(client):
@@ -770,7 +896,9 @@ def test_settings_reports_where_everything_lives(client, settings_env):
     assert body["settings_file"] == str(settings_env)
     # 更新のとき何を持っていくかが分かること
     assert set(body["paths"]) == {
-        "glossary", "categories", "sites", "content", "window_profile"
+        "glossary", "categories", "sites", "content", "window_profile",
+        # 取り込みの前に自動で取る控え。場所を知らせないと戻れない
+        "backups",
     }
 
 

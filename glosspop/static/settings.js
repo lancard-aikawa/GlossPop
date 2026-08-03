@@ -6,7 +6,7 @@
 //
 // 設定ファイルはアプリのフォルダの外（OS のユーザー領域）にある。中に置くと、
 // アプリを丸ごと入れ替えたときに設定ごと消えて意味が無い。
-import { api, applyTheme, currentTheme, el, setStatus } from "./base.js";
+import { api, applyTheme, currentTheme, el, paintEntryCount, setStatus } from "./base.js";
 // 更新のお知らせも topbar に出す。script タグを増やさずに済ませる
 import { lastResult, refreshUpdateNotice } from "./update.js";
 
@@ -73,6 +73,23 @@ function build() {
           </details>
         </section>
         <section class="entry-section">
+          <h2>辞書の書き出し / 取り込み</h2>
+          <p class="hint">
+            全体の辞書とカテゴリマスターを zip にします。中身は Markdown のままなので、
+            解凍すればそのまま読めます。<strong>フォルダの辞書（<code>.glosspop</code>）と
+            URL ごとの辞書は含みません。</strong>
+          </p>
+          <div class="setting-row setting-row-plain">
+            <button type="button" data-ref="export">⬇ 書き出す</button>
+            <button type="button" data-ref="importPick">⬆ 取り込む…</button>
+            <input type="file" accept=".zip,application/zip" data-ref="importFile" hidden>
+          </div>
+          <p class="notice">
+            <strong>取り込みは置き換えです。</strong>いまの辞書は zip の中身に入れ替わり、
+            zip に無い用語は消えます。実行の前に控えを自動で取るので、そこから戻せます。
+          </p>
+        </section>
+        <section class="entry-section">
           <h2>表示</h2>
           <div class="setting-row setting-row-plain">
             <label class="field-inline" for="gp-theme">テーマ</label>
@@ -123,6 +140,7 @@ const PATH_LABELS = {
   sites: "URL ごとの辞書",
   content: "読む文書（既定のフォルダ）",
   window_profile: "専用ウィンドウの設定・お気に入り",
+  backups: "取り込み前の控え",
 };
 
 /** 隣に置き去りのデータを出す。更新で「辞書が消えた」ように見える状態の救済。 */
@@ -245,6 +263,59 @@ export async function openSettingsDialog() {
     }
   };
 
+  /** 辞書を zip で書き出す。ブラウザに保存させるだけなので確認は要らない。 */
+  const onExport = () => {
+    // `api()` は JSON を返す前提なので、ダウンロードは素の遷移でやる
+    const frame = el("a", { href: "/api/export", download: "" });
+    document.body.append(frame);
+    frame.click();
+    frame.remove();
+    setStatus(refs.status, "書き出しました（ブラウザの保存先を見てください）");
+  };
+
+  /**
+   * zip で辞書を置き換える。**このアプリで唯一データが消える操作。**
+   *
+   * 控えはサーバ側が必ず取る（人の手順に任せない）。ここでは、何が消えるかを
+   * 数で示してから確認を取り、控えの場所を必ず画面に出す。
+   */
+  const onImportFile = async (ev) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = "";               // 同じファイルをもう一度選べるように
+    if (!file) return;
+    const health = await api("/api/health").catch(() => null);
+    const now = health ? `いまの ${health.entry_count} 語` : "いまの辞書";
+    const ok = confirm(
+      `「${file.name}」で辞書を置き換えます。\n\n` +
+        `${now}は zip の中身に入れ替わり、zip に無い用語は消えます。\n` +
+        "実行の前に控えを自動で取ります。よろしいですか？"
+    );
+    if (!ok) return;
+    setStatus(refs.status, "取り込み中", "busy");
+    try {
+      const res = await fetch("/api/import-glossary", {
+        method: "POST",
+        headers: { "Content-Type": "application/zip" },
+        body: file,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+      const lines = [
+        `${data.entries} 語 / ${data.categories} カテゴリに置き換えました。`,
+        `控えは「${data.backup}」です（ここから戻せます）。`,
+      ];
+      // 消せなかった作業用フォルダは黙らない
+      if (data.leftover) lines.push(`片付けられなかったフォルダ: ${data.leftover}`);
+      refs.result.hidden = false;
+      refs.result.textContent = lines.join(" ");
+      setStatus(refs.status, "取り込みました");
+      // 保存先は変わらないので再起動は要らない。topbar の語数だけ合わせる
+      await paintEntryCount(document.getElementById("count"));
+    } catch (err) {
+      setStatus(refs.status, err.message, "error");
+    }
+  };
+
   /** 新しい版を隣に展開する。**自分自身は置き換えない。** */
   const onDownload = async () => {
     refs.download.disabled = true;
@@ -346,9 +417,13 @@ export async function openSettingsDialog() {
 
   const finish = () => dialog.close();
   const onSubmit = (ev) => ev.preventDefault();
+  const onImportPick = () => refs.importFile.click();
   refs.modeApp.addEventListener("change", onMode);
   refs.modeCustom.addEventListener("change", onMode);
   refs.theme.addEventListener("change", onTheme);
+  refs.export.addEventListener("click", onExport);
+  refs.importPick.addEventListener("click", onImportPick);
+  refs.importFile.addEventListener("change", onImportFile);
   refs.download.addEventListener("click", onDownload);
   refs.updateCheck.addEventListener("change", onUpdateToggle);
   refs.path.addEventListener("input", onMode);
@@ -388,6 +463,9 @@ export async function openSettingsDialog() {
         refs.modeApp.removeEventListener("change", onMode);
         refs.modeCustom.removeEventListener("change", onMode);
         refs.theme.removeEventListener("change", onTheme);
+        refs.export.removeEventListener("click", onExport);
+        refs.importPick.removeEventListener("click", onImportPick);
+        refs.importFile.removeEventListener("change", onImportFile);
         refs.download.removeEventListener("click", onDownload);
         refs.updateCheck.removeEventListener("change", onUpdateToggle);
         refs.path.removeEventListener("input", onMode);

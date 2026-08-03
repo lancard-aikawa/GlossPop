@@ -3,7 +3,8 @@
 // 力学モデル (力の釣り合いを反復して解く) は使わない。カテゴリという階層が
 // すでにあるうえ、`rank`（上下）で層が決まるので、決定的に置けば足りる。
 // 乱数も収束待ちも無いぶん、同じ辞書なら毎回同じ絵になる。
-import { api, el, paintEntryCount, setStatus } from "./base.js";
+import { api, el, paintEntryCount, RANK_OPTIONS, setStatus } from "./base.js";
+import { encodePath } from "./editor.js";
 import { openRelationsDialog } from "./relations-draft.js";
 
 const canvas = document.getElementById("canvas");
@@ -255,20 +256,35 @@ function drawEdge(edge, pos, index = 0, parallel = 0) {
     // 相互なら両端に矢印。一方的なら向いている側だけ
     "marker-start": edge.mutual ? "url(#arrow)" : null,
   });
-  path.append(svg("title", { text: edgeTitle(edge) }));
+  path.append(svg("title", { text: `${edgeTitle(edge)}（押すと直せます）` }));
 
   const words = edge.mutual && edge.back && edge.back !== edge.label
     ? `${edge.label} ⇄ ${edge.back}`
     : edge.label;
-  if (!words) return svg("g", {}, [path]);
-  const text = svg("text", {
-    x: mid.x,
-    y: mid.y - 6,
-    class: "rel-edge-label",
-    "text-anchor": "middle",
-    text: words,
+  const text = words
+    ? svg("text", {
+        x: mid.x,
+        y: mid.y - 6,
+        class: "rel-edge-label",
+        "text-anchor": "middle",
+        text: words,
+      })
+    : null;
+
+  // **線そのものは細すぎて押せない。** 透明な太い線を下に重ねて当たり判定にする
+  const group = svg("g", {
+    class: "rel-edge-group",
+    tabindex: "0",
+    role: "button",
+    "aria-label": `関係を直す: ${edgeTitle(edge)}`,
+  }, [svg("path", { d, class: "rel-edge-hit" }), path, text]);
+  group.addEventListener("click", () => openEdgeEditor(edge));
+  group.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    openEdgeEditor(edge);
   });
-  return svg("g", {}, [path, text]);
+  return group;
 }
 
 function edgeTitle(edge) {
@@ -316,6 +332,7 @@ function drawNode(node, pos) {
 
 function draw(graph) {
   const { nodes, edges } = graph;
+  termByRef = new Map(nodes.map((n) => [n.ref, n.term]));
   if (!nodes.length) {
     canvas.replaceChildren(
       el("p", { class: "empty", text: "このカテゴリには関係が書かれたエントリがありません。" })
@@ -362,6 +379,93 @@ function draw(graph) {
   edges.forEach((edge, i) => root.append(drawEdge(edge, pos, i, parallels[i])));
   for (const node of nodes) root.append(drawNode(node, pos));
   canvas.replaceChildren(root);
+}
+
+// --------------------------------------------------------------------------- //
+// 辺を押して直す
+//
+// 点検ページを「その場で直す」にしたのと同じ理由。関係を 1 本直すために
+// 辞書ページまで移動させると、図を見ながらの手直しが続かない。
+// --------------------------------------------------------------------------- //
+
+const edgeDialog = document.getElementById("edgeDialog");
+const dlg = (name) => edgeDialog.querySelector(`[data-ref=${name}]`);
+
+/** ref -> 用語名。ダイアログの見出しに使う（辺が持つのは ref だけ） */
+let termByRef = new Map();
+/** いま開いている辺 */
+let editing = null;
+
+function openEdgeEditor(edge) {
+  editing = edge;
+  const from = termByRef.get(edge.from) || edge.from;
+  const to = termByRef.get(edge.to) || edge.to;
+  dlg("who").textContent = `${from} → ${to}`;
+  dlg("to").value = edge.rel_to || "";
+  dlg("label").value = edge.label || "";
+  dlg("back").value = edge.back || "";
+  dlg("rank").value = edge.rank || "";
+  dlg("reveal").value = edge.reveal || "";
+  setStatus(dlg("status"), "");
+  edgeDialog.showModal();
+}
+
+/**
+ * 書き手のエントリの関係を作り直して保存する。``next`` が null なら削除。
+ *
+ * **エントリ単位でまとめて書く。** 1 本ずつ書くと、同じエントリに複数の関係が
+ * 付いたときに後の書き込みが前のものを消す。
+ *
+ * 番号は**図を描いた時点**のものなので、書く直前に読み直して行き先が一致するか
+ * 確かめる。ずれていたら書かずに読み込み直させる —— 黙って別の関係を書き換えない。
+ */
+async function writeRelation(next) {
+  const edge = editing;
+  setStatus(dlg("status"), "保存中", "busy");
+  try {
+    const entry = await api(`/api/entries/${encodePath(edge.from)}`);
+    const relations = [...(entry.relations || [])];
+    if (relations[edge.index]?.to !== edge.rel_to) {
+      setStatus(dlg("status"), "図が古くなっています。読み込み直してください。", "error");
+      return false;
+    }
+    if (next) relations[edge.index] = next;
+    else relations.splice(edge.index, 1);
+    await api(`/api/entries/${encodePath(edge.from)}`, {
+      method: "PUT",
+      body: { ...entry, relations },
+    });
+    return true;
+  } catch (err) {
+    setStatus(dlg("status"), err.message, "error");
+    return false;
+  }
+}
+
+async function onEdgeSave() {
+  if (!dlg("to").value.trim()) {
+    setStatus(dlg("status"), "相手を入力してください", "error");
+    dlg("to").focus();
+    return;
+  }
+  const ok = await writeRelation({
+    to: dlg("to").value,
+    label: dlg("label").value,
+    back: dlg("back").value,
+    rank: dlg("rank").value,
+    reveal: dlg("reveal").value,
+  });
+  if (!ok) return;
+  edgeDialog.close();
+  await refresh();
+}
+
+async function onEdgeRemove() {
+  const who = dlg("who").textContent;
+  if (!confirm(`関係「${who}」を削除します。よろしいですか？`)) return;
+  if (!(await writeRelation(null))) return;
+  edgeDialog.close();
+  await refresh();
 }
 
 // --------------------------------------------------------------------------- //
@@ -432,7 +536,8 @@ async function refresh() {
     setStatus(statusNode, `${graph.nodes.length} 語 / ${shown} 本の関係`);
     legend.textContent =
       "→ は一方的、⇄ は相互。▲▼ の代わりに上下の関係は段で表しています。" +
-      "破線の枠はまだ登録されていない語で、押すと辞書で探せます。";
+      "破線の枠はまだ登録されていない語で、押すと辞書で探せます。" +
+      "線を押すとその関係を直せます。";
   } catch (err) {
     setStatus(statusNode, err.message, "error");
     canvas.replaceChildren(el("p", { class: "status error", text: err.message }));
@@ -453,11 +558,22 @@ async function onDraft() {
 }
 
 async function main() {
-  paintEntryCount(countNode);
-  await loadCategories();
+  // **listener は最初の await より前に付ける。** あとに回すと、その間の操作が
+  // 黙って無視される（設定ダイアログと extract.js で 2 回踏んだ）
   categorySelect.addEventListener("change", refresh);
   spoilerCheck.addEventListener("change", refresh);
   draftButton.addEventListener("click", onDraft);
+  dlg("rank").replaceChildren(
+    ...RANK_OPTIONS.map(([value, text]) => el("option", { value, text }))
+  );
+  dlg("save").addEventListener("click", onEdgeSave);
+  dlg("remove").addEventListener("click", onEdgeRemove);
+  for (const name of ["close", "cancel"]) {
+    dlg(name).addEventListener("click", () => edgeDialog.close());
+  }
+
+  paintEntryCount(countNode);
+  await loadCategories();
   await refresh();
 }
 

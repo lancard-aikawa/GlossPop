@@ -68,6 +68,13 @@ try {
       <button type="submit" id="rootGo">開く</button>
     </form>
     <p class="hint" id="rootStatus"></p>
+    <form id="searchForm" class="check-row gap-top">
+      <input type="search" id="contentQ" placeholder="本文を横断検索" autocomplete="off"
+             title="このフォルダの本文を横断して探す" aria-label="このフォルダの本文を横断して探す">
+      <button type="submit" id="searchGo">探す</button>
+    </form>
+    <p class="hint" id="searchStatus"></p>
+    <div class="search-results" id="searchResults" hidden></div>
     <ul class="filelist" id="files"></ul>
     <button type="button" id="extractFolder" class="wide gap-top"
             title="このフォルダの文書をまとめて読んで辞書候補を挙げる">✨ フォルダから用語を抽出</button>

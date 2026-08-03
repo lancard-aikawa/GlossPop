@@ -2,6 +2,7 @@
 import { api, el, esc, externalLink, paintEntryCount, setStatus } from "./base.js";
 import { openExtractDialog } from "./extract.js";
 import { installGlossPopup } from "./popup.js";
+import { createTracker, keyFor } from "./progress.js";
 import { installSelectionAdd } from "./select-add.js";
 import { available as speechAvailable, createReader } from "./speech.js";
 
@@ -16,6 +17,10 @@ const filesList = $("files");
 let source = null; // { text, kind, filename, contentPath }
 
 installGlossPopup();
+
+// 読書位置。スクロールするのは本文そのものではなく外側の main
+// (`.layout > * { overflow: auto }`)
+const tracker = createTracker({ container: doc.parentElement, doc });
 
 const selection = installSelectionAdd({
   root: doc,
@@ -85,13 +90,61 @@ function paintTerms(terms) {
   );
 }
 
-function setSource(next) {
+/**
+ * 表示する文書を差し替える。
+ *
+ * ``restore`` を偽にすると読書位置を戻さない（初出へ飛ぶときのように、
+ * 別の場所へ寄せることが決まっている場合）。
+ */
+async function setSource(next, { restore = true, highlight = "" } = {}) {
+  // **本文を描き替える前に**位置を書き出す。あとだと新しい本文の位置を
+  // 前の文書の鍵で保存してしまう
+  tracker.switchTo(keyFor(next, currentRoot));
   source = next;
   selection.hide();
   reader?.reset();      // 別の文書になったので読み上げは打ち切る
   note("");
-  // 描画の完了を待ちたい呼び出し元 (初出へジャンプ) があるので promise を返す
-  return renderCurrent();
+  await renderCurrent();
+  if (highlight) return highlightText(highlight);
+  if (!restore) return;
+  const at = tracker.restore();
+  // 戻さないなら先頭から。前の文書のスクロール位置が残ると途中から始まって見える
+  if (at) noteResumed(at);
+  else tracker.toTop();
+}
+
+/**
+ * 語を含む最初の段落へ寄せて光らせる（横断検索から開いたとき）。
+ *
+ * 初出ジャンプ (`?term=`) は登録済みの語なので ``[data-gloss]`` を探せるが、
+ * 検索語は辞書に無いことのほうが多い。見えているテキストで探す。
+ */
+function highlightText(text) {
+  const needle = text.toLowerCase();
+  for (const block of doc.children) {
+    if (!(block.textContent || "").toLowerCase().includes(needle)) continue;
+    block.scrollIntoView({ block: "center" });
+    block.classList.add("gloss-flash");
+    return;
+  }
+  note(`「${text}」はこの文書に見つかりませんでした`, "error");
+}
+
+/** 「前回の続きから出しました」と、先頭へ戻す手段を出す。 */
+function noteResumed({ block, total }) {
+  note(`前回の続き（${block + 1} / ${total} 段落）から表示しています。`);
+  $("docStatus").append(
+    " ",
+    el("button", {
+      type: "button",
+      class: "ghost",
+      text: "先頭から読む",
+      onclick: () => {
+        tracker.reset();
+        note("");
+      },
+    })
+  );
 }
 
 /** 文書の上に出す一言 (リンクを追えなかった理由など)。 */
@@ -381,6 +434,81 @@ function paintFileList(res) {
   }
 }
 
+// --------------------------------------------------------- 本文の横断検索
+
+/**
+ * 開いているフォルダの本文を横断して探す。
+ *
+ * 索引は持たない（サーバがその場で読む）。**打ち切りは必ず画面に出す** ——
+ * 黙って切ると「この語は無かった」と区別が付かない。
+ */
+async function runContentSearch(query) {
+  const box = $("searchResults");
+  setStatus($("searchStatus"), "検索中", "busy");
+  $("searchGo").disabled = true;
+  try {
+    const res = await api(`/api/content-search?q=${encodeURIComponent(query)}`);
+    paintSearchResults(res);
+  } catch (err) {
+    box.hidden = true;
+    setStatus($("searchStatus"), err.message, "error");
+  } finally {
+    $("searchGo").disabled = false;
+  }
+}
+
+function paintSearchResults(res) {
+  const box = $("searchResults");
+  box.hidden = false;
+  if (!res.results.length) {
+    box.replaceChildren(el("p", { class: "empty", text: `「${res.query}」は見つかりませんでした` }));
+  } else {
+    box.replaceChildren(
+      ...res.results.map((file) =>
+        el("section", { class: "search-file" }, [
+          el("h3", {}, [
+            el("span", { text: file.title || file.name }),
+            el("span", { class: "count", text: `${file.count} 件` }),
+          ]),
+          el("ul", { class: "filelist" }, file.hits.map((hit) =>
+            el("li", {}, [
+              el("button", {
+                type: "button",
+                title: `${file.path} ${hit.locator}`,
+                onclick: () => openContent(file.path, { highlight: res.query }),
+              }, [
+                el("span", { class: "loc", text: hit.locator }),
+                el("span", { text: hit.snippet }),
+              ]),
+            ])
+          )),
+          // 1 ファイルから出すのは先頭のいくつかだけ。残りがあることは言う
+          file.count > file.hits.length
+            ? el("p", { class: "hint", text: `ほか ${file.count - file.hits.length} 件` })
+            : null,
+        ])
+      )
+    );
+  }
+  const notes = [`${res.total_hits} 件 / ${res.files_scanned} 文書を読みました`];
+  if (res.files_truncated) notes.push("文書が多いので途中で打ち切りました");
+  if (res.hits_truncated) notes.push("ヒットが多いので途中で打ち切りました");
+  if (res.skipped.length) notes.push(`読めなかったファイル ${res.skipped.length} 件`);
+  setStatus($("searchStatus"), notes.join(" — "), res.files_truncated || res.hits_truncated ? "error" : "");
+}
+
+$("searchForm").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const query = $("contentQ").value.trim();
+  if (!query) {
+    // 空にして押したら結果を畳む（一覧に戻る手段が要る）
+    $("searchResults").hidden = true;
+    setStatus($("searchStatus"), "");
+    return;
+  }
+  runContentSearch(query);
+});
+
 // ------------------------------------------------- フォルダの切り替えと履歴
 
 const FOLDERS_KEY = "glosspop.folders";
@@ -440,6 +568,9 @@ async function openRoot(path) {
   $("rootGo").disabled = $("pickFolder").disabled = true;
   try {
     const res = await api("/api/content-root", { method: "POST", body: { path } });
+    // 別のフォルダの結果を残さない（押すと開けないファイルが並ぶ）
+    $("searchResults").hidden = true;
+    setStatus($("searchStatus"), "");
     paintFileList(res);
     markCurrentFile(null);
     if (!res.is_default) rememberFolder(res.root);
@@ -496,18 +627,21 @@ function markCurrentFile(path) {
   }
 }
 
-async function openContent(path) {
+async function openContent(path, { restore = true, highlight = "" } = {}) {
   try {
     await paintUrlDictionary("");   // URL を読むのをやめる = フォルダ側の辞書に戻す
     const res = await api(`/api/content/${path.split("/").map(encodeURIComponent).join("/")}`);
     // epub は HTML、pdf はテキストとして返ってくる。拡張子からは判断できない
-    await setSource({
-      text: res.text,
-      kind: res.kind || "auto",
-      filename: res.name,
-      contentPath: path,
-      title: res.title || "",
-    });
+    await setSource(
+      {
+        text: res.text,
+        kind: res.kind || "auto",
+        filename: res.name,
+        contentPath: path,
+        title: res.title || "",
+      },
+      { restore, highlight }
+    );
     markCurrentFile(path);
     // 一部だけ欠けた本文は「全部読めている」と区別が付かないので必ず知らせる
     // (setSource が note を消すので、そのあとで出す)
@@ -560,8 +694,10 @@ async function openFromQuery() {
   const params = new URLSearchParams(location.search);
   const path = params.get("open");
   if (!path) return;
-  await openContent(path);
   const term = params.get("term");
+  // 初出へ飛ぶと決まっているときは読書位置を戻さない（戻してもすぐ上書きされ、
+  // 「前回の続き」の案内だけが嘘になる）
+  await openContent(path, { restore: !term });
   if (!term) return;
   // annotate 済みの本文から、その語の最初のリンクを探して寄せる
   const hit = doc.querySelector(`[data-gloss="${CSS.escape(term)}"]`);

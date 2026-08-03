@@ -313,6 +313,29 @@ body.dropping::after {
   font-weight: 600;
 }
 
+/* 本文の横断検索。抜粋は折り返して読ませる (ファイル名の 1 行とは別物) */
+.search-results { margin-bottom: 10px; }
+.search-file + .search-file { margin-top: 8px; }
+.search-file h3 {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+  margin: 0 0 4px;
+  color: var(--fg);
+}
+.search-file h3 .count { color: var(--fg-faint); font-weight: 400; }
+.search-results .filelist button {
+  display: block;
+  white-space: normal;
+  line-height: 1.5;
+}
+.search-results .loc {
+  display: block;
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
 .termlist a {
   display: block;
   padding: 5px 8px;
@@ -683,6 +706,25 @@ dialog.sheet .cat-manager footer { flex-wrap: wrap; }
   padding: 9px 0;
   border-bottom: 1px solid var(--border);
 }
+/* 相関図から関係 1 本を直すダイアログ。カテゴリ管理と同じ骨格に揃える */
+dialog.sheet .edge-editor { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
+dialog.sheet .edge-editor .body { padding: 8px 18px; overflow: auto; }
+dialog.sheet .edge-editor .body label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--fg-faint);
+}
+dialog.sheet .edge-editor .body label input,
+dialog.sheet .edge-editor .body label select { display: block; width: 100%; margin-top: 3px; }
+dialog.sheet .edge-editor .rel-who {
+  margin: 0;
+  padding: 0 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
+dialog.sheet .edge-editor > .hint { padding: 0 18px 12px; margin: 0; }
+
 .cat-row:last-child { border-bottom: 0; }
 .cat-row-main { flex: 1; min-width: 0; }
 .cat-row-name { font-size: 14px; font-weight: 600; }
@@ -830,6 +872,13 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-edge.missing { stroke: var(--danger); stroke-dasharray: 4 3; }
 .rel-edge.reveal { stroke: var(--warn); stroke-dasharray: 6 3; }
 .rel-arrowhead { fill: var(--border-strong); }
+/* 線そのものは細すぎて押せない。透明な太い線を下に重ねて当たり判定にする */
+.rel-edge-hit { fill: none; stroke: transparent; stroke-width: 14; }
+.rel-edge-group { cursor: pointer; }
+.rel-edge-group:hover .rel-edge,
+.rel-edge-group:focus-visible .rel-edge { stroke: var(--accent); stroke-width: 2.5; }
+.rel-edge-group:focus-visible { outline: none; }
+.rel-edge-group:focus-visible .rel-edge-label { fill: var(--accent); }
 /* 線の上に載るので、背景色で縁取りして読めるようにする */
 .rel-edge-label {
   fill: var(--fg-dim);

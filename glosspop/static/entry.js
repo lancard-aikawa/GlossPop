@@ -1,5 +1,5 @@
 // 辞書の 1 語ページ。URL は /glossary/<カテゴリ>/<slug>
-import { api, el, esc, paintEntryCount, setStatus, sourceNode } from "./base.js";
+import { api, el, esc, paintEntryCount, RANK_MARK, RANK_OPTIONS, setStatus, sourceNode } from "./base.js";
 import { installGlossPopup, invalidatePopupCache } from "./popup.js";
 import { installSelectionAdd } from "./select-add.js";
 import { openEntryEditor, encodePath } from "./editor.js";
@@ -60,14 +60,6 @@ function section(title, children) {
 // **関係は片側にしか書かない。** 逆向きは書かせず、相手のページでは
 // 「指されている側」(backlinks) として出す。両側に書けると必ずずれる。
 // --------------------------------------------------------------------------- //
-
-const RANK_OPTIONS = [
-  ["", "上下は指定しない"],
-  ["上", "相手が上"],
-  ["下", "相手が下"],
-  ["対等", "対等"],
-];
-const RANK_MARK = { 上: "▲ 相手が上", 下: "▼ 相手が下", 対等: "＝ 対等" };
 
 /** 関係 1 件の行。解決できていなければ赤リンクにする。 */
 function relationRow(rel, onRemove) {
@@ -250,7 +242,8 @@ function render(entry) {
   }
   if (entry.summary) head.append(el("p", { class: "summary", text: entry.summary }));
   if (entry.tags?.length) {
-    head.append(el("div", { class: "chips" }, entry.tags.map((t) => chip(`#${t}`, `/glossary?q=${encodeURIComponent(t)}`))));
+    // タグで絞り込む (`?q=` に流すと、そのタグ名が本文に出るだけの語まで拾う)
+    head.append(el("div", { class: "chips" }, entry.tags.map((t) => chip(`#${t}`, `/glossary?tag=${encodeURIComponent(t)}`))));
   }
 
   const parts = [head];

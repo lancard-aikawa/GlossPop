@@ -14,7 +14,14 @@ import sys
 from pathlib import Path
 
 from . import categories, config, store
-from .models import CategoryNameError, EntryDraft, normalize_category
+from .models import (
+    GLOBAL_SCOPE,
+    LOCAL_SCOPE,
+    SCOPES,
+    CategoryNameError,
+    EntryDraft,
+    normalize_category,
+)
 
 
 def _resolve(target: str):
@@ -47,6 +54,44 @@ def _read_text_arg(value: str | None) -> str:
 def _emit(data: object) -> None:
     json.dump(data, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
+
+
+def _apply_folder(args: argparse.Namespace) -> int:
+    """``--folder`` を「開いているフォルダ」として反映する。
+
+    ローカル辞書はビューアが**開いているフォルダ**から祖先方向に探して決めるが、
+    一度きりの CLI にはその状態が無い。ここで ``config.set_content_dir()`` を
+    通しておけば、``store.glossary_dir(LOCAL_SCOPE)`` から先はサーバとまったく
+    同じ経路になる（CLI 用の探索を別に書くと、必ず規則がずれる）。
+    """
+    raw = getattr(args, "folder", None)
+    if not raw:
+        return 0
+    path = Path(raw).expanduser()
+    if not path.is_dir():
+        print(f"フォルダがありません: {path}", file=sys.stderr)
+        return 2
+    config.set_content_dir(path.resolve())
+    return 0
+
+
+def _announce_local(action: str) -> int:
+    """ローカル辞書の場所を stderr に出す。使えなければ 2 を返す。
+
+    **黙って別の場所に書かない。** 祖先の ``.glosspop`` が使われることがあり
+    （1 巻 2 巻で共有する仕組み）、``--folder`` を省けば既定の content フォルダに
+    なる。ビューアが場所を画面に出しているのと同じ理由でここでも出す。
+    """
+    directory = store.glossary_dir(LOCAL_SCOPE)
+    if directory is None or not store.local_available():
+        print(
+            f"ローカル辞書が使えないので{action}できません。"
+            "--folder でフォルダを指定してください。",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"ローカル辞書: {directory}", file=sys.stderr)
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -137,7 +182,13 @@ def cmd_add(args: argparse.Namespace) -> int:
             "source": args.source or "",
         }
 
+    # 明示された --scope が JSON の値より優先（指定 > 下書きに載っていた値）
+    if getattr(args, "scope", None):
+        data["scope"] = args.scope
+
     draft = EntryDraft.model_validate(data)
+    if draft.scope == LOCAL_SCOPE and _announce_local("登録"):
+        return 2
     # store.save() が使う形に揃えてから引く。揃えないと、保存側が正規化した結果と
     # 衝突するのに「無い」と判定して StoreError で落ちる
     category = normalize_category(draft.category or "未分類")
@@ -240,11 +291,29 @@ def cmd_rm(args: argparse.Namespace) -> int:
 
 
 def cmd_move(args: argparse.Namespace) -> int:
+    """カテゴリ・保存先を移す。どちらか片方でも両方でも指定できる。
+
+    保存先をまたげるのは ``store.move()`` だけ（``save()`` は ref の位置を正とする）
+    ので、辞書間の移し替えはこの経路に寄せてある。
+    """
+    if not args.to and not args.to_scope:
+        print("--to（移動先カテゴリ）か --to-scope（移動先の辞書）が必要です", file=sys.stderr)
+        return 2
     entry = _pick_one(args.target, args.category)
     if entry is None:
         return 1
-    moved = store.move(entry.ref, args.to)
-    _emit({"status": "moved", "from": entry.ref, "ref": moved.ref, "path": str(store.path_for_ref(moved.ref))})
+    if args.to_scope == LOCAL_SCOPE and _announce_local("移動"):
+        return 2
+    moved = store.move(entry.ref, args.to, scope=args.to_scope)
+    _emit(
+        {
+            "status": "moved",
+            "from": entry.ref,
+            "ref": moved.ref,
+            "scope": moved.scope,
+            "path": str(store.path_for_ref(moved.ref)),
+        }
+    )
     return 0
 
 
@@ -301,6 +370,18 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="glosspop", description="GlossPop 辞書ビューア")
     sub = p.add_subparsers(dest="command", required=True)
 
+    def add_folder_option(parser: argparse.ArgumentParser) -> None:
+        """ローカル辞書を触るコマンドに付ける。
+
+        指定すると「そのフォルダを開いている」状態と同じになり、
+        ``<DIR>` から祖先方向でいちばん近い ``.glosspop/glossary`` が対象になる。
+        """
+        parser.add_argument(
+            "--folder",
+            metavar="DIR",
+            help="このフォルダのローカル辞書 (.glosspop/glossary) も対象にする",
+        )
+
     def add_serve_options(parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--host", default="127.0.0.1")
         parser.add_argument("--port", type=int, default=8765)
@@ -330,28 +411,39 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--tags", help="カンマ区切りのタグ")
     a.add_argument("--source", help="出典 (ファイル名など)")
     a.add_argument("--update", action="store_true", help="既存エントリを上書きする")
+    a.add_argument(
+        "--scope",
+        choices=SCOPES,
+        help=f"保存先の辞書 (既定 {GLOBAL_SCOPE} = 全体)。local は --folder と併せて使う",
+    )
+    add_folder_option(a)
     a.set_defaults(func=cmd_add)
 
     l = sub.add_parser("list", help="登録済みの用語を一覧する")
     l.add_argument("--category")
     l.add_argument("--json", action="store_true")
+    add_folder_option(l)
     l.set_defaults(func=cmd_list)
 
     sh = sub.add_parser("show", help="用語の Markdown を表示する")
     sh.add_argument("target", help="用語名 / slug / カテゴリ/slug")
     sh.add_argument("--category", help="同名が複数あるときの絞り込み")
     sh.add_argument("--json", action="store_true")
+    add_folder_option(sh)
     sh.set_defaults(func=cmd_show)
 
     r = sub.add_parser("rm", help="用語を削除する")
     r.add_argument("target", help="用語名 / slug / カテゴリ/slug")
     r.add_argument("--category", help="同名が複数あるときの絞り込み")
+    add_folder_option(r)
     r.set_defaults(func=cmd_rm)
 
-    mv = sub.add_parser("move", help="用語を別カテゴリへ移す")
+    mv = sub.add_parser("move", help="用語を別カテゴリ / 別の辞書へ移す")
     mv.add_argument("target", help="用語名 / slug / カテゴリ/slug")
-    mv.add_argument("--to", required=True, help="移動先カテゴリ")
+    mv.add_argument("--to", help="移動先カテゴリ")
+    mv.add_argument("--to-scope", choices=SCOPES, help="移動先の辞書 (global / local)")
     mv.add_argument("--category", help="同名が複数あるときの絞り込み (移動元)")
+    add_folder_option(mv)
     mv.set_defaults(func=cmd_move)
 
     c = sub.add_parser("categories", help="カテゴリマスターを見る / 編集する")
@@ -405,6 +497,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     args = build_parser().parse_args(argv)
+    # 辞書を読む前に「開いているフォルダ」を決める。あとから差し替えると
+    # store のキャッシュが前のフォルダの辞書を掴んだままになる
+    rc = _apply_folder(args)
+    if rc:
+        return rc
     try:
         for line in store.ensure_ready():
             print(f"旧レイアウトを移行しました: {line}", file=sys.stderr)

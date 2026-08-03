@@ -156,6 +156,94 @@ def test_the_graph_draws_nodes_and_an_edge(page, server, seeded):
     assert "親友" in (page.locator("svg.rel-graph").text_content() or "")
 
 
+def test_a_relation_can_be_edited_from_the_graph(page, server, seeded):
+    """図の線を押してその場で直せること（辞書ページへ渡り歩かせない）。
+
+    線は細いので、透明な太い当たり判定を重ねている。これが無いと押せず、
+    HTML も JS も正しいのに「押しても何も起きない」になる。
+    """
+    store.save(EntryDraft(
+        term="ジョバンニ", category="登場人物", summary="活版所で働く少年。",
+        definition="主人公。", relations=[{"to": "カムパネルラ", "label": "親友"}],
+    ), ref="登場人物/ジョバンニ")
+
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph .rel-edge-group").wait_for(timeout=15000)
+    # **辺のラベルだけを見る。** SVG 全体の textContent には、ノードの <title> に
+    # 入れた要約（「ジョバンニの級友。」）まで混ざるので、待ちが即座に成立してしまう
+    # SVG の <text> は HTMLElement ではないので inner_text() は使えない
+    assert page.locator("svg.rel-graph .rel-edge-label").text_content() == "親友"
+
+    page.click("svg.rel-graph .rel-edge-group")
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+    assert page.eval_on_selector("#edgeDialog [data-ref=to]", "n => n.value") == "カムパネルラ"
+    assert "ジョバンニ → カムパネルラ" in page.locator("#edgeDialog [data-ref=who]").inner_text()
+
+    page.fill("#edgeDialog [data-ref=label]", "級友")
+    page.select_option("#edgeDialog [data-ref=rank]", "対等")
+    page.click("#edgeDialog [data-ref=save]")
+
+    page.wait_for_function(
+        "document.querySelector('svg.rel-graph .rel-edge-label')?.textContent === '級友'",
+        timeout=15000,
+    )
+    entry = store.get("登場人物/ジョバンニ")
+    assert [(r.label, r.rank) for r in entry.relations] == [("級友", "対等")]
+
+
+def test_a_relation_can_be_deleted_from_the_graph(page, server, seeded):
+    store.save(EntryDraft(
+        term="ジョバンニ", category="登場人物", summary="活版所で働く少年。",
+        definition="主人公。", relations=[{"to": "カムパネルラ", "label": "親友"}],
+    ), ref="登場人物/ジョバンニ")
+
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph .rel-edge-group").wait_for(timeout=15000)
+    page.click("svg.rel-graph .rel-edge-group")
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+
+    page.on("dialog", lambda d: d.accept())      # confirm() を通す
+    page.click("#edgeDialog [data-ref=remove]")
+
+    page.wait_for_function(
+        "document.querySelectorAll('svg.rel-graph .rel-edge-group').length === 0",
+        timeout=15000,
+    )
+    assert store.get("登場人物/ジョバンニ").relations == []
+
+
+def test_a_stale_graph_refuses_to_write(page, server, seeded):
+    """図を開いたあとに関係が変わっていたら、書かずに読み込み直させること。
+
+    番号は**図を描いた時点**のものなので、そのまま書くと**別の関係を書き換える**。
+    黙って壊れる形なので、書く直前に行き先を確かめている。
+    """
+    store.save(EntryDraft(
+        term="ジョバンニ", category="登場人物", summary="活版所で働く少年。", definition="主人公。",
+        relations=[{"to": "カムパネルラ", "label": "親友"}, {"to": "ザネリ", "label": "同級生"}],
+    ), ref="登場人物/ジョバンニ")
+
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph .rel-edge-group").first.wait_for(timeout=15000)
+    page.locator("svg.rel-graph .rel-edge-group").first.click()
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+
+    # 図を開いたまま、外から 1 本目を消す → 0 番目が「ザネリ」に入れ替わる
+    store.save(EntryDraft(
+        term="ジョバンニ", category="登場人物", summary="活版所で働く少年。", definition="主人公。",
+        relations=[{"to": "ザネリ", "label": "同級生"}],
+    ), ref="登場人物/ジョバンニ")
+
+    page.fill("#edgeDialog [data-ref=label]", "級友")
+    page.click("#edgeDialog [data-ref=save]")
+
+    status = page.locator("#edgeDialog [data-ref=status].error")
+    status.wait_for(timeout=10000)
+    assert "図が古くなっています" in status.inner_text()
+    # ザネリ側は書き換わっていない
+    assert [(r.to, r.label) for r in store.get("登場人物/ジョバンニ").relations] == [("ザネリ", "同級生")]
+
+
 def test_the_doctor_is_quiet_then_reports_a_broken_reference(page, server, seeded):
     page.goto(f"{server}/doctor")
     page.locator("#root .empty").wait_for(timeout=15000)
@@ -194,6 +282,112 @@ def test_the_doctor_can_fix_an_entry_in_place(page, server, isolated_dirs):
     assert "直すところはありません" in page.locator("#root").inner_text()
 
 
+def test_content_search_opens_the_file_at_the_hit(page, server, isolated_dirs):
+    """横断検索 → ヒットを押す → その文書が開いて、その場所が光る。
+
+    検索語は辞書に無いことのほうが多いので、初出ジャンプ (`[data-gloss]`) では
+    寄せられない。見えているテキストで探して光らせるところまで見る。
+    """
+    base = config.content_dir()
+    (base / "一巻.txt").write_text("最初の段落。\n\nカムパネルラは黙っていた。\n", encoding="utf-8")
+    (base / "二巻.txt").write_text("何も出てこない話。\n", encoding="utf-8")
+
+    page.goto(f"{server}/")
+    page.locator("#files button").first.wait_for(timeout=15000)
+
+    page.fill("#contentQ", "カムパネルラ")
+    page.click("#searchGo")
+    page.locator("#searchResults .filelist button").first.wait_for(timeout=15000)
+    assert "1 件" in page.locator("#searchResults").inner_text()
+    assert "L.3" in page.locator("#searchResults").inner_text()
+
+    page.click("#searchResults .filelist button")
+    page.locator("#doc .gloss-flash").wait_for(timeout=15000)
+    assert "カムパネルラ" in page.locator("#doc .gloss-flash").inner_text()
+
+
+def test_content_search_says_when_nothing_matched(page, server, isolated_dirs):
+    (config.content_dir() / "a.txt").write_text("何も出てこない話。\n", encoding="utf-8")
+    page.goto(f"{server}/")
+    page.locator("#files button").first.wait_for(timeout=15000)
+
+    page.fill("#contentQ", "存在しない語")
+    page.click("#searchGo")
+    page.locator("#searchResults .empty").wait_for(timeout=15000)
+    assert "見つかりませんでした" in page.locator("#searchResults").inner_text()
+    assert "1 文書を読みました" in page.locator("#searchStatus").inner_text()
+
+
+def test_the_glossary_filters_by_tag(page, server, isolated_dirs):
+    """タグの絞り込みと、用語ページの `#タグ` からの遷移。
+
+    タグにマスターは無いので、選択肢は `/api/tags` の数え上げから作る。
+    """
+    store.save(EntryDraft(term="冪等", category="プログラミング",
+                          summary="要約。", definition="本文。", tags=["設計原則"]))
+    store.save(EntryDraft(term="副作用", category="プログラミング",
+                          summary="設計原則の話で出る。", definition="本文。"))
+
+    page.goto(f"{server}/glossary")
+    page.locator(".card").first.wait_for(timeout=15000)
+    assert page.locator(".card").count() == 2
+
+    page.select_option("#tagFilter", "設計原則")
+    page.wait_for_function("document.querySelectorAll('.card').length === 1", timeout=10000)
+    assert "冪等" in page.locator("#list").inner_text()
+
+    # 用語ページの #タグ からも同じ絞り込みに入れること
+    page.goto(f"{server}/glossary/プログラミング/冪等")
+    page.locator(".chips a").first.wait_for(timeout=15000)
+    page.click(".chips a")
+    page.locator(".card").first.wait_for(timeout=15000)
+    assert page.locator(".card").count() == 1
+    assert page.eval_on_selector("#tagFilter", "n => n.value") == "設計原則"
+
+
+def test_the_reading_position_survives_reopening(page, server, isolated_dirs):
+    """長い本を開き直したとき、前回の続きから出ること。
+
+    位置は px ではなく段落の番号で持っている。JS が落ちていると「戻ったつもりで
+    先頭のまま」になるが、HTML は正しいままなので単体テストでは捕まらない。
+    """
+    long_doc = config.content_dir() / "長い本.txt"
+    long_doc.write_text("\n\n".join(f"第 {i} 段落。" for i in range(200)), encoding="utf-8")
+
+    page.goto(f"{server}/?open=%E9%95%B7%E3%81%84%E6%9C%AC.txt")
+    page.locator("#doc p").first.wait_for(timeout=15000)
+    page.wait_for_function("document.querySelectorAll('#doc > *').length > 100", timeout=10000)
+
+    # 途中まで読む → スクロールが止まってから書かれる
+    page.evaluate("document.querySelector('main.doc-wrap').scrollTop = 4000")
+    page.wait_for_function(
+        "JSON.parse(localStorage.getItem('glosspop.reading') || '{}')"
+        "[Object.keys(JSON.parse(localStorage.getItem('glosspop.reading') || '{}'))[0]]?.block > 2",
+        timeout=10000,
+    )
+
+    page.goto(f"{server}/?open=%E9%95%B7%E3%81%84%E6%9C%AC.txt")
+    page.locator("#docStatus:not([hidden])").wait_for(timeout=15000)
+    assert "前回の続き" in page.locator("#docStatus").inner_text()
+    assert page.evaluate("document.querySelector('main.doc-wrap').scrollTop") > 100
+
+    # 「先頭から読む」で戻り、覚えていた位置も捨てる
+    page.click("#docStatus button")
+    page.wait_for_function(
+        "document.querySelector('main.doc-wrap').scrollTop === 0", timeout=10000
+    )
+    page.goto(f"{server}/?open=%E9%95%B7%E3%81%84%E6%9C%AC.txt")
+    page.locator("#doc p").first.wait_for(timeout=15000)
+    assert page.locator("#docStatus").is_hidden()
+
+
+def test_the_reading_position_is_not_restored_when_jumping_to_a_first_use(page, server, seeded):
+    """初出へ飛ぶと決まっているときは読書位置を戻さない（案内だけが嘘になる）。"""
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md&term=%E3%82%AB%E3%83%A0%E3%83%91%E3%83%8D%E3%83%AB%E3%83%A9")
+    page.locator("a.gloss-link").first.wait_for(timeout=15000)
+    assert "前回の続き" not in page.locator("#docStatus").inner_text()
+
+
 def test_the_graph_filters_by_a_category_whose_name_has_a_space(page, server, isolated_dirs):
     """カテゴリ名に空白を使えるので、選択の値は空白で割れない。"""
     store.save(EntryDraft(term="ジョバンニ", category="銀河 鉄道", summary="主人公。", definition="本文。"))
@@ -208,6 +402,60 @@ def test_the_graph_filters_by_a_category_whose_name_has_a_space(page, server, is
         "document.querySelectorAll('svg.rel-graph .rel-node').length === 1", timeout=10000
     )
     assert "ジョバンニ" in (page.locator("svg.rel-graph").text_content() or "")
+
+
+def test_the_settings_dialog_exports_and_imports_the_glossary(page, server, isolated_dirs, tmp_path):
+    """書き出し → 置き換え → 控えが残る、まで通す。
+
+    **このアプリで唯一データが消える画面**なので、確認を出すところと控えの場所を
+    出すところまで見る。
+    """
+    from glosspop import archive
+
+    store.save(EntryDraft(term="冪等", category="プログラミング", definition="本文。"))
+    exported = tmp_path / "backup.zip"
+    exported.write_bytes(archive.export_bytes())
+
+    # 書き出したあとに増やした語は、取り込みで消える側
+    store.save(EntryDraft(term="結果整合性", category="プログラミング", definition="本文。"))
+
+    page.goto(f"{server}/glossary")
+    page.locator("#settings").wait_for(timeout=15000)
+    page.click("#settings")
+    page.locator("dialog.sheet[open] [data-ref=importPick]").wait_for(timeout=10000)
+
+    page.on("dialog", lambda d: d.accept())      # confirm() を通す
+    page.set_input_files("dialog.sheet[open] [data-ref=importFile]", str(exported))
+
+    result = page.locator("dialog.sheet[open] [data-ref=result]")
+    result.wait_for(timeout=15000)
+    assert "1 語 / 1 カテゴリに置き換えました" in result.inner_text()
+    assert "控えは" in result.inner_text()
+
+    assert {e.term for e in store.load_all()} == {"冪等"}
+    backups = list((config.DATA_ROOT / "data" / archive.BACKUP_DIR_NAME).glob("backup-*.zip"))
+    assert len(backups) == 1
+    # 再起動を促していない（保存先は変わらないので読み直しだけで足りる）
+    assert "開き直して" not in result.inner_text()
+
+
+def test_importing_a_foreign_zip_says_so_and_changes_nothing(page, server, isolated_dirs, tmp_path):
+    store.save(EntryDraft(term="冪等", category="プログラミング", definition="本文。"))
+    junk = tmp_path / "junk.zip"
+    junk.write_bytes(b"not a zip")
+
+    page.goto(f"{server}/glossary")
+    page.locator("#settings").wait_for(timeout=15000)
+    page.click("#settings")
+    page.locator("dialog.sheet[open] [data-ref=importPick]").wait_for(timeout=10000)
+
+    page.on("dialog", lambda d: d.accept())
+    page.set_input_files("dialog.sheet[open] [data-ref=importFile]", str(junk))
+
+    status = page.locator("dialog.sheet[open] [data-ref=status].error")
+    status.wait_for(timeout=15000)
+    assert "zip として読めません" in status.inner_text()
+    assert {e.term for e in store.load_all()} == {"冪等"}
 
 
 def test_the_settings_dialog_moves_the_data_root(page, server, isolated_dirs, tmp_path, monkeypatch):
@@ -227,6 +475,10 @@ def test_the_settings_dialog_moves_the_data_root(page, server, isolated_dirs, tm
     page.goto(f"{server}/glossary")
     page.click("#settings")
     page.locator("dialog.sheet[open]").wait_for(timeout=15000)
+    # **ダイアログが開いた時点ではまだ空。** 中身は /api/settings を待って描かれるので、
+    # 開いた直後に読むと、負荷の高いときだけ落ちる（実際に全体実行で 1 度落ちた）。
+    # 保存先の選択も paintMode が後から上書きするので、描き終わってから触る
+    page.locator("dialog.sheet[open] [data-ref='paths'] dd").first.wait_for(timeout=15000)
     # いま何がどこにあるかが見えること（コピーの取りこぼしを防ぐのが目的）
     body = page.locator("dialog.sheet[open]").inner_text()
     assert "専用ウィンドウの設定・お気に入り" in body

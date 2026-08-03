@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 
-from glosspop import config, store
+from glosspop import categories, config, store
 
 
 def _add(**data) -> int:
@@ -39,6 +39,76 @@ def test_same_category_and_scope_still_collides(capsys, add_entry):
 
     assert _add(term="冪等", category="プログラミング") == 1
     assert json.loads(capsys.readouterr().out)["status"] == "exists"
+
+
+def _run(argv: list[str]) -> int:
+    """パーサを通して実行する（``--folder`` の反映も含めて見る）。"""
+    from glosspop.cli import main
+
+    return main(argv)
+
+
+def test_folder_option_targets_that_folders_local_dictionary(tmp_path, capsys):
+    """``--folder`` を渡すと、そのフォルダの ``.glosspop`` が保存先になる。
+
+    CLI には「開いているフォルダ」が無いので、指定が無いと既定の content フォルダの
+    辞書に書いてしまう。ビューアと同じ経路（``config.set_content_dir()`` →
+    ``store.glossary_dir(LOCAL_SCOPE)``）を通すこと。
+    """
+    novel = tmp_path / "銀河鉄道の夜"
+    novel.mkdir()
+
+    assert _run(["add", "--term", "ザネリ", "--category", "登場人物",
+                 "--scope", "local", "--folder", str(novel)]) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["ref"] == ".local/登場人物/ザネリ"
+    assert (novel / ".glosspop" / "glossary" / "登場人物" / "ザネリ.md").exists()
+    # カテゴリマスターはグローバルのもの。フォルダ固有のカテゴリで汚さない
+    assert "登場人物" not in [c.name for c in categories.load()]
+
+
+def test_missing_folder_is_rejected_before_touching_the_dictionary(tmp_path, capsys):
+    assert _run(["list", "--folder", str(tmp_path / "ない")]) == 2
+    assert "フォルダがありません" in capsys.readouterr().err
+
+
+def test_local_dictionary_location_is_announced(tmp_path, capsys):
+    """どこに書いたかを黙らない。
+
+    ローカル辞書は祖先方向に探すので、``--folder`` に渡した場所とは限らない。
+    ビューアが画面に出しているのと同じ理由で CLI も出す。
+    """
+    work = tmp_path / "作品" / "1巻"
+    work.mkdir(parents=True)
+    (tmp_path / "作品" / ".glosspop").mkdir()      # 親に辞書がある
+
+    assert _run(["add", "--term", "ザネリ", "--category", "登場人物",
+                 "--scope", "local", "--folder", str(work)]) == 0
+    err = capsys.readouterr().err
+    assert str(tmp_path / "作品" / ".glosspop" / "glossary") in err
+
+
+def test_move_between_scopes(tmp_path, capsys, add_entry):
+    """``move --to-scope`` で全体 ↔ フォルダの辞書を移せる。"""
+    folder = tmp_path / "小説"
+    folder.mkdir()
+    add_entry("ザネリ", category="登場人物")
+    capsys.readouterr()
+
+    assert _run(["move", "ザネリ", "--to-scope", "local", "--folder", str(folder)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["from"] == "登場人物/ザネリ"
+    assert out["ref"] == ".local/登場人物/ザネリ"
+    assert (folder / ".glosspop" / "glossary" / "登場人物" / "ザネリ.md").exists()
+    assert not (tmp_path / "glossary" / "登場人物" / "ザネリ.md").exists()
+
+
+def test_move_needs_a_destination(capsys, add_entry):
+    add_entry("ザネリ", category="登場人物")
+    capsys.readouterr()
+    assert _run(["move", "ザネリ"]) == 2
+    assert "--to" in capsys.readouterr().err
 
 
 def test_json_from_stdin_is_read_as_utf8(tmp_path):
