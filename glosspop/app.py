@@ -193,6 +193,14 @@ class MoveRequest(BaseModel):
     scope: str = ""
 
 
+class SettingsRequest(BaseModel):
+    """データの保存先を変える。空文字なら既定（アプリの隣）に戻す。"""
+
+    data_root: str = ""
+    #: いまの保存先の中身を新しい場所へ複製するか（元は消さない）
+    copy_existing: bool = True
+
+
 class ContentRootRequest(BaseModel):
     path: str = ""
 
@@ -335,6 +343,99 @@ def health() -> dict:
         "local_entry_count": sum(1 for e in store.load_all() if e.is_local),
         "entry_count": len(store.load_all()),
         "category_count": len(categories.load()),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# API: 設定（データの保存先）
+#
+# 既定ではデータがアプリの隣にあるので、更新のたびに手でコピーすることになる。
+# アプリの外へ移しておけば、更新は**フォルダを入れ替えるだけ**で済む。
+# --------------------------------------------------------------------------- #
+
+def _settings_payload() -> dict:
+    env_locked = bool(os.environ.get("GLOSSPOP_DATA_ROOT"))
+    saved = config.load_settings().get("data_root") or ""
+    if env_locked:
+        source = "env"
+    elif saved:
+        source = "settings"
+    else:
+        source = "default"
+    return {
+        "settings_file": str(config.SETTINGS_FILE),
+        "data_root": str(config.DATA_ROOT),
+        "saved_data_root": str(saved),
+        "app_dir": str(config.APP_DIR),
+        "default_data_root": str(config.APP_DIR),
+        # 環境変数が勝つので、その場合は設定を書いても効かない。UI に出す
+        "source": source,
+        "env_locked": env_locked,
+        "portable": Path(config.DATA_ROOT) == Path(config.APP_DIR),
+        "paths": {
+            "glossary": str(config.GLOSSARY_DIR),
+            "categories": str(config.CATEGORIES_FILE),
+            "sites": str(config.SITES_DIR),
+            "content": str(config.CONTENT_DIR),
+            "window_profile": str(config.WINDOW_PROFILE_DIR),
+        },
+    }
+
+
+@app.get("/api/settings")
+def get_settings() -> dict:
+    return _settings_payload()
+
+
+@app.put("/api/settings")
+def put_settings(req: SettingsRequest) -> dict:
+    """データの保存先を書き換える。**効くのは次の起動から。**
+
+    走っているプロセスの ``config`` は import 時に解決済みで、途中で差し替えると
+    ``store`` のキャッシュや開いているフォルダの状態と食い違う。ここでは設定
+    ファイルを書くだけにして、UI に再起動を促す。
+    """
+    if os.environ.get("GLOSSPOP_DATA_ROOT"):
+        raise HTTPException(
+            409,
+            "環境変数 GLOSSPOP_DATA_ROOT が設定されているので、設定より優先されます。"
+            "変えるにはその環境変数を外してください。",
+        )
+
+    settings = config.load_settings()
+    raw = req.data_root.strip()
+    copy_report = None
+
+    if not raw:
+        settings.pop("data_root", None)          # 既定（アプリの隣）に戻す
+        target = config.APP_DIR
+    else:
+        try:
+            target = Path(raw).expanduser().resolve()
+        except OSError as exc:
+            raise HTTPException(400, f"使えないパスです: {raw}") from exc
+        if target.exists() and not target.is_dir():
+            raise HTTPException(400, f"フォルダではありません: {target}")
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(400, f"フォルダを作れません: {exc}") from exc
+        settings["data_root"] = str(target)
+
+    if req.copy_existing and target != config.DATA_ROOT:
+        try:
+            copy_report = config.copy_data_root(config.DATA_ROOT, target)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    config.save_settings(settings)
+    return {
+        **_settings_payload(),
+        # いまのプロセスは古い場所を見たまま。ここを黙ると「移したのに反映されない」になる
+        "restart_required": True,
+        "pending_data_root": str(target),
+        "copied_from": str(config.DATA_ROOT) if copy_report else "",
+        "copy": copy_report,
     }
 
 

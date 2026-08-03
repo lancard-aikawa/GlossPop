@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -17,13 +18,80 @@ def _env_path(name: str, default: Path) -> Path:
 #: PyInstaller で固めた exe から動いているか
 FROZEN = bool(getattr(sys, "frozen", False))
 
+
+# --------------------------------------------------------------------------- #
+# ユーザー設定ファイル
+#
+# **アプリのフォルダの外に置く。** 中身は「データをどこに置くか」で、更新のたびに
+# アプリのフォルダを丸ごと入れ替えても残る必要があるため。ここを data/ の下に
+# 置くと、設定を読むために設定が要る、という循環になる。
+# --------------------------------------------------------------------------- #
+
+def _settings_file() -> Path:
+    """設定ファイルの場所。OS のユーザー領域に置く。"""
+    raw = os.environ.get("GLOSSPOP_SETTINGS_FILE")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    if sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "GlossPop" / "settings.json"
+
+
+SETTINGS_FILE = _settings_file()
+
+
+def load_settings() -> dict:
+    """設定ファイルを読む。壊れていても起動は止めない（既定に落ちる）。"""
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_settings(values: dict) -> Path:
+    """設定ファイルを書く。返すのは書いた場所。"""
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SETTINGS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(values, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    os.replace(tmp, SETTINGS_FILE)
+    return SETTINGS_FILE
+
 #: パッケージの場所。凍結時は一時展開先 (_internal) を指す
 PACKAGE_DIR = Path(__file__).resolve().parent
 
-#: 書き込むデータ (辞書・content) の基準ディレクトリ。
+#: アプリ本体の場所。**更新のたびに丸ごと入れ替わる側。**
 #: 凍結時に PACKAGE_DIR を基準にすると、保存した辞書が一時展開先に書かれて
 #: 終了時に消える。exe の隣を基準にする。
-DATA_ROOT = Path(sys.executable).resolve().parent if FROZEN else PACKAGE_DIR.parent
+APP_DIR = Path(sys.executable).resolve().parent if FROZEN else PACKAGE_DIR.parent
+
+
+def _data_root() -> Path:
+    """書き込むデータ (辞書・content) の基準ディレクトリ。
+
+    優先順は **環境変数 > 設定ファイル > アプリの隣**。環境変数を最優先にするのは、
+    テストと一時的な切り替えが設定ファイルに引きずられないようにするため。
+
+    既定がアプリの隣なのは、フォルダごと持ち運べる（USB でも動く）性質を保つため。
+    アプリの外へ移すと、**更新はフォルダを入れ替えるだけで済む**（データを手で
+    コピーしなくてよくなる）。設定メニューから切り替えられる。
+    """
+    raw = os.environ.get("GLOSSPOP_DATA_ROOT") or load_settings().get("data_root")
+    if raw:
+        try:
+            return Path(str(raw)).expanduser().resolve()
+        except OSError:
+            pass          # 壊れた設定で起動できなくならないよう既定に落ちる
+    return APP_DIR
+
+
+DATA_ROOT = _data_root()
 
 #: 後方互換 (開発時は従来どおりリポジトリルート)
 PROJECT_ROOT = DATA_ROOT
@@ -170,3 +238,64 @@ def ensure_dirs() -> None:
     GLOSSARY_DIR.mkdir(parents=True, exist_ok=True)
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)
     CATEGORIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+#: 保存先を移すときに持っていくもの。data/ に辞書・カテゴリ・URL 辞書・
+#: 専用ウィンドウのプロファイル（お気に入りや設定の localStorage）が全部入る
+DATA_SUBTREES = ("data", "content")
+
+#: 中身を運ばないディレクトリ。ブラウザプロファイルのキャッシュは数百ファイルあり、
+#: 消えても作り直されるだけ。**お気に入りや設定は Local Storage にあるので残す** ——
+#: 名前に Cache を含むものだけを外すのはそのため（Local Storage は名前に含まない）
+_CACHE_DIR_MARKERS = ("cache", "crashpad")
+
+
+def _is_cache(rel: Path) -> bool:
+    return any(
+        any(marker in part.casefold() for marker in _CACHE_DIR_MARKERS)
+        for part in rel.parts[:-1] + (rel.name,)
+    )
+
+
+def copy_data_root(src: Path, dst: Path) -> dict:
+    """データ一式を新しい場所へ**複製する**。元は消さない。
+
+    消さないのは、移した先で問題が出たときに戻れるようにするため。旧フォルダを
+    片付けるのはユーザーの判断に任せ、場所を返して知らせる。
+
+    専用ウィンドウが動いていると `data/window` のファイルは掴まれていて読めない。
+    そこで止めずに、**読めなかったものを理由つきで返す**（黙って欠けたまま
+    「移せました」と言わない）。キャッシュだけは数が多く、消えても作り直されるので
+    件数だけ返す。
+    """
+    src = src.resolve()
+    dst = dst.resolve()
+    if src == dst:
+        raise ValueError("移動元と移動先が同じです")
+    if src in dst.parents:
+        raise ValueError("移動先が移動元の中にあります（無限にコピーされます）")
+
+    copied: list[str] = []
+    skipped: list[dict] = []
+    cache_skipped = 0
+    for name in DATA_SUBTREES:
+        base = src / name
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            rel = path.relative_to(src)
+            if _is_cache(rel):
+                if path.is_file():
+                    cache_skipped += 1
+                continue
+            target = dst / rel
+            try:
+                if path.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                copied.append(rel.as_posix())
+            except OSError as exc:
+                skipped.append({"path": rel.as_posix(), "reason": str(exc)})
+    return {"copied": copied, "skipped": skipped, "cache_skipped": cache_skipped}

@@ -199,3 +199,34 @@ def test_the_graph_filters_by_a_category_whose_name_has_a_space(page, server, is
         "document.querySelectorAll('svg.rel-graph .rel-node').length === 1", timeout=10000
     )
     assert "ジョバンニ" in (page.locator("svg.rel-graph").text_content() or "")
+
+
+def test_the_settings_dialog_moves_the_data_root(page, server, isolated_dirs, tmp_path, monkeypatch):
+    """更新のたびに手でコピーしなくて済むように、保存先を画面から変えられること。"""
+    from glosspop import config as cfg
+
+    settings_file = tmp_path / "settings.json"
+    monkeypatch.setattr(cfg, "SETTINGS_FILE", settings_file)
+    monkeypatch.delenv("GLOSSPOP_DATA_ROOT", raising=False)
+    store.save(EntryDraft(term="冪等", category="プログラミング", summary="要約。", definition="本文。"))
+
+    page.goto(f"{server}/glossary")
+    page.click("#settings")
+    page.locator("dialog.sheet[open]").wait_for(timeout=15000)
+    # いま何がどこにあるかが見えること（コピーの取りこぼしを防ぐのが目的）
+    body = page.locator("dialog.sheet[open]").inner_text()
+    assert "専用ウィンドウの設定・お気に入り" in body
+    assert str(settings_file) in body
+
+    target = tmp_path / "外の場所"
+    page.check("dialog.sheet[open] [data-ref='modeCustom']")
+    page.fill("dialog.sheet[open] [data-ref='path']", str(target))
+    page.click("dialog.sheet[open] [data-ref='save']")
+
+    page.locator("dialog.sheet[open] [data-ref='result']").wait_for(timeout=15000)
+    note = page.locator("dialog.sheet[open] [data-ref='result']").inner_text()
+    # 走っているプロセスは古い場所を見たまま。黙ると「移したのに反映されない」になる
+    assert "次の起動から" in note and "開き直して" in note
+    assert (target / "data" / "glossary" / "プログラミング" / "冪等.md").exists()
+    # 元は消さない（戻れるようにする）
+    assert (cfg.GLOSSARY_DIR / "プログラミング" / "冪等.md").exists()

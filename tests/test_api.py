@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from urllib.parse import quote
 
 import pytest
@@ -736,3 +737,71 @@ def test_relations_draft_can_read_the_displayed_document(client, monkeypatch):
     }).json()
     assert [r["to_term"] for r in body["relations"]] == ["カムパネルラ"]
     assert "ジョバンニとカムパネルラは親友だった。" in seen["prompt"]
+
+
+# --------------------------------------------------------------------------- #
+# 設定（データの保存先）
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def settings_env(tmp_path, monkeypatch):
+    """設定ファイルを逃がす（本物の %APPDATA% を触らない）。"""
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(config, "SETTINGS_FILE", path)
+    monkeypatch.delenv("GLOSSPOP_DATA_ROOT", raising=False)
+    return path
+
+
+def test_settings_reports_where_everything_lives(client, settings_env):
+    body = client.get("/api/settings").json()
+    assert body["source"] == "default"
+    assert body["settings_file"] == str(settings_env)
+    # 更新のとき何を持っていくかが分かること
+    assert set(body["paths"]) == {
+        "glossary", "categories", "sites", "content", "window_profile"
+    }
+
+
+def test_settings_move_writes_the_file_and_asks_for_a_restart(client, settings_env, tmp_path):
+    target = tmp_path / "外の場所"
+    res = client.put("/api/settings", json={"data_root": str(target), "copy_existing": False})
+    assert res.status_code == 200
+    body = res.json()
+    # いまのプロセスは古い場所を見たまま。黙ると「移したのに反映されない」になる
+    assert body["restart_required"] is True
+    assert body["pending_data_root"] == str(target.resolve())
+    assert json.loads(settings_env.read_text(encoding="utf-8"))["data_root"] == str(target.resolve())
+
+
+def test_settings_move_copies_the_existing_data(client, settings_env, tmp_path):
+    client.post("/api/entries", json=ENTRY)
+    target = tmp_path / "移動先"
+    body = client.put(
+        "/api/settings", json={"data_root": str(target), "copy_existing": True}
+    ).json()
+    assert body["copy"]["skipped"] == []
+    assert any("glossary" in p for p in body["copy"]["copied"])
+    # 元は消さない（戻れるようにする）
+    assert client.get("/api/entries").json()
+
+
+def test_settings_reset_removes_the_override(client, settings_env, tmp_path):
+    client.put("/api/settings", json={"data_root": str(tmp_path / "x"), "copy_existing": False})
+    body = client.put("/api/settings", json={"data_root": "", "copy_existing": False}).json()
+    assert body["saved_data_root"] == ""
+    assert "data_root" not in json.loads(settings_env.read_text(encoding="utf-8"))
+
+
+def test_settings_rejects_a_file_as_the_target(client, settings_env, tmp_path):
+    target = tmp_path / "ファイル.txt"
+    target.write_text("x", encoding="utf-8")
+    res = client.put("/api/settings", json={"data_root": str(target)})
+    assert res.status_code == 400
+
+
+def test_settings_refuses_when_the_env_var_wins(client, settings_env, tmp_path, monkeypatch):
+    """環境変数が勝つのに設定を書けると、効かない設定が残って混乱する。"""
+    monkeypatch.setenv("GLOSSPOP_DATA_ROOT", str(tmp_path / "forced"))
+    assert client.get("/api/settings").json()["env_locked"] is True
+    res = client.put("/api/settings", json={"data_root": str(tmp_path / "other")})
+    assert res.status_code == 409
