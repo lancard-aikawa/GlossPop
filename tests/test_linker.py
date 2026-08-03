@@ -265,3 +265,92 @@ def test_term_split_by_ruby_still_links():
     html, hits = linker.annotate("<p><ruby><rb>銀河</rb></ruby>鉄道に乗った。</p>")
     assert len(hits) == 1
     assert 'class="gloss-link' in html
+
+
+# --------------------------------------------------------------------------- #
+# 木にまとめた正規表現が、素直に並べたものと同じ結果になること
+#
+# 照合を速くするために表記を前方一致でまとめている（`_trie`）。**速いだけで
+# 結果が変わったら意味がない**ので、素直に `a|b|c` と並べたものと突き合わせる。
+# ここが唯一の保証なので、`_pattern_for` を使う素朴版はテスト側に置いてある。
+# --------------------------------------------------------------------------- #
+
+def _flat(variants):
+    """比較用の素朴版。長い表記を先に並べるだけ。"""
+    import re as _re
+
+    from glosspop.linker import _pattern_for
+
+    ordered = sorted(variants, key=len, reverse=True)
+    return _re.compile("|".join(_pattern_for(v) for v in ordered), _re.IGNORECASE)
+
+
+def _spans(pattern, text):
+    return [(m.start(), m.end(), m.group(0)) for m in pattern.finditer(text)]
+
+
+#: 木にまとめたときに壊れやすい形を集めてある。前方一致・大文字小文字・
+#: 境界チェックの有無・日本語と英数字の混在
+_SURFACES = [
+    "API", "APIキー", "AP", "Ap", "MD", "Markdown", "ML",
+    "冪等", "冪等性", "冪", "結果整合性", "結果",
+    "a", "ab", "abc", "abcd", "A&B", "C++", "x86", "x8",
+    "銀河", "銀河鉄道", "銀河鉄道の夜", "ジョバンニ",
+]
+
+_TEXTS = [
+    "API と APIキー と api の話。README.md と MD と Markdown。",
+    "冪等性は冪等より長い。結果整合性と結果。",
+    "abcd abc ab a ABCD Abc",
+    "銀河鉄道の夜は銀河鉄道であり銀河である。",
+    "x86 と x8 と C++ と A&amp;B。",
+    "APIキーAPI冪等性冪等",          # 区切りの無い並び
+    "",
+]
+
+
+def test_the_trie_matches_exactly_what_the_flat_pattern_matches():
+    from glosspop.linker import _compile, _variants
+
+    variants = []
+    for surface in _SURFACES:
+        for v in _variants(surface):
+            if v and v not in variants:
+                variants.append(v)
+
+    trie = _compile(variants)
+    flat = _flat(variants)
+    for text in _TEXTS:
+        assert _spans(trie, text) == _spans(flat, text), text
+
+
+def test_the_trie_matches_the_flat_pattern_on_generated_surfaces():
+    """**共通の先頭が多い集合**が木の効きどころ。そこでずれないこと。"""
+    from glosspop.linker import _compile, _variants
+
+    surfaces = [f"用語{i:03d}" for i in range(200)]
+    surfaces += [f"用語{i:03d}の続き" for i in range(0, 200, 7)]
+    surfaces += [f"alias{i:03d}" for i in range(200)]
+    variants = []
+    for surface in surfaces:
+        for v in _variants(surface):
+            if v and v not in variants:
+                variants.append(v)
+
+    trie = _compile(variants)
+    flat = _flat(variants)
+    text = "用語000 と 用語000の続き と 用語007の続き、alias042 alias0420 用語199。"
+    assert _spans(trie, text) == _spans(flat, text)
+
+
+def test_longest_still_wins_inside_the_trie():
+    """前方一致でまとめても「同じ位置では長いほうが勝つ」が保たれること。
+
+    木では、続きのある枝を先に置くことでこれを担保している（`_branch`）。
+    逆にすると `銀河` で切れて、`鉄道の夜` が地の文に残る。
+    """
+    out, _ = link(
+        [mk("銀河"), mk("銀河鉄道"), mk("銀河鉄道の夜")],
+        "<p>銀河鉄道の夜を読む</p>",
+    )
+    assert ">銀河鉄道の夜</a>" in out

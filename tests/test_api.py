@@ -1188,3 +1188,48 @@ def test_download_is_refused_when_the_check_is_off(client, settings_env):
     client.put("/api/update", json={"enabled": False})
     res = client.post("/api/update/download")
     assert res.status_code == 409
+
+
+# --------------------------------------------------------------------------- #
+# 自動リンカの使い回し
+#
+# 組み立ては件数に比例するので使い回すが、**辞書の変更を取りこぼしたら意味がない**。
+# 外のエディタで書き換えてよい、が売りなので、そこが崩れないことを見張る。
+# --------------------------------------------------------------------------- #
+
+def test_the_linker_is_reused_while_the_glossary_is_unchanged(client):
+    from glosspop import app as app_module
+
+    client.post("/api/entries", json=ENTRY)
+    first = app_module._linker()
+    assert app_module._linker() is first
+
+
+def test_the_linker_is_rebuilt_when_an_entry_is_added(client):
+    from glosspop import app as app_module
+
+    client.post("/api/entries", json=ENTRY)
+    first = app_module._linker()
+    client.post("/api/entries", json={**ENTRY, "term": "結果整合性"})
+    assert app_module._linker() is not first
+
+
+def test_the_linker_notices_an_edit_made_outside(client):
+    """**外のエディタで足したファイル**も拾うこと。
+
+    鍵にしているのは `load_all()` が返すリストで、`store` は署名
+    （各ファイルの mtime とサイズ）が変わったときだけ新しいリストを作る。
+    ここが時間や件数だけの判定に変わると、外の編集が黙って無視される。
+    """
+    from glosspop import app as app_module
+
+    client.post("/api/entries", json=ENTRY)
+    before, _ = app_module._linker().annotate("<p>冪等と結果整合性</p>")
+    assert before.count("gloss-link") == 1
+
+    path = config.GLOSSARY_DIR / "プログラミング" / "結果整合性.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("---\nterm: 結果整合性\n---\n\n本文。\n", encoding="utf-8")
+
+    after, _ = app_module._linker().annotate("<p>冪等と結果整合性</p>")
+    assert after.count("gloss-link") == 2

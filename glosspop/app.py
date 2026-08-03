@@ -291,8 +291,29 @@ class UrlDictionaryRequest(BaseModel):
 # ヘルパ
 # --------------------------------------------------------------------------- #
 
+#: 組み立て済みの Linker。**辞書が変わっていなければ使い回す。**
+#: 鍵はエントリ集合そのもの（`load_all()` の返すリストの同一性）—— `store` は
+#: 中身が変わったときだけ新しいリストを作るので、これで十分かつ確実
+_linker_cache: tuple[object, Linker] | None = None
+
+
 def _linker() -> Linker:
-    return Linker(store.load_all())
+    """全エントリぶんの自動リンカ。
+
+    組み立ては件数に比例する（実測: 3000 語で 20 ms）。1 リクエストに 1 回とはいえ、
+    辞書が変わっていないのに毎回作り直す理由が無いので使い回す。
+
+    **辞書の変更を取りこぼさないこと**が条件なので、鍵には `load_all()` が返す
+    リストそのものを使う。`store` は署名（各ファイルの mtime とサイズ）が変わった
+    ときだけ新しいリストを作るので、**外のエディタで書き換えられた場合も別物になる**。
+    """
+    global _linker_cache
+    entries = store.load_all()
+    if _linker_cache is not None and _linker_cache[0] is entries:
+        return _linker_cache[1]
+    linker = Linker(entries)
+    _linker_cache = (entries, linker)
+    return linker
 
 
 def _term_card(entry: Entry) -> dict:
