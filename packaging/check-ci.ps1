@@ -132,6 +132,34 @@ Write-Step 'exe を起動して確認'
 & (Join-Path $PSScriptRoot 'check-exe.ps1') -Port $Port
 if ($LASTEXITCODE -ne 0) { Fail 'exe の確認が落ちました' }
 
+# --------------------------------------------------------------------------- #
+# 5. 宿題の見直し（docs/open-questions.md が置き去りになっていないか）
+#
+#    前に、機能が 5 つ入る間この file は一度も更新されず、**解決済みの項目が
+#    残ったまま**になった。残っていると「まだ無いもの」に見えるので害がある。
+#    タグを打つ直前は必ずここを通るので、**最後に読み上げて目に入れる**。
+#
+#    落とさず警告にしてあるのは、「触った」が「見直した」の証明にならないため
+#    （バージョンの上げ忘れと同じ扱い）。
+# --------------------------------------------------------------------------- #
+Write-Step '宿題の見直し（docs/open-questions.md）'
+$notes = 'docs/open-questions.md'
+$lastTag = (& git describe --tags --abbrev=0 2>$null)
+if ($LASTEXITCODE -eq 0 -and $lastTag) {
+    $since = @(& git log --format=%h "$lastTag..HEAD")
+    $touched = @(& git log --format=%h "$lastTag..HEAD" -- $notes)
+    Write-Host "  $lastTag 以降: コミット $($since.Count) 件 / うち $notes を触ったもの $($touched.Count) 件"
+    if ($since.Count -gt 0 -and $touched.Count -eq 0) {
+        Write-Host "  注意: $lastTag 以降この file を一度も見直していません（片付いた項目が残っていないか）" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host '  前回のタグが無いので、コミットとの比較は飛ばします'
+}
+Write-Host '  いま残っている宿題:'
+Select-String -Path $notes -Pattern '^## ' | ForEach-Object {
+    Write-Host ('    ' + ($_.Line -replace '^##\s*', ''))
+}
+
 Write-Host ''
 Write-Host "OK: $init はこのままタグを打てます" -ForegroundColor Green
 Write-Host '  git tag v' -NoNewline; Write-Host $init
