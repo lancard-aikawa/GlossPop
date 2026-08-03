@@ -486,7 +486,9 @@ Playwright を動かして確かめる。
 | 辞書のスキーマ / CLI 引数 | `.claude/skills/gloss-add/SKILL.md` |
 | 関係 (`relations`) の項目 | SKILL.md の「関係を書く」、README の「関係と相関図」 |
 | 抽出の種別 (`EXTRACT_KINDS`) | README の「まとめて登録する」の表 |
+| 設定に足した項目 | README の「設定」、`packaging/release-notes.md` の「できること」 |
+| 更新まわりの挙動 | README の「更新のしかた」、`packaging/release-notes.md` の「更新するとき」 |
 | 自動リンクの規則 | README.md の「自動リンクの規則」、`content/ようこそ.md` |
 | カテゴリ名の制約 | `models.normalize_category()`、README、SKILL.md、`ai.build_prompt()` |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
-| バージョン | `pyproject.toml` と `glosspop/__init__.py` の**両方**（タグと不一致だと release ワークフローが落ちる） |
+| バージョン | `pyproject.toml` と `glosspop/__init__.py` の**両方**（タグと不一致だと release ワークフローが落ちる）。`release-notes.md` の版番号の例も見る |
