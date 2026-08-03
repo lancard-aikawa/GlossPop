@@ -268,7 +268,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     refs.kindbox.disabled = true;
     refs.stop.hidden = false;
     paintGo();
-    setStatus(refs.status, "Claude が候補を抽出中 (数十秒かかります)", "busy");
+    setStatus(refs.status, "AI が候補を抽出中 (数十秒かかります)", "busy");
     try {
       controller = new AbortController();
       const options = { method: "POST", signal: controller.signal };

@@ -39,6 +39,7 @@ function build() {
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
         <button type="button" data-ref="stop" hidden>中止</button>
+        <button type="button" data-ref="more" hidden>続けて探す</button>
         <button type="button" data-ref="cancel">閉じる</button>
         <button type="button" class="primary" data-ref="go"></button>
       </footer>
@@ -96,7 +97,7 @@ export async function openRelationsDialog({
   build();
   refs.list.replaceChildren();
   refs.dropped.hidden = true;
-  refs.stop.hidden = refs.toggle.hidden = true;
+  refs.stop.hidden = refs.toggle.hidden = refs.more.hidden = true;
   const where = category ? `「${category}」` : "辞書全体";
   const from = text ? (source ? `「${source}」` : "表示中の文書") : "開いているフォルダの本文";
   refs.lead.textContent =
@@ -143,9 +144,9 @@ export async function openRelationsDialog({
     const started = Date.now();
     const tick = setInterval(() => {
       const sec = Math.round((Date.now() - started) / 1000);
-      setStatus(refs.status, `Claude が関係を探しています（${sec} 秒経過）`, "busy");
+      setStatus(refs.status, `AI が関係を探しています（${sec} 秒経過）`, "busy");
     }, 1000);
-    setStatus(refs.status, "Claude が関係を探しています（数分かかることがあります）", "busy");
+    setStatus(refs.status, "AI が関係を探しています（数分かかることがあります）", "busy");
     try {
       controller = new AbortController();
       const res = await api("/api/ai/relations", {
@@ -243,11 +244,25 @@ export async function openRelationsDialog({
       }
       for (const bad of failed) setStatus(refs.status, bad.detail, "error");
       if (!failed.length) setStatus(refs.status, `${res.applied} 本を書き込みました`);
+      // 書き込んだ組はサーバ側で「すでにある」として除かれるので、もう一度
+      // 探せば続きが出る。閉じて開き直させない
+      refs.more.hidden = !applied;
     } catch (err) {
       setStatus(refs.status, err.message, "error");
     }
     busy = false;
     paintGo();
+  };
+
+  /** 書き込んだぶんを除いて、同じ範囲をもう一度探す。 */
+  const onMore = () => {
+    rows = [];
+    refs.list.replaceChildren();
+    refs.dropped.hidden = true;
+    refs.more.hidden = true;
+    refs.lead.textContent =
+      "すでに書き込んだ関係は除いて、同じ範囲をもう一度探します。";
+    return runDraft();
   };
 
   const onGo = () => (rows.length ? runApply() : runDraft());
@@ -266,6 +281,7 @@ export async function openRelationsDialog({
 
   function cleanup() {
     refs.go.removeEventListener("click", onGo);
+    refs.more.removeEventListener("click", onMore);
     refs.toggle.removeEventListener("click", onToggle);
     refs.stop.removeEventListener("click", onStop);
     refs.cancel.removeEventListener("click", finish);
@@ -273,6 +289,7 @@ export async function openRelationsDialog({
     refs.form.removeEventListener("submit", onSubmit);
   }
   refs.go.addEventListener("click", onGo);
+  refs.more.addEventListener("click", onMore);
   refs.toggle.addEventListener("click", onToggle);
   refs.stop.addEventListener("click", onStop);
   refs.cancel.addEventListener("click", finish);

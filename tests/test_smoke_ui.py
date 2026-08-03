@@ -740,6 +740,45 @@ def test_extracting_offers_another_name_as_an_alias(page, server, seeded, monkey
     assert store.find_by_surface("ジョバンニ君")[0].term == "ジョバンニ"
 
 
+def test_relations_can_be_drafted_then_continued(page, server, seeded, monkeypatch):
+    """下書き → 書き込み →「続けて探す」で**書いたぶんが除かれる**まで通す。
+
+    2 回目はサーバが「すでに関係が書かれています」として落とすので、同じ組が
+    二重に出ない。閉じて開き直させないためのボタン。
+    """
+    from glosspop import ai
+
+    store.save(EntryDraft(term="ザネリ", category="登場人物",
+                          summary="級友。", definition="同級生。"))
+    monkeypatch.setattr(ai, "available", lambda: True)
+    answers = [
+        [{"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友", "back": "親友"}],
+        [{"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友"},   # 2 回目も同じ組を返す
+         {"from": "ジョバンニ", "to": "ザネリ", "label": "同級生"}],
+    ]
+    monkeypatch.setattr(ai, "_generate", lambda prompt, **_: json.dumps(answers.pop(0)))
+
+    page.goto(f"{server}/graph")
+    page.locator("#draft").wait_for(timeout=15000)
+    page.click("#draft")
+    page.locator("dialog.sheet [data-ref=spoiler]").wait_for(timeout=10000)
+    page.select_option("dialog.sheet [data-ref=spoiler]", "full")
+    page.click("dialog.sheet [data-ref=go]")
+
+    page.locator("dialog.sheet .cand-list li").first.wait_for(timeout=20000)
+    page.click("dialog.sheet [data-ref=go]")            # チェックした 1 本を書き込む
+    page.locator("dialog.sheet [data-ref=more]:visible").wait_for(timeout=15000)
+    assert store.get("登場人物/ジョバンニ").relations[0].label == "親友"
+
+    page.click("dialog.sheet [data-ref=more]")
+    page.locator("dialog.sheet .cand-list li").first.wait_for(timeout=20000)
+    rows = page.locator("dialog.sheet .cand-list li")
+    # すでに書いた組は落ち、新しい組だけが残る
+    assert rows.count() == 1
+    assert "ザネリ" in rows.first.inner_text()
+    assert "すでに関係が書かれています" in page.locator("dialog.sheet [data-ref=dropped]").inner_text()
+
+
 def test_the_settings_dialog_separates_the_ai_tab(page, server, isolated_dirs):
     """設定はタブで分ける。**フッタの「保存」は一般タブのものなので AI では出さない。**
 

@@ -254,35 +254,14 @@ def build_prompt(
 # 実行
 # --------------------------------------------------------------------------- #
 
-#: 1 件あたりの所要秒の見積もりと、起動などの固定ぶん。実測に余裕を足した値。
-#: 関係は根拠の引用まで書かせるぶん重い（21000 字の本文 + 20 本で約 140 秒。
-#: 遅い日には 270 秒かかった）。候補語は 1 件が短い（13 件 104 秒）
-RELATION_SECONDS_EACH = 22
-EXTRACT_SECONDS_EACH = 10
-TIMEOUT_BASE = 60
-
-
-def _scaled_timeout(count: int, each: int) -> int:
-    """出す件数から持ち時間を見積もる。**上限と、明示された指定は超えない。**
-
-    所要時間は**出力トークン数（思考を含む）にほぼ比例する** —— 実測で毎秒 90
-    トークン前後。関係 20 本ぶんの根拠つき JSON で 12,000 トークン＝約 140 秒に
-    なり、固定の 180 秒では**振れ幅を吸収できずに落ちる**（実際に踏んだ）。
-    ``GLOSSPOP_CLAUDE_TIMEOUT`` を大きくしている指定は下回らず、
-    ``CLAUDE_TIMEOUT_MAX`` より上には伸ばさない。
-    """
-    want = TIMEOUT_BASE + each * max(count, 1)
-    return max(config.CLAUDE_TIMEOUT, min(want, config.CLAUDE_TIMEOUT_MAX))
-
-
 def relations_timeout(limit: int) -> int:
-    """関係の下書きに許す秒数。**頼んだ本数から見積もる。**"""
-    return _scaled_timeout(limit, RELATION_SECONDS_EACH)
+    """関係の下書きに許す秒数。**頼んだ本数と、頼む相手から見積もる。**"""
+    return llm.estimate_timeout("relation", limit)
 
 
 def extract_timeout(limit: int) -> int:
-    """候補語の抽出に許す秒数。**頼んだ語数から見積もる。**"""
-    return _scaled_timeout(limit, EXTRACT_SECONDS_EACH)
+    """候補語の抽出に許す秒数。**頼んだ語数と、頼む相手から見積もる。**"""
+    return llm.estimate_timeout("extract", limit)
 
 
 def _generate(prompt: str, *, timeout: int | None = None) -> str:
@@ -793,6 +772,62 @@ def _surface_hits(text: str, entries: list[Entry]) -> list[tuple[int, str]]:
     return hits
 
 
+def _densest_window(text: str, entries: list[Entry], width: int) -> str:
+    """``text`` の中で**登録語がいちばん多く写っている** ``width`` 字を返す。
+
+    切り詰めるときに頭から取ると、初出窓の前半（その語が出てくる前の場面）ばかりが
+    残って関係が読めない。相手の名前が並んでいるところを残す。
+    """
+    if len(text) <= width:
+        return text
+    hits = _surface_hits(text, entries)
+    if not hits:
+        return text[-width:]           # 手掛かりが無ければ初出の直前を残す
+    best, score = 0, -1
+    for start, _ in hits:
+        begin = max(0, min(start - width // 3, len(text) - width))
+        seen = {ref for pos, ref in hits if begin <= pos < begin + width}
+        if len(seen) > score:
+            best, score = begin, len(seen)
+    return text[best:best + width]
+
+
+def first_scene_context(
+    docs: list[tuple[str, str]], entries: list[Entry], *, budget: int = RELATION_TEXT_CHARS
+) -> str:
+    """各用語の初出の場面を、**全員ぶん入るように**切り詰めて繋ぐ。
+
+    前は初出窓（1 語あたり最大 2,400 字）をそのまま連結し、頭から ``budget`` で
+    切っていた。19 語なら 41,497 字になり、**52% が黙って落ちて、後ろに並んだ
+    主人・吾輩・迷亭・黒 が丸ごと消えていた**（実測）。関係は 2 語が揃って初めて
+    書けるので、片方が消えた時点でその関係は絶対に出てこない。
+
+    取り分は等分し、その中では ``_densest_window`` が**相手の名前も写っている
+    ところ**を残す。**初出窓の外は見ない**ので、ネタバレの約束は変わらない。
+    """
+    scenes = [(e, _first_context(docs, e.surfaces)) for e in entries]
+    scenes = [(e, text) for e, text in scenes if text.strip()]
+    if not scenes:
+        return ""
+
+    # 見出しのぶんも予算に数える（数えないと上限を超え、最後の語が切られる）
+    heads = [f"### {e.term} の初出\n" for e, _ in scenes]
+    budget -= sum(len(h) + 2 for h in heads)
+
+    # 短い場面が余らせたぶんを、長い場面に配り直す（等分だと余りが捨てられる）
+    share = max(budget // len(scenes), 200)
+    spare = sum(share - len(t) for _, t in scenes if len(t) < share)
+    long_ones = sum(1 for _, t in scenes if len(t) > share)
+    if long_ones:
+        share += spare // long_ones
+
+    parts = [
+        head + _densest_window(text, entries, share)
+        for head, (_, text) in zip(heads, scenes)
+    ]
+    return "\n\n".join(parts)
+
+
 def cooccurrence_context(
     docs: list[tuple[str, str]],
     entries: list[Entry],
@@ -1060,14 +1095,10 @@ async def draft_relations(
         raise AIError("関係を探すには、同じ範囲に 2 語以上の登録が要ります")
 
     if spoiler == "first":
-        # 各用語の初出の場面だけを繋いで渡す。全文を渡すと、後で明かされる
-        # 関係（正体・血縁）が図に出てしまう
-        chunks = []
-        for entry in scope:
-            context = _first_context(docs, entry.surfaces)
-            if context:
-                chunks.append(f"### {entry.term} の初出\n{context}")
-        text = "\n\n".join(chunks)
+        # 各用語の初出の場面だけを渡す。全文を渡すと、後で明かされる関係
+        # （正体・血縁）が図に出てしまう。**全員ぶんが入るように配分する** ——
+        # 頭から切っていたころは中心人物が丸ごと落ちて、関係が出ようが無かった
+        text = first_scene_context(docs, scope)
     else:
         # **登録済みの語が一緒に出てくる場面**を探して渡す。関係が書いてあるのは
         # そこであって、文書の冒頭ではない。頭から一定量を渡していたころは、

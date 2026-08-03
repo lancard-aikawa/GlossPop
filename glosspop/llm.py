@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import httpx
@@ -80,6 +81,9 @@ _GEMINI_SKIP = (
 
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta"
 
+#: 待てば直る見込みのある応答。**恒久的な失敗（400 / 401 / 403 / 404）は入れない**
+_RETRY_STATUS = frozenset({500, 502, 503, 504})
+
 #: 提供元。UI はここを引いて選択肢を出す
 PROVIDERS: dict[str, dict] = {
     "claude": {
@@ -99,6 +103,51 @@ DEFAULT_PROVIDER = "claude"
 
 class LLMError(RuntimeError):
     """AI への依頼が失敗した。**利用者に見せる文言をそのまま入れる。**"""
+
+
+class TransientError(LLMError):
+    """**待てば直る**種類の失敗（高負荷・レート制限）。ここだけ再試行する。
+
+    恒久的な失敗（鍵違い・引数違い・モデル名の誤り）は何度やっても同じなので、
+    再試行すると利用者を待たせるだけになる。**分類を緩めないこと。**
+    """
+
+
+# --------------------------------------------------------------------------- #
+# 持ち時間と再試行
+# --------------------------------------------------------------------------- #
+
+#: 1 件あたりの所要秒の見積もり。**提供元で桁が違う** —— 同じ 19 語・20 本要求で
+#: Claude 258.6 秒 / Gemini 72.4 秒（実測）。同じ見積もりを当てると、速いほうで
+#: 「駄目だった」と分かるのが遅すぎる
+SECONDS_PER_ITEM: dict[str, dict[str, int]] = {
+    "claude": {"relation": 22, "extract": 10},
+    "gemini": {"relation": 8, "extract": 4},
+}
+TIMEOUT_BASE = 60
+
+#: 何回まで引き直すか（1 回目を含む）と、その間隔。
+#: 260 秒かけた作業が高負荷の一言で消えるのは割に合わないが、**何度も粘らない**
+#: —— 上限は持ち時間の側で頭打ちにする
+RETRY_ATTEMPTS = 3
+RETRY_WAITS = (3, 12)
+
+#: これより短い時間しか残っていなければ引き直さない（すぐ落ちるだけなので）
+MIN_ATTEMPT_SECONDS = 20
+
+
+def estimate_timeout(kind: str, count: int, provider: str | None = None) -> int:
+    """出す件数から持ち時間を見積もる。**上限と、明示された指定は超えない。**
+
+    所要時間は**出力トークン数（思考を含む）にほぼ比例する**。入力の量や起動時間
+    ではないので、そこを削っても効かない（実測: 本文 12,000 字の入力は 4.8 秒、
+    起動は 5 秒）。``GLOSSPOP_CLAUDE_TIMEOUT`` を大きくしている指定は下回らず、
+    ``CLAUDE_TIMEOUT_MAX`` より上には伸ばさない。
+    """
+    provider = provider or resolve()["provider"]
+    each = SECONDS_PER_ITEM.get(provider, SECONDS_PER_ITEM[DEFAULT_PROVIDER])
+    want = TIMEOUT_BASE + each.get(kind, each["relation"]) * max(count, 1)
+    return max(config.CLAUDE_TIMEOUT, min(want, config.CLAUDE_TIMEOUT_MAX))
 
 
 # --------------------------------------------------------------------------- #
@@ -216,17 +265,53 @@ def describe() -> dict:
 # --------------------------------------------------------------------------- #
 
 def generate(prompt: str, *, timeout: int, system: str = "") -> str:
-    """プロンプトを投げて本文を受け取る。提供元の違いはここで吸収する。"""
+    """プロンプトを投げて本文を受け取る。提供元の違いはここで吸収する。
+
+    **一時的な失敗は引き直す。** 高負荷 (503) やレート制限 (429) は待てば直るのに、
+    数分かけた下書きがその一言で丸ごと消えるのは割に合わない（関係の下書きを
+    Gemini で回して実際に踏んだ）。``timeout`` は**全体の持ち時間**として扱い、
+    残り時間を次の試行に配る —— 1 回ごとに与えると、引き直すたびに待ち時間が
+    倍々になる。
+    """
     current = resolve()
     provider = current["provider"]
     if not available(provider):
         raise LLMError(unavailable_reason(provider))
-    if provider == "gemini":
-        return _run_gemini(prompt, current["model"], current["effort"], timeout, system)
-    return _run_claude(prompt, current["model"], current["effort"], timeout, system)
+    run = _run_gemini if provider == "gemini" else _run_claude
+
+    deadline = time.monotonic() + timeout
+    last: TransientError | None = None
+    for attempt in range(RETRY_ATTEMPTS):
+        left = int(deadline - time.monotonic())
+        if attempt and left < MIN_ATTEMPT_SECONDS:
+            break
+        try:
+            return run(prompt, current["model"], current["effort"],
+                       max(left, MIN_ATTEMPT_SECONDS), system)
+        except TransientError as exc:
+            last = exc
+            wait = RETRY_WAITS[min(attempt, len(RETRY_WAITS) - 1)]
+            if time.monotonic() + wait + MIN_ATTEMPT_SECONDS >= deadline:
+                break
+            time.sleep(wait)
+    raise LLMError(f"{last}（{RETRY_ATTEMPTS} 回まで試しました）")
 
 
 # ------------------------------------------------------------------ Claude CLI
+
+#: CLI の出力に出たら「待てば直る」と見なす言葉。**増やしすぎないこと** ——
+#: 恒久的な失敗を引き直すと、待たせたうえで同じ結果になる
+_TRANSIENT_MARKS = (
+    "overloaded", "rate limit", "rate_limit", "too many requests",
+    "429", "503", "529", "temporarily", "try again",
+)
+
+
+def _looks_transient(detail: str) -> bool:
+    """CLI の文言から一時的な失敗かを見分ける。**分からなければ引き直さない。**"""
+    low = (detail or "").casefold()
+    return any(mark in low for mark in _TRANSIENT_MARKS)
+
 
 #: 下書き生成はテキスト変換なので、ツールは全部落とす。
 #: 許可を出さないとサブプロセスが承認待ちで固まる (実際に踏んだ)。
@@ -283,7 +368,10 @@ def _run_claude(prompt: str, model: str, effort: str, timeout: int, system: str)
 
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()[-800:]
-        raise LLMError(f"claude CLI が異常終了しました (exit {proc.returncode}): {detail}")
+        message = f"claude CLI が異常終了しました (exit {proc.returncode}): {detail}"
+        if _looks_transient(detail):
+            raise TransientError(message)
+        raise LLMError(message)
 
     stdout = (proc.stdout or "").strip()
     if not stdout:
@@ -381,7 +469,12 @@ def _run_gemini(prompt: str, model: str, effort: str, timeout: int, system: str)
         if res.status_code in (401, 403):
             raise LLMError(f"Gemini の API キーが拒否されました: {detail}")
         if res.status_code == 429:
-            raise LLMError(f"Gemini の利用上限に達しました: {detail}")
+            # レート制限なら待てば直る。1 日ぶんの枠を使い切った場合は直らないが、
+            # 区別が付かないので**引き直す側に倒す**（待ち時間は持ち時間で頭打ち）
+            raise TransientError(f"Gemini の利用上限に達しました: {detail}")
+        if res.status_code in _RETRY_STATUS:
+            raise TransientError(f"Gemini API が一時的に応じられませんでした "
+                                 f"({res.status_code}): {detail}")
         raise LLMError(f"Gemini API がエラーを返しました ({res.status_code}): {detail}")
     raise LLMError("Gemini API がエラーを返しました")
 

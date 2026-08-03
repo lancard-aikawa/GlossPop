@@ -562,6 +562,58 @@ class TestDraftRelations:
         assert "ジョバンニとカムパネルラは親友だった" in seen["prompt"]
 
 
+class TestFirstSceneContext:
+    """初出モードで渡す本文。**全員ぶんが入ること**が要。
+
+    前は初出窓をそのまま繋いで頭から切っていたため、19 語で 52% が落ち、
+    後ろに並んだ主人・吾輩・迷亭・黒 が丸ごと消えていた（実測）。関係は 2 語が
+    揃って初めて書けるので、片方が消えた時点でその関係は絶対に出てこない。
+    """
+
+    def _cast(self, add_entry, n):
+        return [add_entry(f"人物{i}", category="登場人物") for i in range(n)]
+
+    def _docs(self, n):
+        # 1 人あたり長い初出窓ができるように、間に詰め物を置く
+        body = "".join(f"{'あ' * 3000}人物{i}が現れた。" for i in range(n))
+        return [("novel.txt", body)]
+
+    def test_nobody_is_dropped_when_the_budget_is_tight(self, add_entry):
+        from glosspop import store
+        self._cast(add_entry, 12)
+        text = ai.first_scene_context(self._docs(12), store.load_all(), budget=6000)
+        for i in range(12):
+            assert f"### 人物{i} の初出" in text, f"人物{i} の場面が落ちた"
+
+    def test_it_stays_within_the_budget(self, add_entry):
+        from glosspop import store
+        self._cast(add_entry, 12)
+        text = ai.first_scene_context(self._docs(12), store.load_all(), budget=6000)
+        assert len(text) <= 6000            # 見出しのぶんも数える
+
+    def test_it_never_leaves_the_first_scene(self, add_entry):
+        """切り詰め方を変えても、渡すのは初出の場面の中だけ（ネタバレの約束）。"""
+        from glosspop import store
+        self._cast(add_entry, 4)
+        docs = self._docs(4)
+        entries = store.load_all()
+        text = ai.first_scene_context(docs, entries, budget=4000)
+        for entry in entries:
+            scene = ai._first_context(docs, entry.surfaces)
+            body = text.split(f"### {entry.term} の初出\n", 1)[1].split("\n\n### ", 1)[0]
+            assert body in scene
+
+    def test_it_keeps_the_part_where_the_others_appear(self, add_entry):
+        """切るなら、相手の名前が並んでいるところを残す（関係が読めるのはそこ）。"""
+        from glosspop import store
+        add_entry("太郎", category="登場人物")
+        add_entry("花子", category="登場人物")
+        # 初出窓の前半は無関係、後半に 2 人が並ぶ
+        docs = [("a.txt", "無関係な前置き。" * 300 + "花子は太郎に声をかけた。")]
+        text = ai.first_scene_context(docs, store.load_all(), budget=800)
+        assert "花子は太郎に声をかけた" in text
+
+
 class TestCooccurrenceContext:
     """関係の下書きに渡す本文の選び方。"""
 

@@ -308,7 +308,7 @@ export async function openEntryEditor({
         return;
       }
       refs.draft.disabled = refs.save.disabled = true;
-      setStatus(refs.status, "Claude が下書きを作成中 (数十秒かかります)", "busy");
+      setStatus(refs.status, "AI が下書きを作成中 (数十秒かかります)", "busy");
       try {
         rememberSpoiler(refs.spoiler.value);
         const origin = refs.source.value.trim() || source;

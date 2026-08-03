@@ -106,6 +106,86 @@ class TestClaudeCommand:
         assert seen[seen.index("--model") + 1] == "sonnet"
 
 
+class TestTimeoutEstimate:
+    """**提供元で桁が違う。** 同じ 19 語・20 本要求で Claude 258.6 秒 / Gemini 72.4 秒。"""
+
+    def test_the_faster_provider_waits_less(self):
+        assert llm.estimate_timeout("relation", 20, "gemini") < \
+               llm.estimate_timeout("relation", 20, "claude")
+
+    def test_more_items_get_more_time(self):
+        assert llm.estimate_timeout("relation", 40, "claude") > \
+               llm.estimate_timeout("relation", 10, "claude")
+
+    def test_never_above_the_ceiling(self, monkeypatch):
+        monkeypatch.setattr(config, "CLAUDE_TIMEOUT_MAX", 300)
+        assert llm.estimate_timeout("relation", 999, "claude") == 300
+
+    def test_unknown_provider_falls_back(self):
+        assert llm.estimate_timeout("relation", 5, "でたらめ") == \
+               llm.estimate_timeout("relation", 5, "claude")
+
+
+class TestRetry:
+    """**待てば直る失敗だけ引き直す。** 恒久的な失敗を引き直すと待たせるだけ。"""
+
+    @pytest.fixture(autouse=True)
+    def _fast(self, monkeypatch):
+        monkeypatch.setattr(llm.time, "sleep", lambda _s: None)   # 待たずに回す
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+    def _runs(self, monkeypatch, outcomes):
+        """呼ばれるたびに outcomes を 1 つ消費する偽 CLI。"""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            out = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
+            if isinstance(out, str):
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=out)
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"result": "ok"}', stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return calls
+
+    def test_a_transient_failure_is_retried(self, monkeypatch):
+        calls = self._runs(monkeypatch, ["Error: Overloaded", None])
+        assert llm.generate("お願い", timeout=300) == "ok"
+        assert len(calls) == 2          # 1 回目は諦めない
+
+    def test_a_permanent_failure_is_not_retried(self, monkeypatch):
+        calls = self._runs(monkeypatch, ["Error: unknown model 'でたらめ'"])
+        with pytest.raises(llm.LLMError, match="異常終了"):
+            llm.generate("お願い", timeout=300)
+        assert len(calls) == 1          # 何度やっても同じなので待たせない
+
+    def test_it_gives_up_after_the_limit(self, monkeypatch):
+        calls = self._runs(monkeypatch, ["503 Service Unavailable"])
+        with pytest.raises(llm.LLMError, match="回まで試しました"):
+            llm.generate("お願い", timeout=300)
+        assert len(calls) == llm.RETRY_ATTEMPTS
+
+    def test_it_does_not_retry_past_the_budget(self, monkeypatch):
+        # 持ち時間が残っていないなら引き直さない（すぐ落ちるだけ）
+        calls = self._runs(monkeypatch, ["503 Service Unavailable"])
+        with pytest.raises(llm.LLMError):
+            llm.generate("お願い", timeout=1)
+        assert len(calls) == 1
+
+    def test_our_own_timeout_is_not_transient(self, monkeypatch):
+        # 持ち時間切れは待っても直らない。引き直すと倍待たせることになる
+        calls = []
+
+        def boom(cmd, **kwargs):
+            calls.append(cmd)
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=kwargs["timeout"])
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        with pytest.raises(llm.LLMError, match="タイムアウト"):
+            llm.generate("お願い", timeout=300)
+        assert len(calls) == 1
+
+
 class TestGemini:
     @pytest.fixture(autouse=True)
     def _key(self, monkeypatch):
@@ -188,11 +268,41 @@ class TestGemini:
             llm.generate("お願い", timeout=30)
 
     def test_a_quota_error_says_so(self, monkeypatch):
+        monkeypatch.setattr(llm.time, "sleep", lambda _s: None)
         self._stub(monkeypatch, lambda r: httpx.Response(
             429, json={"error": {"message": "You exceeded your current quota"}}
         ))
         with pytest.raises(llm.LLMError, match="利用上限"):
-            llm.generate("お願い", timeout=30)
+            llm.generate("お願い", timeout=300)
+
+    def test_high_demand_is_retried(self, monkeypatch):
+        """503「高負荷」で数分の作業が消えるのは割に合わない（実際に踏んだ）。"""
+        monkeypatch.setattr(llm.time, "sleep", lambda _s: None)
+        seen = []
+
+        def handler(request):
+            seen.append(1)
+            if len(seen) == 1:
+                return httpx.Response(503, json={"error": {
+                    "message": "This model is currently experiencing high demand."
+                }})
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "{}"}]}}]})
+
+        self._stub(monkeypatch, handler)
+        assert llm.generate("お願い", timeout=300) == "{}"
+        assert len(seen) == 2
+
+    def test_a_rejected_key_is_not_retried(self, monkeypatch):
+        seen = []
+
+        def handler(request):
+            seen.append(1)
+            return httpx.Response(403, json={"error": {"message": "API key not valid"}})
+
+        self._stub(monkeypatch, handler)
+        with pytest.raises(llm.LLMError):
+            llm.generate("お願い", timeout=300)
+        assert len(seen) == 1
 
     def test_an_empty_answer_is_not_passed_through(self, monkeypatch):
         # 思考だけで本文が空、は実際に起きる。空文字を下流に流さない
