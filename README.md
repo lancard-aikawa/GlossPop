@@ -575,12 +575,27 @@ updated_at: '2026-07-30T10:00:00+09:00'
 環境変数 `GLOSSPOP_DATA_ROOT` を設定するとそちらが優先され、⚙ からは変えられなくなる
 （その旨が画面に出る）。
 
+## 更新のお知らせ
+
+新しい版が出ていると、上部に小さく **`v0.5.0` が出ています** と出る（押すとリリース
+ページが開く）。押し付けはしない —— 自動ダウンロードもモーダルも出さない。
+
+- 画面を開いたときに 1 回。**1 日に 1 回まで**（確認した時刻は設定ファイルに残るので、
+  再起動を繰り返しても増えない）
+- **このアプリが外へ通信するのはここだけ。** ⚙ の「更新の確認」で切れる。切ると
+  一切通信しない（`GLOSSPOP_UPDATE_CHECK=0` でも同じ）
+- 見に行くのは GitHub Releases の最新版だけ。ドラフトと事前公開は出てこない
+- 失敗しても黙る（ネットが無い・GitHub が落ちている、は本体に関係が無い）
+
 ## 設定（環境変数）
 
 | 変数 | 既定 | 用途 |
 | --- | --- | --- |
 | `GLOSSPOP_DATA_ROOT` | アプリの隣 | データ一式（`data/` と `content/`）の基準。**設定ファイルより優先** |
 | `GLOSSPOP_SETTINGS_FILE` | OS のユーザー領域 | 設定ファイルの場所 |
+| `GLOSSPOP_UPDATE_CHECK` | `1` | 更新の確認。`0` で一切通信しない |
+| `GLOSSPOP_UPDATE_REPO` | `lancard-aikawa/GlossPop` | 更新を見に行くリポジトリ |
+| `GLOSSPOP_UPDATE_INTERVAL` | `86400` | 確認の間隔（秒） |
 | `GLOSSPOP_GLOSSARY_DIR` | `./data/glossary` | 辞書の置き場所 |
 | `GLOSSPOP_CATEGORIES_FILE` | `./data/categories.yaml` | カテゴリマスター |
 | `GLOSSPOP_CONTENT_DIR` | `./content` | 既定で開くフォルダ（UI から切り替え可） |
@@ -604,6 +619,7 @@ glosspop/
   models.py     データモデルとカテゴリ名の検証
   relations.py  エントリ間の関係の解決 (ref / 旧 ref / 用語名) と相関図のグラフ
   doctor.py     辞書の点検 (壊れた参照・空の本文など)
+  updates.py    新しい版の確認 (外へ通信する唯一の経路)
   linker.py     レンダリング済み HTML への自動リンク挿入
   render.py     Markdown / テキスト → HTML、本文の改行整形
   fetcher.py    URL 取得
@@ -618,6 +634,8 @@ glosspop/
     graph.js       相関図 (配置はここ。力学モデルは使わない)
     relations-draft.js 関係の AI 下書き → まとめて書き込み
     doctor.js      辞書の点検
+    settings.js    ⚙ (データの保存先・更新の確認)
+    update.js      更新のお知らせ
     select-add.js  選択 → 登録 (ビューアと用語ページで共用)
     popup.js       吹き出し
     editor.js      登録 / 編集ダイアログ

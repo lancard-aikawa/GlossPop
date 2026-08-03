@@ -7,6 +7,8 @@
 // 設定ファイルはアプリのフォルダの外（OS のユーザー領域）にある。中に置くと、
 // アプリを丸ごと入れ替えたときに設定ごと消えて意味が無い。
 import { api, el, setStatus } from "./base.js";
+// 更新のお知らせも topbar に出す。script タグを増やさずに済ませる
+import { lastResult, refreshUpdateNotice } from "./update.js";
 
 let dialog = null;
 let refs = {};
@@ -28,6 +30,7 @@ function build() {
             辞書・カテゴリ・URL 辞書・読む文書・専用ウィンドウの設定は、すべてこの下にあります。
           </p>
           <p class="notice" data-ref="locked" hidden></p>
+          <p class="notice" data-ref="outside" hidden></p>
           <div class="setting-choice">
             <label class="check">
               <input type="radio" name="gp-data-root" value="app" data-ref="modeApp">
@@ -61,6 +64,18 @@ function build() {
             <p class="hint" data-ref="where"></p>
           </details>
         </section>
+        <section class="entry-section">
+          <h2>更新の確認</h2>
+          <label class="check">
+            <input type="checkbox" data-ref="updateCheck">
+            <span>
+              新しい版が出ていないか GitHub に聞く
+              <span class="hint">1 日に 1 回まで。このアプリが外へ通信するのはここだけです。
+                切ると一切通信しません。</span>
+            </span>
+          </label>
+          <p class="hint" data-ref="updateState"></p>
+        </section>
         <p class="notice" data-ref="result" hidden></p>
       </div>
       <footer>
@@ -83,6 +98,16 @@ const PATH_LABELS = {
   content: "読む文書（既定のフォルダ）",
   window_profile: "専用ウィンドウの設定・お気に入り",
 };
+
+/** 保存先の外に出ているものを知らせる。複製に乗らないので黙らない。 */
+function paintOutside(info) {
+  const outside = info.outside || [];
+  refs.outside.hidden = !outside.length;
+  if (outside.length) {
+    refs.outside.textContent =
+      `環境変数で保存先の外に出ているものがあります（複製されません）: ${outside.join("、")}`;
+  }
+}
 
 function paintPaths(info) {
   refs.paths.replaceChildren(
@@ -113,6 +138,31 @@ function syncMode() {
   refs.copyRow.hidden = !target || target === currentRoot;
 }
 
+/** 更新の確認の状態を描く。切ってあるときは版だけ出す。 */
+async function paintUpdate() {
+  let info = lastResult();
+  if (!info) {
+    try {
+      info = await api("/api/update");
+    } catch {
+      info = null;
+    }
+  }
+  if (!info) {
+    refs.updateCheck.checked = true;
+    refs.updateState.textContent = "";
+    return;
+  }
+  refs.updateCheck.checked = info.enabled;
+  const bits = [`いま ${info.current} を使っています。`];
+  if (!info.enabled) bits.push("確認していません。");
+  else if (info.newer) bits.push(`${info.latest} が出ています。`);
+  else if (info.latest) bits.push("最新です。");
+  // 失敗は隠さない。ただし本体には関係が無いので淡く出すだけ
+  else if (info.error) bits.push("いまは確認できませんでした。");
+  refs.updateState.textContent = bits.join(" ");
+}
+
 export async function openSettingsDialog() {
   build();
   refs.result.hidden = true;
@@ -130,6 +180,7 @@ export async function openSettingsDialog() {
   paintPaths(info);
   paintMode(info);
   refs.where.textContent = `設定ファイル: ${info.settings_file}`;
+  paintOutside(info);
   refs.locked.hidden = !info.env_locked;
   if (info.env_locked) {
     refs.locked.textContent =
@@ -139,9 +190,23 @@ export async function openSettingsDialog() {
   for (const node of [refs.modeApp, refs.modeCustom, refs.path, refs.pick, refs.copy, refs.save]) {
     node.disabled = info.env_locked;
   }
+  await paintUpdate();
   setStatus(refs.status, "");
 
   const onMode = () => syncMode();
+
+  // 更新の確認は切り替えた時点で保存する（保存ボタンは保存先だけの話なので）
+  const onUpdateToggle = async () => {
+    refs.updateCheck.disabled = true;
+    try {
+      await api("/api/update", { method: "PUT", body: { enabled: refs.updateCheck.checked } });
+      await refreshUpdateNotice({ force: refs.updateCheck.checked });
+      await paintUpdate();
+    } catch (err) {
+      setStatus(refs.status, err.message, "error");
+    }
+    refs.updateCheck.disabled = false;
+  };
 
   const onPick = async () => {
     refs.pick.disabled = true;
@@ -177,6 +242,7 @@ export async function openSettingsDialog() {
       });
       paintPaths(res);
       refs.where.textContent = `設定ファイル: ${res.settings_file}`;
+      paintOutside(res);
       const lines = [`次の起動から「${res.pending_data_root}」を使います。`];
       if (res.copy) {
         const cache = res.copy.cache_skipped
@@ -207,6 +273,7 @@ export async function openSettingsDialog() {
   const onSubmit = (ev) => ev.preventDefault();
   refs.modeApp.addEventListener("change", onMode);
   refs.modeCustom.addEventListener("change", onMode);
+  refs.updateCheck.addEventListener("change", onUpdateToggle);
   refs.path.addEventListener("input", onMode);
   refs.pick.addEventListener("click", onPick);
   refs.save.addEventListener("click", onSave);
@@ -220,6 +287,7 @@ export async function openSettingsDialog() {
       () => {
         refs.modeApp.removeEventListener("change", onMode);
         refs.modeCustom.removeEventListener("change", onMode);
+        refs.updateCheck.removeEventListener("change", onUpdateToggle);
         refs.path.removeEventListener("input", onMode);
         refs.pick.removeEventListener("click", onPick);
         refs.save.removeEventListener("click", onSave);

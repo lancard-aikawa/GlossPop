@@ -829,3 +829,14 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   .path-list { grid-template-columns: 1fr; }
   .path-list dd { margin-bottom: 6px; }
 }
+.update-notice {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.update-notice:hover { background: var(--accent); color: var(--accent-fg); }

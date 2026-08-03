@@ -207,7 +207,12 @@ def test_the_settings_dialog_moves_the_data_root(page, server, isolated_dirs, tm
 
     settings_file = tmp_path / "settings.json"
     monkeypatch.setattr(cfg, "SETTINGS_FILE", settings_file)
+    # 実際の配置 (DATA_ROOT/data/glossary) に合わせる。合わせないと複製に乗らない
+    monkeypatch.setattr(cfg, "GLOSSARY_DIR", tmp_path / "data" / "glossary")
+    monkeypatch.setattr(cfg, "CATEGORIES_FILE", tmp_path / "data" / "categories.yaml")
     monkeypatch.delenv("GLOSSPOP_DATA_ROOT", raising=False)
+    cfg.ensure_dirs()
+    store.invalidate()
     store.save(EntryDraft(term="冪等", category="プログラミング", summary="要約。", definition="本文。"))
 
     page.goto(f"{server}/glossary")
@@ -218,7 +223,8 @@ def test_the_settings_dialog_moves_the_data_root(page, server, isolated_dirs, tm
     assert "専用ウィンドウの設定・お気に入り" in body
     assert str(settings_file) in body
 
-    target = tmp_path / "外の場所"
+    # いまの保存先の外を選ぶ（中を選ぶと入れ子になるのでサーバが弾く）
+    target = tmp_path.parent / f"{tmp_path.name}-移動先"
     page.check("dialog.sheet[open] [data-ref='modeCustom']")
     page.fill("dialog.sheet[open] [data-ref='path']", str(target))
     page.click("dialog.sheet[open] [data-ref='save']")

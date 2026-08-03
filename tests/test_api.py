@@ -6,7 +6,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-from glosspop import ai, categories, config, picker
+from glosspop import ai, categories, config, picker, store
 from glosspop.app import app
 
 
@@ -745,10 +745,22 @@ def test_relations_draft_can_read_the_displayed_document(client, monkeypatch):
 
 @pytest.fixture
 def settings_env(tmp_path, monkeypatch):
-    """設定ファイルを逃がす（本物の %APPDATA% を触らない）。"""
+    """本物の配置と同じ形にしてから設定 API を叩く。
+
+    autouse の ``isolated_dirs`` は各パスを直接 tmp_path に向けるが、それだと
+    ``DATA_ROOT/data/glossary`` という実際の入れ子になっておらず、複製の対象に
+    入らない（＝テストが実物と違う形を見てしまう）。
+    """
     path = tmp_path / "settings.json"
     monkeypatch.setattr(config, "SETTINGS_FILE", path)
+    monkeypatch.setattr(config, "GLOSSARY_DIR", tmp_path / "data" / "glossary")
+    monkeypatch.setattr(config, "CATEGORIES_FILE", tmp_path / "data" / "categories.yaml")
+    monkeypatch.setattr(config, "SITES_DIR", tmp_path / "data" / "sites")
+    monkeypatch.setattr(config, "CONTENT_DIR", tmp_path / "content")
+    monkeypatch.setattr(config, "WINDOW_PROFILE_DIR", tmp_path / "data" / "window")
     monkeypatch.delenv("GLOSSPOP_DATA_ROOT", raising=False)
+    config.ensure_dirs()
+    store.invalidate()
     return path
 
 
@@ -762,8 +774,10 @@ def test_settings_reports_where_everything_lives(client, settings_env):
     }
 
 
-def test_settings_move_writes_the_file_and_asks_for_a_restart(client, settings_env, tmp_path):
-    target = tmp_path / "外の場所"
+def test_settings_move_writes_the_file_and_asks_for_a_restart(
+    client, settings_env, tmp_path_factory
+):
+    target = tmp_path_factory.mktemp("外の場所")
     res = client.put("/api/settings", json={"data_root": str(target), "copy_existing": False})
     assert res.status_code == 200
     body = res.json()
@@ -773,9 +787,10 @@ def test_settings_move_writes_the_file_and_asks_for_a_restart(client, settings_e
     assert json.loads(settings_env.read_text(encoding="utf-8"))["data_root"] == str(target.resolve())
 
 
-def test_settings_move_copies_the_existing_data(client, settings_env, tmp_path):
+def test_settings_move_copies_the_existing_data(client, settings_env, tmp_path_factory):
     client.post("/api/entries", json=ENTRY)
-    target = tmp_path / "移動先"
+    # いまの保存先の**外**を選ぶ（中を選ぶのは別のテストで弾いている）
+    target = tmp_path_factory.mktemp("移動先")
     body = client.put(
         "/api/settings", json={"data_root": str(target), "copy_existing": True}
     ).json()
@@ -805,3 +820,20 @@ def test_settings_refuses_when_the_env_var_wins(client, settings_env, tmp_path, 
     assert client.get("/api/settings").json()["env_locked"] is True
     res = client.put("/api/settings", json={"data_root": str(tmp_path / "other")})
     assert res.status_code == 409
+
+
+def test_settings_refuses_a_target_inside_the_current_root(client, settings_env, tmp_path):
+    """いまの保存先の中を選ぶと、複製が入れ子になって無限に増える。"""
+    res = client.put(
+        "/api/settings",
+        json={"data_root": str(tmp_path / "中に作る"), "copy_existing": True},
+    )
+    assert res.status_code == 400
+    assert "中にあります" in res.json()["detail"]
+
+
+def test_settings_warns_about_paths_outside_the_root(client, settings_env, tmp_path_factory,
+                                                     monkeypatch):
+    """環境変数で外に出ているものは複製に乗らない。黙らずに名前で知らせる。"""
+    monkeypatch.setattr(config, "GLOSSARY_DIR", tmp_path_factory.mktemp("外の辞書"))
+    assert "全体の辞書" in client.get("/api/settings").json()["outside"]

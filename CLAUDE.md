@@ -366,8 +366,9 @@ renderer / gpu）も数に入るので、ブラウザ本体だけを見ること
 - `popup.js` / `editor.js` — 吹き出し・登録ダイアログ。どのページからも使える
 - `speech.js` — 本文の読み上げ（Web Speech API）
 - `relations-draft.js` — 関係の AI 下書き → まとめて書き込み
-- `settings.js` — ⚙ の中身（データの保存先）。全ページの topbar に自分で差し込む
-  ので、各ページの JS からは import しない（HTML に script タグを 1 行足すだけ）
+- `settings.js` / `update.js` — ⚙ の中身と更新のお知らせ。全ページの topbar に
+  自分で差し込むので、各ページの JS からは import しない（HTML に script タグを
+  1 行足すだけ。`settings.js` が `update.js` を import している）
 - `viewer.js` / `glossary.js` / `entry.js` / `graph.js` / `doctor.js` — 各ページ
 
 **相関図の配置に力学モデルを使わない**（`graph.js`）。カテゴリという階層があり、
@@ -394,6 +395,20 @@ renderer / gpu）も数に入るので、ブラウザ本体だけを見ること
 カテゴリ選択は `/`（カテゴリ名では禁止）で 1 回だけ割っている。同じ理由で、ref を
 つなぐ鍵の区切りには `<>`（カテゴリ名でも slug でも弾かれる）を使う。
 スモークテストが空白入りのカテゴリ名で見張っている。
+
+**外へ通信するのは `updates.py` だけ。** ここを増やすときは、切れること
+（`GLOSSPOP_UPDATE_CHECK=0` と ⚙）と、**lifespan で叩かないこと**を守る。lifespan に
+置くと起動のたびに勝手に出ていくうえ、`TestClient` が lifespan を走らせるので
+**テストが外へ通信する**。`/api/update` を叩かれたときだけ動く形にしてある。
+確認の間隔（1 日）は設定ファイルの時刻で持つので、再起動を繰り返しても増えない。
+失敗は**覚えない** —— 覚えると次に開いても再試行しなくなる。
+
+**テストは実ネットワークを塞いである**（conftest の `forbid_real_network`）。
+塞ぐのは実 transport だけで、`TestClient` の `ASGITransport` には影響しない。
+`httpx.Client.send` ごと潰すと TestClient も死ぬので、そこを塞ぎ直さないこと。
+
+**バージョン比較は読めないものを「新しくない」に倒す。** 読めない文字列で
+「更新があります」と出すほうが害が大きい（ユーザーは確かめようがない）。
 
 **`node.hidden = true` はそれだけでは効かない。** `button` などに `display` を
 指定しているので UA スタイルの `[hidden]` が負ける。`style.css` の先頭近くで

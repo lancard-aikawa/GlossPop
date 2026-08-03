@@ -25,6 +25,7 @@ from . import (
     render,
     sites,
     store,
+    updates,
 )
 from .linker import Linker, entry_url
 from .models import (
@@ -201,6 +202,12 @@ class SettingsRequest(BaseModel):
     copy_existing: bool = True
 
 
+class UpdateCheckRequest(BaseModel):
+    """更新の確認をするか。外へ通信する唯一の経路なので明示的に切れるようにする。"""
+
+    enabled: bool = True
+
+
 class ContentRootRequest(BaseModel):
     path: str = ""
 
@@ -353,6 +360,30 @@ def health() -> dict:
 # アプリの外へ移しておけば、更新は**フォルダを入れ替えるだけ**で済む。
 # --------------------------------------------------------------------------- #
 
+def _outside_data_root() -> list[str]:
+    """``DATA_ROOT`` の外に出ている保存先。
+
+    個々のパスは環境変数で別々に動かせるので、外に出ていると**複製に乗らない**。
+    黙っていると「移したのに辞書が付いてこない」になるので、名前で返して UI に出す。
+    """
+    root = Path(config.DATA_ROOT).resolve()
+    out = []
+    for label, path in (
+        ("全体の辞書", config.GLOSSARY_DIR),
+        ("カテゴリマスター", config.CATEGORIES_FILE),
+        ("URL ごとの辞書", config.SITES_DIR),
+        ("読む文書", config.CONTENT_DIR),
+        ("専用ウィンドウの設定・お気に入り", config.WINDOW_PROFILE_DIR),
+    ):
+        try:
+            resolved = Path(path).resolve()
+        except OSError:
+            continue
+        if root != resolved and root not in resolved.parents:
+            out.append(label)
+    return out
+
+
 def _settings_payload() -> dict:
     env_locked = bool(os.environ.get("GLOSSPOP_DATA_ROOT"))
     saved = config.load_settings().get("data_root") or ""
@@ -372,6 +403,8 @@ def _settings_payload() -> dict:
         "source": source,
         "env_locked": env_locked,
         "portable": Path(config.DATA_ROOT) == Path(config.APP_DIR),
+        # 環境変数で個別に外へ出されているもの。複製に乗らないので UI に出す
+        "outside": _outside_data_root(),
         "paths": {
             "glossary": str(config.GLOSSARY_DIR),
             "categories": str(config.CATEGORIES_FILE),
@@ -385,6 +418,26 @@ def _settings_payload() -> dict:
 @app.get("/api/settings")
 def get_settings() -> dict:
     return _settings_payload()
+
+
+@app.get("/api/update")
+async def check_update(force: bool = False) -> dict:
+    """新しい版が出ているかを返す。**失敗しても 200 で、error に理由を入れる。**
+
+    ここでしか外へ通信しない。lifespan で叩かないのは、起動のたびに勝手に
+    出ていくのを避けるため（テストの TestClient も lifespan を走らせる）。
+    """
+    return await updates.check(force=force)
+
+
+@app.put("/api/update")
+def set_update_check(req: UpdateCheckRequest) -> dict:
+    """更新の確認をするかを切り替える。"""
+    settings = config.load_settings()
+    settings["update_check"] = req.enabled
+    config.save_settings(settings)
+    updates.invalidate()
+    return {"enabled": updates.enabled()}
 
 
 @app.put("/api/settings")
