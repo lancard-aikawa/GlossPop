@@ -80,7 +80,11 @@ function paint(entries) {
 async function reload() {
   const params = new URLSearchParams();
   if (qInput.value.trim()) params.set("q", qInput.value.trim());
-  if (catFilter.value) params.set("category", catFilter.value);
+  const picked = categorySelection();
+  if (picked.category) {
+    params.set("category", picked.category);
+    params.set("scope", picked.scope);
+  }
   if (tagFilter.value) params.set("tag", tagFilter.value);
   const qs = params.toString();
   list.setAttribute("aria-busy", "true");
@@ -111,11 +115,25 @@ async function loadCategories() {
     tree = [];
   }
   const current = catFilter.value;
+  // **値にスコープを持たせる。** 同じ名前のカテゴリが全体とフォルダの両方にあると、
+  // 名前だけでは見分けが付かない。区切りは "/"（カテゴリ名では禁止）で 1 回だけ割る
   catFilter.replaceChildren(
     el("option", { value: "", text: "すべてのカテゴリ" }),
-    ...tree.map((n) => el("option", { value: n.category, text: `${n.category} (${n.count})` })),
+    ...tree.map((n) =>
+      el("option", { value: `${n.scope}/${n.category}`, text: `${categoryLabel(n)} (${n.count})` })
+    ),
   );
   catFilter.value = current;
+}
+
+/** 絞り込みの選択を {scope, category} に戻す。 */
+function categorySelection() {
+  if (!catFilter.value) return { scope: null, category: null };
+  const cut = catFilter.value.indexOf("/");
+  return {
+    scope: catFilter.value.slice(0, cut),
+    category: catFilter.value.slice(cut + 1),
+  };
 }
 
 /**
@@ -143,14 +161,20 @@ async function loadTags() {
 
 // ------------------------------------------------------------ カテゴリ管理
 
+/** ローカルは 📁 を付ける。付けないと、どちらの辞書を触るのか分からない。 */
+function categoryLabel(node) {
+  return node.scope === "local" ? `📁 ${node.category}` : node.category;
+}
+
 function categoryRow(node) {
-  const nameNode = el("div", { class: "cat-row-name", text: node.category });
+  const nameNode = el("div", { class: "cat-row-name", text: categoryLabel(node) });
   const meta = el("div", { class: "cat-row-meta", text:
     `${node.count} 語` +
     (node.subcategories.filter((s) => s.name).length
       ? ` · ${node.subcategories.filter((s) => s.name).map((s) => s.name).join(" / ")}`
       : "") +
-    (node.description ? ` · ${node.description}` : "")
+    (node.description ? ` · ${node.description}` : "") +
+    (node.scope === "local" ? " · このフォルダの辞書" : "")
   });
   const row = el("div", { class: "cat-row" }, [
     el("div", { class: "cat-row-main" }, [nameNode, meta]),
@@ -177,10 +201,16 @@ function startRename(row, node) {
       save.disabled = true;
       setStatus(status, "変更中", "busy");
       try {
-        await api(`/api/categories/${encodeURIComponent(node.category)}`, {
-          method: "PUT",
-          body: { name: next, subcategories: node.subcategories.map((s) => s.name).filter(Boolean) },
-        });
+        // ローカルにマスターは無いので、送るのは名前だけ
+        // （サブカテゴリと説明はマスターが持つもの）
+        const local = node.scope === "local";
+        const body = local
+          ? { name: next }
+          : { name: next, subcategories: node.subcategories.map((s) => s.name).filter(Boolean) };
+        await api(
+          `/api/categories/${encodeURIComponent(node.category)}?scope=${node.scope}`,
+          { method: "PUT", body }
+        );
         await refreshAll();
       } catch (err) {
         setStatus(status, err.message, "error");
@@ -219,9 +249,14 @@ async function refreshAll() {
 }
 
 async function removeCategory(node) {
-  if (!confirm(`カテゴリ「${node.category}」を削除します。よろしいですか？`)) return;
+  const where = node.scope === "local" ? "このフォルダの辞書の" : "";
+  if (!confirm(`${where}カテゴリ「${node.category}」を削除します。よろしいですか？`)) return;
   try {
-    await api(`/api/categories/${encodeURIComponent(node.category)}`, { method: "DELETE" });
+    // **スコープを必ず渡す。** 渡さないと、同名のグローバルのカテゴリが消える
+    await api(
+      `/api/categories/${encodeURIComponent(node.category)}?scope=${node.scope}`,
+      { method: "DELETE" }
+    );
     await refreshAll();
   } catch (err) {
     alert(`削除できません: ${err.message}`);
@@ -279,8 +314,14 @@ qInput.value = initial.get("q") || "";
 
 paintEntryCount($("count"));
 Promise.all([loadCategories(), loadTags()]).then(() => {
+  // `?category=` はスコープを持たないことがある（用語ページからのリンクなど）。
+  // `?scope=` があればそれで、無ければ最初に見つかったものに合わせる
   const cat = initial.get("category");
-  if (cat) catFilter.value = cat;
+  if (cat) {
+    const wanted = initial.get("scope");
+    const hit = tree.find((n) => n.category === cat && (!wanted || n.scope === wanted));
+    if (hit) catFilter.value = `${hit.scope}/${hit.category}`;
+  }
   const tag = initial.get("tag");
   if (tag) tagFilter.value = tag;
   reload();

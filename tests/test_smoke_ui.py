@@ -408,6 +408,42 @@ def test_the_glossary_filters_by_tag(page, server, isolated_dirs):
     assert page.eval_on_selector("#tagFilter", "n => n.value") == "設計原則"
 
 
+def test_the_category_manager_separates_the_two_dictionaries(page, server, isolated_dirs, tmp_path):
+    """カテゴリ管理で、フォルダの辞書と全体の辞書を取り違えないこと。
+
+    スコープを渡していなかったため、**ローカルのカテゴリを消そうとして同名の
+    グローバル側が消えた**。画面でも見分けが付かなかった。
+    """
+    from glosspop import categories
+
+    folder = tmp_path / "小説"
+    folder.mkdir()
+    config.set_content_dir(folder)
+    categories.ensure("登場人物")                      # 全体には空で作っておく
+    store.save(EntryDraft(term="ザネリ", category="登場人物", scope="local", definition="本文。"))
+
+    page.goto(f"{server}/glossary")
+    page.click("#manageCats")
+    page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=15000)
+    rows = page.locator("dialog.sheet[open] .cat-row-name").all_text_contents()
+    # 同じ名前が 2 つ並ぶので、印が無いと区別が付かない
+    assert rows == ["登場人物", "📁 登場人物"]
+
+    # フォルダ側を改名する。全体側は巻き添えにしない
+    page.click("dialog.sheet[open] .cat-row >> nth=1 >> button:has-text('名前を変更')")
+    page.fill("dialog.sheet[open] input[aria-label='新しいカテゴリ名']", "人物")
+    page.click("dialog.sheet[open] button:has-text('保存')")
+
+    page.wait_for_function(
+        "[...document.querySelectorAll('dialog.sheet[open] .cat-row-name')]"
+        ".some(n => n.textContent === '📁 人物')",
+        timeout=15000,
+    )
+    assert [e.ref for e in store.load_all()] == [".local/人物/ザネリ"]
+    # マスターはグローバルのもの。ローカルの改名では触らない
+    assert [c.name for c in categories.load()] == ["登場人物"]
+
+
 def test_the_reading_position_survives_reopening(page, server, isolated_dirs):
     """長い本を開き直したとき、前回の続きから出ること。
 

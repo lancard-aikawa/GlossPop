@@ -203,6 +203,16 @@ uv run glosspop move ザネリ --to-scope local --folder "/path/to/小説フォ�
 uv run glosspop move ザネリ --to-scope global      # 全体へ戻す
 ```
 
+カテゴリの改名・削除も同じ。**スコープを渡さないと全体の辞書のほうを触る**ので、
+フォルダ側を直すときは必ず付ける（同名のカテゴリが両方にあると取り違える）。
+
+```bash
+uv run glosspop categories --rename 登場人物 人物 --scope local --folder "/path/to/小説フォルダ"
+```
+
+`--add`（用語 0 件のカテゴリを作る）はマスターの操作なので**全体の辞書だけ**。
+フォルダの辞書にマスターは無く、ディレクトリ名がそのまま正になる。
+
 URL ごとの辞書（`data/sites/`）は CLI からは扱えない。
 
 ## 辞書そのものを別の場所にする

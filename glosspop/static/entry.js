@@ -327,9 +327,12 @@ function relationsSection(entry) {
 function render(entry) {
   current = entry;
   const head = el("div", { class: "entry-head" }, [
+    // スコープも渡す。渡さないと、同名のカテゴリが全体とフォルダの両方にあるとき
+    // 一覧が別の辞書のほうを選ぶ
     el("div", { class: "crumb", html:
       `<a href="/glossary">辞書</a> / ` +
-      `<a href="/glossary?category=${encodeURIComponent(entry.category)}">${esc(entry.category)}</a>` +
+      `<a href="/glossary?category=${encodeURIComponent(entry.category)}` +
+      `&scope=${encodeURIComponent(entry.scope)}">${esc(entry.category)}</a>` +
       (entry.subcategory ? ` / ${esc(entry.subcategory)}` : "")
     }),
     el("h1", { html: esc(entry.term) + (entry.reading ? `<span class="reading">${esc(entry.reading)}</span>` : "") }),

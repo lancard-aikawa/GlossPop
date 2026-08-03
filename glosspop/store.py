@@ -489,42 +489,69 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def rename_category(old: str, new: str) -> int:
-    """カテゴリを改名する。ディレクトリごと動かし、マスターも更新する。"""
+def _category_root(scope: str) -> Path:
+    """カテゴリ操作の対象になる辞書ルート。無ければ例外。"""
+    if scope not in SCOPES:
+        raise StoreError(f"不明な保存先です: {scope}")
+    root = glossary_dir(scope)
+    if root is None:
+        raise StoreError("このフォルダの辞書がありません（フォルダを開いてください）")
+    return root
+
+
+def rename_category(old: str, new: str, scope: str = GLOBAL_SCOPE) -> int:
+    """カテゴリを改名する。ディレクトリごと動かす。
+
+    **マスターを持つのはグローバルだけ。** ローカルはディレクトリ名が正なので、
+    実体を動かせばそれで完了する（フォルダ固有のカテゴリでマスターを汚さない）。
+    """
     with _lock:
         old_norm = normalize_category(old)
         new_norm = normalize_category(new)
         if old_norm == new_norm:
             return 0
-        src = config.GLOSSARY_DIR / old_norm
-        dst = config.GLOSSARY_DIR / new_norm
+        root = _category_root(scope)
+        src = root / old_norm
+        dst = root / new_norm
         moved = 0
         if src.exists():
             if dst.exists():
                 raise StoreError(f"カテゴリ「{new_norm}」のディレクトリが既にあります")
             os.replace(src, dst)
             moved = len(list(dst.glob("*.md")))
-        categories.rename(old_norm, new_norm)
+        elif scope == LOCAL_SCOPE:
+            # ローカルはディレクトリが正。無いなら改名する対象そのものが無い
+            raise StoreError(f"カテゴリ「{old_norm}」がありません")
+        if scope == GLOBAL_SCOPE:
+            categories.rename(old_norm, new_norm)
         invalidate()
         return moved
 
 
-def delete_category(name: str) -> None:
-    """空のカテゴリだけ消す（グローバル辞書のみ）。
+def delete_category(name: str, scope: str = GLOBAL_SCOPE) -> None:
+    """空のカテゴリだけ消す。
 
-    ローカル辞書のカテゴリはディレクトリだけが正なので、マスターの操作対象外。
+    **空かどうかは同じ辞書の中だけで数える。** グローバルのエントリだけを数えて
+    いたため、用語の入ったローカルのカテゴリが「空」と判定され、**同名の
+    グローバル側が代わりに消えた**。スコープを跨いで消さないこと。
     """
     with _lock:
         name = normalize_category(name)
-        if any(e.category == name and not e.is_local for e in load_all()):
+        root = _category_root(scope)
+        if any(e.category == name and e.scope == scope for e in load_all()):
             raise StoreError(f"カテゴリ「{name}」にはまだ用語があります")
-        directory = config.GLOSSARY_DIR / name
-        if directory.exists():
+        directory = root / name
+        existed = directory.exists()
+        if existed:
             try:
                 directory.rmdir()
             except OSError as exc:
                 raise StoreError(f"ディレクトリを削除できません: {exc}") from exc
-        if not categories.remove(name):
+        if scope == GLOBAL_SCOPE:
+            # マスターにだけ在る（ディレクトリを作っていない）カテゴリも消せる
+            if not categories.remove(name) and not existed:
+                raise StoreError(f"カテゴリ「{name}」がありません")
+        elif not existed:
             raise StoreError(f"カテゴリ「{name}」がありません")
         invalidate()
 

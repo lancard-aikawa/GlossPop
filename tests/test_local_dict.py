@@ -251,6 +251,90 @@ class TestDraftDoesNotPolluteTheMaster:
         assert "登場人物" in categories.names()
 
 
+class TestCategoryManagement:
+    """カテゴリの改名・削除は**同じ辞書の中だけ**で完結すること。
+
+    グローバル決め打ちだったため、ローカルのカテゴリを消そうとして
+    **同名のグローバル側が消えた**。スコープを跨いで触らないのが要点。
+    """
+
+    def test_deleting_a_local_category_does_not_touch_the_global_one(self, tmp_path):
+        from glosspop import categories
+
+        folder = tmp_path / "小説"
+        folder.mkdir()
+        config.set_content_dir(folder)
+        categories.ensure("登場人物")                    # グローバルに空で作っておく
+        add("ザネリ", scope="local", category="登場人物")
+
+        # ローカルには用語が入っているので消せない（グローバルは巻き添えにしない）
+        with pytest.raises(store.StoreError, match="まだ用語があります"):
+            store.delete_category("登場人物", "local")
+        assert "登場人物" in categories.names()
+        assert [e.ref for e in store.load_all()] == [".local/登場人物/ザネリ"]
+
+    def test_an_empty_local_category_can_be_deleted(self, tmp_path):
+        folder = tmp_path / "小説"
+        folder.mkdir()
+        config.set_content_dir(folder)
+        entry = add("ザネリ", scope="local", category="登場人物")
+        store.delete(entry.ref)
+
+        store.delete_category("登場人物", "local")
+        assert not (folder / ".glosspop" / "glossary" / "登場人物").exists()
+
+    def test_renaming_a_local_category_moves_the_directory_only(self, tmp_path):
+        from glosspop import categories
+
+        folder = tmp_path / "小説"
+        folder.mkdir()
+        config.set_content_dir(folder)
+        add("ザネリ", scope="local", category="登場人物")
+
+        assert store.rename_category("登場人物", "人物", "local") == 1
+        assert [e.ref for e in store.load_all()] == [".local/人物/ザネリ"]
+        # マスターはグローバルのもの。ローカルの改名では触らない
+        assert categories.names() == []
+
+    def test_renaming_a_missing_local_category_is_an_error(self, tmp_path):
+        folder = tmp_path / "小説"
+        folder.mkdir()
+        config.set_content_dir(folder)
+        with pytest.raises(store.StoreError, match="がありません"):
+            store.rename_category("無い", "別名", "local")
+
+    def test_global_management_is_unchanged(self):
+        from glosspop import categories
+
+        add("冪等", category="プログラミング")
+        assert store.rename_category("プログラミング", "設計") == 1
+        assert categories.names() == ["設計"]
+        assert [e.ref for e in store.load_all()] == ["設計/冪等"]
+
+    def test_the_api_takes_a_scope(self, client, tmp_path):
+        folder = tmp_path / "小説"
+        folder.mkdir()
+        config.set_content_dir(folder)
+        add("ザネリ", scope="local", category="登場人物")
+
+        res = client.put("/api/categories/登場人物", params={"scope": "local"},
+                         json={"name": "人物"})
+        assert res.status_code == 200, res.text
+        assert res.json()["scope"] == "local"
+        assert [e.ref for e in store.load_all()] == [".local/人物/ザネリ"]
+
+    def test_the_api_refuses_to_delete_a_local_category_that_has_entries(self, client, tmp_path):
+        folder = tmp_path / "小説"
+        folder.mkdir()
+        config.set_content_dir(folder)
+        add("ザネリ", scope="local", category="登場人物")
+
+        res = client.delete("/api/categories/登場人物", params={"scope": "local"})
+        assert res.status_code == 400, res.text
+        assert "まだ用語があります" in res.json()["detail"]
+        assert [e.ref for e in store.load_all()] == [".local/登場人物/ザネリ"]
+
+
 class TestSharedAcrossVolumes:
     """1 巻 2 巻でローカル辞書を共有する（いちばん近い .glosspop を使う）。"""
 

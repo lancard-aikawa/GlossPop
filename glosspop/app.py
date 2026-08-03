@@ -37,6 +37,7 @@ from .models import (
     Entry,
     EntryDraft,
     Relation,
+    normalize_category,
 )
 
 CONTENT_SUFFIXES = {
@@ -607,7 +608,23 @@ def create_category(req: CategoryRequest) -> dict:
 
 
 @app.put("/api/categories/{name}")
-def update_category(name: str, req: CategoryUpdateRequest) -> dict:
+def update_category(name: str, req: CategoryUpdateRequest, scope: str = GLOBAL_SCOPE) -> dict:
+    """カテゴリを改名する（サブカテゴリの並びもここで差し替える）。
+
+    **ローカル辞書にマスターは無い**ので、できるのはディレクトリごとの改名だけ。
+    サブカテゴリや説明はマスターが持つものなので、ローカルでは受け取らない。
+    """
+    if scope == LOCAL_SCOPE:
+        if not req.name or req.name.strip() == name:
+            raise HTTPException(400, "このフォルダの辞書では名前の変更だけできます")
+        store.rename_category(name, req.name, LOCAL_SCOPE)
+        return {
+            "name": normalize_category(req.name),
+            "subcategories": [],
+            "description": "",
+            "scope": LOCAL_SCOPE,
+        }
+
     current = categories.get(name)
     if current is None:
         raise HTTPException(404, f"カテゴリ「{name}」がありません")
@@ -617,12 +634,12 @@ def update_category(name: str, req: CategoryUpdateRequest) -> dict:
     assert current is not None
     if req.subcategories is not None:
         current = categories.set_subcategories(current.name, req.subcategories)
-    return current.model_dump()
+    return {**current.model_dump(), "scope": GLOBAL_SCOPE}
 
 
 @app.delete("/api/categories/{name}", status_code=204)
-def delete_category(name: str) -> None:
-    store.delete_category(name)
+def delete_category(name: str, scope: str = GLOBAL_SCOPE) -> None:
+    store.delete_category(name, scope)
 
 
 # --------------------------------------------------------------------------- #

@@ -345,18 +345,29 @@ def cmd_migrate(args: argparse.Namespace) -> int:
 
 
 def cmd_categories(args: argparse.Namespace) -> int:
+    """カテゴリマスターを見る / 編集する。
+
+    **改名と削除はスコープを取る。** `--folder` を付けると一覧にフォルダの辞書の
+    カテゴリも出るので、スコープを渡せないと**同名のグローバル側を消す**ことになる。
+    新規登録 (`--add`) はマスターの操作なのでグローバルだけ。
+    """
+    scope = getattr(args, "scope", None) or GLOBAL_SCOPE
     if args.add:
         category = categories.ensure(args.add, description=args.description or "")
         _emit({"status": "ensured", **category.model_dump()})
         return 0
     if args.rename:
         old, new = args.rename
-        moved = store.rename_category(old, new)
-        _emit({"status": "renamed", "from": old, "to": new, "moved_entries": moved})
+        if scope == LOCAL_SCOPE and _announce_local("改名"):
+            return 2
+        moved = store.rename_category(old, new, scope)
+        _emit({"status": "renamed", "from": old, "to": new, "scope": scope, "moved_entries": moved})
         return 0
     if args.remove:
-        store.delete_category(args.remove)
-        _emit({"status": "deleted", "name": args.remove})
+        if scope == LOCAL_SCOPE and _announce_local("削除"):
+            return 2
+        store.delete_category(args.remove, scope)
+        _emit({"status": "deleted", "name": args.remove, "scope": scope})
         return 0
     _emit(store.category_tree())
     return 0
@@ -451,6 +462,12 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--description", help="--add に付ける説明")
     c.add_argument("--rename", nargs=2, metavar=("OLD", "NEW"), help="カテゴリ名を変える")
     c.add_argument("--remove", metavar="NAME", help="空のカテゴリを削除する")
+    c.add_argument(
+        "--scope",
+        choices=SCOPES,
+        help=f"--rename / --remove の対象辞書 (既定 {GLOBAL_SCOPE})。local は --folder と併せて使う",
+    )
+    add_folder_option(c)
     c.set_defaults(func=cmd_categories)
 
     m = sub.add_parser("migrate", help="別のフォルダのデータを引き継ぐ（元は消さない）")

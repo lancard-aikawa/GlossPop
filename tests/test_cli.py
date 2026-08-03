@@ -104,6 +104,26 @@ def test_move_between_scopes(tmp_path, capsys, add_entry):
     assert not (tmp_path / "glossary" / "登場人物" / "ザネリ.md").exists()
 
 
+def test_category_rename_targets_the_chosen_dictionary(tmp_path, capsys):
+    """`--folder` を付けるとローカルのカテゴリも一覧に出る。
+
+    改名と削除がグローバル決め打ちだと、**同名のグローバル側を触る**ことになる。
+    """
+    from glosspop import categories
+
+    folder = tmp_path / "小説"
+    folder.mkdir()
+    categories.ensure("登場人物")                       # 全体には空で作っておく
+    assert _run(["add", "--term", "ザネリ", "--category", "登場人物",
+                 "--scope", "local", "--folder", str(folder)]) == 0
+    capsys.readouterr()
+
+    assert _run(["categories", "--rename", "登場人物", "人物",
+                 "--scope", "local", "--folder", str(folder)]) == 0
+    assert [e.ref for e in store.load_all()] == [".local/人物/ザネリ"]
+    assert [c.name for c in categories.load()] == ["登場人物"]   # 全体は無傷
+
+
 def test_move_needs_a_destination(capsys, add_entry):
     add_entry("ザネリ", category="登場人物")
     capsys.readouterr()
