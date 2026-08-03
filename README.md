@@ -62,6 +62,7 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen |
 .\check.cmd exe        # ビルドした exe を起動して応答を確かめる
 .\check.cmd kill       # ポートの所有者を落とす
 .\check.cmd all        # test + build + exe
+.\check.cmd ci         # リリース前の予行演習（CI と同じ条件。タグは打たない）
 ```
 
 `exe` は [`packaging/check-exe.ps1`](packaging/check-exe.ps1) を呼ぶ。**凍結してからでないと
@@ -736,6 +737,24 @@ exe の隣に何を置くかは `-Seed` で決まる。
 入っているので、展開してすぐ `ようこそ.md` の中で自動リンクと吹き出しを試せる。
 
 ### リリース
+
+**タグを打つ前に `.\check.cmd ci` を通すこと。** release ワークフローと同じ順で、
+バージョンの一致・テスト・ビルド・exe の起動まで手元で走らせる予行演習で、
+Release は作らない。
+
+これがあるのは、**手元では通って CI で落ちる**失敗を 2 回続けて踏んだため
+（`claude` が PATH にあるかの差、実時間に依存するテスト）。落ちるたびに壊れたタグを
+消して付け直すことになり、GitHub から失敗のメールも飛ぶ。
+
+`ci` が見ているのは 3 つ:
+
+| 見るもの | なぜ |
+| --- | --- |
+| `pyproject.toml` と `__init__.py` のバージョン一致 | 食い違うとワークフローが最初で落ちる |
+| **`claude` を PATH から外して**全テスト | CI に `claude` は無い。`ai.available()` の分岐が変わる |
+| 時間に依存するテストを 40 回 | たまたま通っただけでないか。**網であって証明ではない** |
+
+ネットワークは `tests/conftest.py` が常に塞いでいるので、ここでは何もしない。
 
 タグを push すると [GitHub Actions](.github/workflows/release.yml) がビルドし、
 zip を付けた**ドラフト**の Release を作る（内容を確認して手で publish する）。

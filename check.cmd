@@ -17,6 +17,7 @@ rem          check.cmd rebuild    build the exe from scratch (--clean)
 rem          check.cmd exe        start the built exe and check it answers
 rem          check.cmd kill       free the port (kills the owner, not the parent)
 rem          check.cmd all        test + build + exe
+rem          check.cmd ci         release dry run (CI conditions, no tag)
 rem
 rem  Set PORT to use another port:  set PORT=9000 && check.cmd serve
 rem ===========================================================================
@@ -48,6 +49,7 @@ echo    5  rebuild   build the exe from scratch
 echo    6  exe       start the built exe and check it answers
 echo    7  kill      free port %PORT%
 echo    8  all       test + build + exe
+echo    9  ci        release dry run (CI conditions, no tag)
 echo.
 set /p CMD=" select (or q to quit): "
 if /i "%CMD%"=="q" goto :eof
@@ -59,6 +61,7 @@ if "%CMD%"=="5" set CMD=rebuild
 if "%CMD%"=="6" set CMD=exe
 if "%CMD%"=="7" set CMD=kill
 if "%CMD%"=="8" set CMD=all
+if "%CMD%"=="9" set CMD=ci
 
 :run
 if /i "%CMD%"=="test"    goto :do_test
@@ -69,6 +72,7 @@ if /i "%CMD%"=="rebuild" goto :do_rebuild
 if /i "%CMD%"=="exe"     goto :do_exe
 if /i "%CMD%"=="kill"    goto :do_kill
 if /i "%CMD%"=="all"     goto :do_all
+if /i "%CMD%"=="ci"      goto :do_ci
 echo unknown command: %CMD%
 exit /b 2
 
@@ -120,6 +124,17 @@ call :do_build || exit /b %ERRORLEVEL%
 call :do_exe   || exit /b %ERRORLEVEL%
 echo [all] ok
 exit /b 0
+
+rem ---------------------------------------------------------------- ci
+rem Dry run of the release workflow. Two releases in a row failed on things that
+rem pass here but not on CI (claude on PATH, a test that raced with real time),
+rem which meant deleting and re-pushing the tag plus a failure mail each time.
+rem Run this before tagging. Details live in packaging\check-ci.ps1.
+:do_ci
+call :free_port
+echo [ci] packaging\check-ci.ps1 -Port %PORT%
+%PS% "& .\packaging\check-ci.ps1 -Port %PORT%"
+exit /b %ERRORLEVEL%
 
 rem ---------------------------------------------------------------- kill
 :do_kill
