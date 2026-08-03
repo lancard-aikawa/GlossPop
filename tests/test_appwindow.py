@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
 import socket
-import threading
 
 import pytest
 
@@ -57,15 +57,25 @@ class TestWaitUntilReady:
         srv.close()          # 誰も listen していないポート
         assert appwindow.wait_until_ready("127.0.0.1", port, timeout=0.4) is False
 
-    def test_waits_for_a_late_server(self):
-        srv = socket.socket()
-        srv.bind(("127.0.0.1", 0))
-        port = srv.getsockname()[1]
-        threading.Timer(0.3, srv.listen, [1]).start()
-        try:
-            assert appwindow.wait_until_ready("127.0.0.1", port, timeout=3) is True
-        finally:
-            srv.close()
+    def test_waits_for_a_late_server(self, monkeypatch):
+        """繋がるまで諦めずに試し直すこと。
+
+        **本物のソケットとタイマーで書かない。** 以前はスレッドで遅れて listen
+        させていたが、繋ぐ側と listen する側の競走になっていて時々落ちた
+        （手元で 20 回に 1 回、CI ではリリースを止めた）。試行の回数だけを見る。
+        """
+        attempts = []
+
+        def fake_connect(target, timeout=None):
+            attempts.append(target)
+            if len(attempts) < 3:
+                raise OSError("まだ listen していない")
+            return contextlib.nullcontext()
+
+        monkeypatch.setattr(appwindow.socket, "create_connection", fake_connect)
+        monkeypatch.setattr(appwindow, "_sleep", lambda _s: None)
+        assert appwindow.wait_until_ready("127.0.0.1", 8765, timeout=3) is True
+        assert len(attempts) == 3
 
     def test_any_address_is_probed_on_loopback(self, monkeypatch):
         """``--host 0.0.0.0`` に接続しに行かない（Windows では繋がらない）。"""
