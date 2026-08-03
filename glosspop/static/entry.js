@@ -3,6 +3,7 @@ import { api, el, esc, paintEntryCount, RANK_MARK, RANK_OPTIONS, setStatus, sour
 import { installGlossPopup, invalidatePopupCache } from "./popup.js";
 import { installSelectionAdd } from "./select-add.js";
 import { openEntryEditor, encodePath } from "./editor.js";
+import { openMerge } from "./merge.js";
 
 const root = document.getElementById("root");
 const countNode = document.getElementById("count");
@@ -348,7 +349,9 @@ function render(entry) {
 
   const parts = [head];
 
-  // 同じ表記が別カテゴリにもあるなら案内する
+  // 同じ表記が別カテゴリにもあるなら案内する。
+  // **「別カテゴリの同名」は正常なので、まとめろとは言わない。** 同じものが
+  // 割れているのか、たまたま名前が同じ別物なのかは人にしか分からない
   const siblings = (index.get(entry.term.toLowerCase()) || []).filter((e) => e.ref !== entry.ref);
   if (siblings.length) {
     parts.push(el("p", { class: "notice" }, [
@@ -391,6 +394,12 @@ function render(entry) {
       type: "button",
       text: "カテゴリを移動",
       onclick: () => toggleMovePanel(entry, movePanel),
+    }),
+    el("button", {
+      type: "button",
+      text: "まとめる",
+      title: "割れてしまった同じものを 1 つにする",
+      onclick: () => mergeWith(entry),
     }),
     el("button", { type: "button", class: "danger", text: "削除", onclick: () => remove(entry) }),
     el("a", { class: "btn", href: "/glossary", text: "一覧へ戻る" }),
@@ -512,6 +521,25 @@ async function remove(entry) {
   } catch (err) {
     alert(`削除できません: ${err.message}`);
   }
+}
+
+/**
+ * 割れてしまった同じものを 1 つにまとめる。
+ *
+ * 候補として先に出すのは**同じ表記のもの**だけ。「同じ人物かもしれない」を
+ * 機械で判定すると、カテゴリ違いの同名（この辞書の狙いどおりの機能）を大量に
+ * 挙げてしまい、警告が誰にも読まれなくなる。あとは自分で探してもらう。
+ */
+async function mergeWith(entry) {
+  const same = (index.get(entry.term.toLowerCase()) || []).filter((e) => e.ref !== entry.ref);
+  const merged = await openMerge(entry, same);
+  if (!merged) return;
+  invalidatePopupCache();
+  // 別名も関係も変わっているので、索引ごと引き直す
+  await loadIndex();
+  await reload(merged);
+  paintEntryCount(countNode);
+  history.replaceState(null, "", `/glossary/${encodePath(merged)}`);
 }
 
 async function main() {

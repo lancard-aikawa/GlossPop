@@ -51,6 +51,10 @@ uv run glosspop show "<用語名>"             # あれば内容が出る。無�
 
 - **`aliases` は慎重に。** 自動リンクは本文の部分文字列にマッチするので、
   一般的すぎる語（「処理」「設定」など）を別名に入れると本文がリンクだらけになる。
+- **同じものの別の呼び方で新しいエントリを立てない。** 「主人」と「苦沙弥先生」が
+  別エントリになると、本文のリンク先も相関図のノードも二重になる。既存の語の
+  `aliases` に足すこと。**すでに割れているものは `glosspop merge` でまとめられる**
+  （消える側の用語名は残す側の別名になるので、どちらの呼び方でもリンクになる）。
 - **分野が合わないカテゴリに無理に寄せない。** 音楽の用語を「プログラミング」に
   入れるくらいなら新設する。`未分類` は使わない。
 - `definition` に長いコードブロックを入れない（吹き出しでは非表示になる）。
@@ -162,6 +166,8 @@ uv run glosspop list --category "プログラミング"
 uv run glosspop list --folder "/path/to/フォルダ" # フォルダの辞書も混ぜて出す (📁 付き)
 uv run glosspop move ソース --to 料理             # カテゴリ移動（ファイルごと動く）
 uv run glosspop rm ソース --category 料理         # 削除
+uv run glosspop merge 主人 苦沙弥先生             # 下見だけ（何も変えない）
+uv run glosspop merge 主人 苦沙弥先生 --yes       # 割れた同じものを 1 つにまとめる
 uv run glosspop categories --add 音楽            # 用語 0 件でもカテゴリを作れる
 uv run glosspop categories --rename 旧名 新名     # ディレクトリごと改名
 uv run glosspop categories --remove 音楽         # 空のカテゴリだけ削除できる
@@ -195,8 +201,8 @@ uv run glosspop add --json @/tmp/gloss-entry.json \
 - `list` / `show` / `rm` / `move` にも `--folder` を付ける。**付けないとフォルダ側の
   用語は見えない**ので、重複確認 (手順 1) をするときも忘れないこと
 - `ref` は `.local/<カテゴリ>/<slug>` の形になる
-- ローカルに入れた語はカテゴリマスターに載らない（フォルダ固有のカテゴリでマスターを
-  汚さないため）
+- カテゴリマスターは辞書ごとにある。ローカルに入れた語のカテゴリは
+  `<フォルダ>/.glosspop/categories.yaml` に載り、**全体のマスターには載らない**
 
 ```bash
 uv run glosspop move ザネリ --to-scope local --folder "/path/to/小説フォルダ"
@@ -210,8 +216,8 @@ uv run glosspop move ザネリ --to-scope global      # 全体へ戻す
 uv run glosspop categories --rename 登場人物 人物 --scope local --folder "/path/to/小説フォルダ"
 ```
 
-`--add`（用語 0 件のカテゴリを作る）はマスターの操作なので**全体の辞書だけ**。
-フォルダの辞書にマスターは無く、ディレクトリ名がそのまま正になる。
+`--add`（用語 0 件のカテゴリを作る）も `--scope local` を取る。フォルダの辞書にも
+マスターがあるので、そちらに載る（全体のマスターは触らない）。
 
 URL ごとの辞書（`data/sites/`）は CLI からは扱えない。
 

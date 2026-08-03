@@ -60,12 +60,16 @@ try {
     </header>
     <div class="body" data-ref="catBody"></div>
     <footer>
+      <select data-ref="catScope" title="どちらの辞書に作るか" aria-label="どちらの辞書に作るか" hidden>
+        <option value="global">全体の辞書</option>
+        <option value="local">📁 このフォルダの辞書</option>
+      </select>
       <input type="text" data-ref="catNew" class="auto-width" placeholder="新しいカテゴリ名"
              title="新しいカテゴリ名" aria-label="新しいカテゴリ名" autocomplete="off">
       <button type="button" data-ref="catAdd">＋ 追加</button>
       <span class="status" data-ref="catStatus"></span>
       <span class="spacer"></span>
-      <span class="hint">用語 0 件のカテゴリも登録できます。削除できるのは空のカテゴリだけです。</span>
+      <span class="hint">用語 0 件のカテゴリも登録できます。並びは ↑ ↓ で変えられます。削除できるのは空のカテゴリだけです。</span>
     </footer>
   </div>
 </dialog>

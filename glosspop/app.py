@@ -23,6 +23,7 @@ from . import (
     fetcher,
     installer,
     llm,
+    merge,
     picker,
     relations,
     render,
@@ -217,6 +218,31 @@ class CategoryUpdateRequest(BaseModel):
     description: str = ""
 
 
+class MergeRequest(BaseModel):
+    """統合の実行。**衝突した項目は決まった値だけを受け取る。**
+
+    ``fields`` に無い項目は残す側の値になる（サーバが勝手に消える側へ寄せない）。
+    ``relations`` は行き先ごとに採ると決めた並びで、``None`` なら既定の畳み方
+    （残す側優先 + 消える側にしか無いものを引き継ぐ）。
+    """
+
+    keep: str
+    drop: str
+    fields: dict = {}
+    relations: list[dict] | None = None
+
+
+class CategoryOrderRequest(BaseModel):
+    """並び順の差し替え。**そのスコープの全カテゴリを順に並べて送る。**
+
+    差分（「これを 1 つ上へ」）ではなく全体を送るのは、関係の書き込みと同じ
+    理由で、部分更新を重ねると後の書き込みが前のものを消すため。
+    """
+
+    names: list[str] = []
+    scope: str = GLOBAL_SCOPE
+
+
 class MoveRequest(BaseModel):
     """カテゴリ / 保存先の移動。省略した項目はそのまま。"""
 
@@ -383,6 +409,10 @@ def health() -> dict:
         "content_dir": str(config.content_dir()),
         "reading_url": config.reading_url() or "",
         "local_glossary_dir": str(config.local_glossary_dir() or ""),
+        # マスターは辞書ごとにある。フォルダの辞書が使えるかは UI 側でも要る
+        # （カテゴリをどちらに作るかを選ばせるため）
+        "local_categories_file": str(config.local_categories_file() or ""),
+        "local_available": store.local_available(),
         "spoiler_default": config.SPOILER_DEFAULT,
         "local_entry_count": sum(1 for e in store.load_all() if e.is_local),
         "entry_count": len(store.load_all()),
@@ -628,41 +658,48 @@ def list_categories() -> list[dict]:
 
 
 @app.post("/api/categories", status_code=201)
-def create_category(req: CategoryRequest) -> dict:
-    category = categories.ensure(req.name, description=req.description)
+def create_category(req: CategoryRequest, scope: str = GLOBAL_SCOPE) -> dict:
+    """カテゴリを登録する（用語 0 件でも作れる）。
+
+    ``scope`` はどちらの辞書のマスターに載せるか。**渡さない経路を作らないこと**
+    —— 既定に落ちると、フォルダのカテゴリのつもりが全体のマスターに残る。
+    """
+    category = categories.ensure(req.name, description=req.description, scope=scope)
     if req.subcategories:
-        category = categories.set_subcategories(category.name, req.subcategories)
-    return category.model_dump()
+        category = categories.set_subcategories(category.name, req.subcategories, scope)
+    return {**category.model_dump(), "scope": scope}
 
 
 @app.put("/api/categories/{name}")
 def update_category(name: str, req: CategoryUpdateRequest, scope: str = GLOBAL_SCOPE) -> dict:
     """カテゴリを改名する（サブカテゴリの並びもここで差し替える）。
 
-    **ローカル辞書にマスターは無い**ので、できるのはディレクトリごとの改名だけ。
-    サブカテゴリや説明はマスターが持つものなので、ローカルでは受け取らない。
+    マスターは辞書ごとにあるので、**ローカルでも同じことができる**。
+    ``scope`` の辞書の中だけを触る。
     """
-    if scope == LOCAL_SCOPE:
-        if not req.name or req.name.strip() == name:
-            raise HTTPException(400, "このフォルダの辞書では名前の変更だけできます")
-        store.rename_category(name, req.name, LOCAL_SCOPE)
-        return {
-            "name": normalize_category(req.name),
-            "subcategories": [],
-            "description": "",
-            "scope": LOCAL_SCOPE,
-        }
-
-    current = categories.get(name)
+    current = categories.get(name, scope)
     if current is None:
         raise HTTPException(404, f"カテゴリ「{name}」がありません")
     if req.name and req.name.strip() != current.name:
-        store.rename_category(current.name, req.name)
-        current = categories.get(req.name)
+        store.rename_category(current.name, req.name, scope)
+        current = categories.get(req.name, scope)
     assert current is not None
     if req.subcategories is not None:
-        current = categories.set_subcategories(current.name, req.subcategories)
-    return {**current.model_dump(), "scope": GLOBAL_SCOPE}
+        current = categories.set_subcategories(current.name, req.subcategories, scope)
+    if req.description:
+        current = categories.set_description(current.name, req.description, scope)
+    return {**current.model_dump(), "scope": scope}
+
+
+@app.put("/api/category-order")
+def reorder_categories(req: CategoryOrderRequest) -> list[dict]:
+    """カテゴリの並び順を差し替える。
+
+    パスを ``/api/categories/order`` にしないのは、``order`` という名前の
+    カテゴリを作れてしまうと ``/api/categories/{name}`` と食い合うため。
+    """
+    categories.reorder(req.names, req.scope)
+    return store.category_tree()
 
 
 @app.delete("/api/categories/{name}", status_code=204)
@@ -940,6 +977,33 @@ def move_entry(ref: str, req: MoveRequest) -> dict:
     try:
         entry = store.move(ref, req.category or None, scope=req.scope or None)
     except store.StoreError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _entry_payload(entry)
+
+
+# --------------------------------------------------------------------------- #
+# API: 統合（割れてしまった同じものを 1 つにまとめる）
+#
+# **下見と実行を分ける。** これはデータを消す経路なので、何がどうなるかを
+# 全部見せてから実行する。畳めない項目（本文・要約）は人が決めた値だけを受け取り、
+# サーバは黙って片方に寄せない。
+# --------------------------------------------------------------------------- #
+
+@app.get("/api/merge")
+def merge_plan(keep: str, drop: str) -> dict:
+    try:
+        return merge.plan(keep, drop)
+    except merge.MergeError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/merge")
+def merge_apply(req: MergeRequest) -> dict:
+    try:
+        entry = merge.apply(
+            req.keep, req.drop, fields=req.fields, relations=req.relations
+        )
+    except merge.MergeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return _entry_payload(entry)
 
@@ -1519,8 +1583,9 @@ async def ai_draft(req: DraftRequest) -> dict:
         draft.scope = GLOBAL_SCOPE       # フォルダが無ければローカルには置けない
 
     # 下書き段階でカテゴリをマスターに登録しておく (保存されず空振りでも残す)。
-    # ただしローカル辞書に入れるつもりの下書きは登録しない —— マスターは
-    # グローバル辞書のものなので、フォルダ固有のカテゴリで汚さない (store.save と同じ判断)
+    # **ローカルは空振りぶんを登録しない。** マスターは辞書ごとに持てるように
+    # なったが、書き込む先が「利用者のフォルダ」なので、保存もしなかった提案で
+    # そこにファイルを作らない。保存すれば store.save() がそのとき登録する
     registered = None
     warning = ""
     if draft.category and draft.scope != LOCAL_SCOPE:

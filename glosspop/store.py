@@ -250,11 +250,17 @@ def load_all(*, force: bool = False) -> list[Entry]:
                 continue
             for path in sorted(base.glob("*/*.md")):
                 entries.append(_entry_from_file(path, scope))
-        order = {name: i for i, name in enumerate(categories.names())}
+        # 並び順はそれぞれの辞書のマスターが持つ。グローバルの順をローカルにも
+        # 当てると、フォルダ側で決めた並び (主要人物 → 脇役) が効かない
+        order = {
+            (scope, name): i
+            for scope in SCOPES
+            for i, name in enumerate(categories.names(scope))
+        }
         entries.sort(
             key=lambda e: (
                 0 if e.is_local else 1,
-                order.get(e.category, 10**6),
+                order.get((e.scope, e.category), 10**6),
                 e.category,
                 e.subcategory,
                 e.reading or e.term,
@@ -371,10 +377,9 @@ def save(draft: EntryDraft, *, ref: str | None = None) -> Entry:
 
         if scope == LOCAL_SCOPE and not local_available():
             raise StoreError("ローカル辞書に保存できません（フォルダが開かれていません）")
-        # カテゴリマスターはグローバル辞書のもの。フォルダ固有のカテゴリで
-        # マスターを汚さないよう、ローカルはディレクトリだけを正とする
-        if scope == GLOBAL_SCOPE:
-            categories.ensure(category, subcategory=draft.subcategory)
+        # **マスターは辞書ごと。** ローカルのカテゴリを全体のマスターに載せない
+        # という約束は変わらず、載る先がそのフォルダの .glosspop になった
+        categories.ensure(category, subcategory=draft.subcategory, scope=scope)
 
         clash = find_in_category(category, draft.term, scope)
         if clash is not None and (ref is None or clash.ref != ref):
@@ -443,10 +448,9 @@ def move(ref: str, category: str | None = None, *, scope: str | None = None) -> 
             raise StoreError(
                 f"「{entry.term}」は移動先の「{target_category}」に既に登録されています"
             )
-        # カテゴリマスターはグローバル辞書のもの。ローカルへ移すときは触らない
-        # （フォルダ固有のカテゴリでマスターを汚さない。save() と同じ判断）
-        if target_scope == GLOBAL_SCOPE:
-            categories.ensure(target_category, subcategory=entry.subcategory)
+        # マスターは辞書ごとにあるので、移した先のマスターに登録する
+        # （移動元のマスターからは消さない —— 0 件のカテゴリは残す側の判断）
+        categories.ensure(target_category, subcategory=entry.subcategory, scope=target_scope)
 
         old_path = path_for_ref(ref)
         slug = _allocate_slug(target_category, entry.term, target_scope)
@@ -470,6 +474,26 @@ def move(ref: str, category: str | None = None, *, scope: str | None = None) -> 
             old_path.unlink(missing_ok=True)
         invalidate()
         return moved
+
+
+def write(entry: Entry, *, replacing: str = "") -> Entry:
+    """組み立て済みの ``Entry`` をそのまま書く。``replacing`` の ref は消す。
+
+    ``save()`` は下書きから category / slug / former_refs を組み直すので、
+    **どう畳むかを呼び出し側が決め切っている**とき（統合）には使えない。
+    その結果をそのまま書くための口。
+
+    **書いてから消す。** 途中で落ちたときに両方残るほうが、片方だけ消えるより
+    回復しやすい（``move()`` と同じ判断）。
+    """
+    with _lock:
+        path = path_for(entry.category, entry.slug, entry.scope)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(path, dump_markdown(entry))
+        if replacing and replacing != entry.ref:
+            delete(replacing)
+        invalidate()
+        return entry
 
 
 def delete(ref: str) -> bool:
@@ -500,10 +524,12 @@ def _category_root(scope: str) -> Path:
 
 
 def rename_category(old: str, new: str, scope: str = GLOBAL_SCOPE) -> int:
-    """カテゴリを改名する。ディレクトリごと動かす。
+    """カテゴリを改名する。ディレクトリごと動かし、その辞書のマスターも直す。
 
-    **マスターを持つのはグローバルだけ。** ローカルはディレクトリ名が正なので、
-    実体を動かせばそれで完了する（フォルダ固有のカテゴリでマスターを汚さない）。
+    **マスターを先に直してからディレクトリを動かす。** 逆にすると、
+    ``categories.load()`` が動かした先のディレクトリを新カテゴリとして自動で
+    取り込んでしまい、続く改名が「既にあります」で落ちる（キャッシュが温まって
+    いるときだけ通る、という危うい形になっていた）。
     """
     with _lock:
         old_norm = normalize_category(old)
@@ -513,17 +539,16 @@ def rename_category(old: str, new: str, scope: str = GLOBAL_SCOPE) -> int:
         root = _category_root(scope)
         src = root / old_norm
         dst = root / new_norm
+        if dst.exists():
+            raise StoreError(f"カテゴリ「{new_norm}」のディレクトリが既にあります")
+        if not src.exists() and not categories.exists(old_norm, scope):
+            raise StoreError(f"カテゴリ「{old_norm}」がありません")
+        # ディレクトリだけ在って（手で mkdir された）マスターに無い場合も通す
+        categories.rename(old_norm, new_norm, scope, allow_missing=True)
         moved = 0
         if src.exists():
-            if dst.exists():
-                raise StoreError(f"カテゴリ「{new_norm}」のディレクトリが既にあります")
             os.replace(src, dst)
             moved = len(list(dst.glob("*.md")))
-        elif scope == LOCAL_SCOPE:
-            # ローカルはディレクトリが正。無いなら改名する対象そのものが無い
-            raise StoreError(f"カテゴリ「{old_norm}」がありません")
-        if scope == GLOBAL_SCOPE:
-            categories.rename(old_norm, new_norm)
         invalidate()
         return moved
 
@@ -547,11 +572,9 @@ def delete_category(name: str, scope: str = GLOBAL_SCOPE) -> None:
                 directory.rmdir()
             except OSError as exc:
                 raise StoreError(f"ディレクトリを削除できません: {exc}") from exc
-        if scope == GLOBAL_SCOPE:
-            # マスターにだけ在る（ディレクトリを作っていない）カテゴリも消せる
-            if not categories.remove(name) and not existed:
-                raise StoreError(f"カテゴリ「{name}」がありません")
-        elif not existed:
+        # マスターにだけ在る（ディレクトリを作っていない）カテゴリも消せる。
+        # **消すのはそのスコープのマスターだけ** —— 跨ぐと同名の別辞書が消える
+        if not categories.remove(name, scope) and not existed:
             raise StoreError(f"カテゴリ「{name}」がありません")
         invalidate()
 
@@ -571,9 +594,13 @@ def _subcategory_nodes(subs: dict[str, int], extra: list[str] | None = None) -> 
 def category_tree() -> list[dict]:
     """[{category, scope, count, subcategories: [...]}] を返す。
 
-    グローバルはマスターの順で、1 語も無いカテゴリも ``count: 0`` で含める
-    （空振り登録を見えるようにする）。ローカルはマスターを持たないので、
-    実際に存在するカテゴリだけを後ろに並べる。
+    **どちらの辞書もマスターの順で並べる。** 1 語も無いカテゴリも ``count: 0``
+    で含める（空振り登録と、先に枠だけ作った並びを見えるようにする）。
+    グローバルが先、開いているフォルダのローカルが後ろ。
+
+    ローカル辞書が無いとき（URL の辞書を作っていないなど）マスターも無いので、
+    ``categories.load(LOCAL_SCOPE)`` は空を返す。**その場合でも実在するカテゴリは
+    落とさない** よう、マスターに載っていないものを最後に足す。
     """
     used: dict[tuple[str, str], dict[str, int]] = {}
     for e in load_all():
@@ -582,27 +609,30 @@ def category_tree() -> list[dict]:
         subs[e.subcategory] = subs.get(e.subcategory, 0) + 1
 
     out = []
-    for cat in categories.load():
-        subs = used.get((GLOBAL_SCOPE, cat.name), {})
-        out.append(
-            {
-                "category": cat.name,
-                "scope": GLOBAL_SCOPE,
-                "description": cat.description,
-                "count": sum(subs.values()),
-                "subcategories": _subcategory_nodes(subs, cat.subcategories),
-            }
-        )
-    for (scope, name), subs in sorted(used.items()):
-        if scope != LOCAL_SCOPE:
-            continue
-        out.append(
-            {
-                "category": name,
-                "scope": LOCAL_SCOPE,
-                "description": "",
-                "count": sum(subs.values()),
-                "subcategories": _subcategory_nodes(subs),
-            }
-        )
+    for scope in SCOPES:
+        listed: set[str] = set()
+        for cat in categories.load(scope):
+            listed.add(cat.name)
+            subs = used.get((scope, cat.name), {})
+            out.append(
+                {
+                    "category": cat.name,
+                    "scope": scope,
+                    "description": cat.description,
+                    "count": sum(subs.values()),
+                    "subcategories": _subcategory_nodes(subs, cat.subcategories),
+                }
+            )
+        for (used_scope, name), subs in sorted(used.items()):
+            if used_scope != scope or name in listed:
+                continue
+            out.append(
+                {
+                    "category": name,
+                    "scope": scope,
+                    "description": "",
+                    "count": sum(subs.values()),
+                    "subcategories": _subcategory_nodes(subs),
+                }
+            )
     return out

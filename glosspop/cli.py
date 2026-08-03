@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import categories, config, store
+from . import categories, config, merge, store
 from .models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
@@ -290,6 +290,41 @@ def cmd_rm(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_merge(args: argparse.Namespace) -> int:
+    """割れてしまった同じものを 1 つにまとめる。
+
+    **既定は下見だけ**（`--yes` で実行）。消える側の本文が要らないと決めるのは
+    人なので、何がどうなるかを見せてから通す。畳めない項目は既定で残す側を採る
+    ので、選び分けたいときはビューアの確認画面を使うこと。
+    """
+    keep = _pick_one(args.keep, args.keep_category)
+    drop = _pick_one(args.drop, args.drop_category)
+    if keep is None or drop is None:
+        return 1
+    try:
+        plan = merge.plan(keep.ref, drop.ref)
+    except merge.MergeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if not args.yes:
+        _emit({"status": "preview", **plan})
+        print(
+            "下見だけです。実行するには --yes を付けてください"
+            "（衝突した項目は残す側を採ります）",
+            file=sys.stderr,
+        )
+        return 0
+    merged = merge.apply(keep.ref, drop.ref)
+    _emit({
+        "status": "merged",
+        "ref": merged.ref,
+        "term": merged.term,
+        "aliases": merged.aliases,
+        "dropped": drop.ref,
+    })
+    return 0
+
+
 def cmd_move(args: argparse.Namespace) -> int:
     """カテゴリ・保存先を移す。どちらか片方でも両方でも指定できる。
 
@@ -347,14 +382,16 @@ def cmd_migrate(args: argparse.Namespace) -> int:
 def cmd_categories(args: argparse.Namespace) -> int:
     """カテゴリマスターを見る / 編集する。
 
-    **改名と削除はスコープを取る。** `--folder` を付けると一覧にフォルダの辞書の
+    **どの操作もスコープを取る。** `--folder` を付けると一覧にフォルダの辞書の
     カテゴリも出るので、スコープを渡せないと**同名のグローバル側を消す**ことになる。
-    新規登録 (`--add`) はマスターの操作なのでグローバルだけ。
+    マスターは辞書ごとにあるので、`--add` もフォルダの辞書に対して使える。
     """
     scope = getattr(args, "scope", None) or GLOBAL_SCOPE
     if args.add:
-        category = categories.ensure(args.add, description=args.description or "")
-        _emit({"status": "ensured", **category.model_dump()})
+        if scope == LOCAL_SCOPE and _announce_local("カテゴリの登録"):
+            return 2
+        category = categories.ensure(args.add, description=args.description or "", scope=scope)
+        _emit({"status": "ensured", "scope": scope, **category.model_dump()})
         return 0
     if args.rename:
         old, new = args.rename
@@ -457,6 +494,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_folder_option(mv)
     mv.set_defaults(func=cmd_move)
 
+    mg = sub.add_parser("merge", help="割れてしまった同じものを 1 つにまとめる")
+    mg.add_argument("keep", help="残す側。用語名 / slug / カテゴリ/slug")
+    mg.add_argument("drop", help="まとめる側（消える）。用語名 / slug / カテゴリ/slug")
+    mg.add_argument("--keep-category", help="残す側の絞り込み (同名が複数あるとき)")
+    mg.add_argument("--drop-category", help="まとめる側の絞り込み (同名が複数あるとき)")
+    mg.add_argument("--yes", action="store_true",
+                    help="下見ではなく実行する（付けないと何も変えない）")
+    add_folder_option(mg)
+    mg.set_defaults(func=cmd_merge)
+
     c = sub.add_parser("categories", help="カテゴリマスターを見る / 編集する")
     c.add_argument("--add", metavar="NAME", help="カテゴリを登録する (用語ゼロでも可)")
     c.add_argument("--description", help="--add に付ける説明")
@@ -465,7 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--scope",
         choices=SCOPES,
-        help=f"--rename / --remove の対象辞書 (既定 {GLOBAL_SCOPE})。local は --folder と併せて使う",
+        help=f"--add / --rename / --remove の対象辞書 (既定 {GLOBAL_SCOPE})。local は --folder と併せて使う",
     )
     add_folder_option(c)
     c.set_defaults(func=cmd_categories)

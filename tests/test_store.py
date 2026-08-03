@@ -132,6 +132,19 @@ def test_rename_category_moves_directory(add_entry):
     assert store.get("新名/語") is not None
 
 
+def test_rename_category_works_with_a_cold_master_cache(add_entry):
+    """**マスターのキャッシュが冷えていても改名できること。**
+
+    ディレクトリを先に動かしてからマスターを直していたため、``categories.load()``
+    が動かした先を新カテゴリとして自動で取り込み、続く改名が「既にあります」で
+    落ちる形になっていた。キャッシュが温まっているときだけ通る、という危うさ。
+    """
+    add_entry("語", category="旧名")
+    categories.invalidate()
+    assert store.rename_category("旧名", "新名") == 1
+    assert categories.names() == ["新名"]
+
+
 def test_delete_category_requires_empty(add_entry):
     add_entry("語", category="消せない")
     with pytest.raises(store.StoreError):

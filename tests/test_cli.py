@@ -163,3 +163,50 @@ def test_json_from_stdin_is_read_as_utf8(tmp_path):
     assert out["term"] == "冪等"
     assert out["ref"] == "プログラミング/冪等"
     assert (tmp_path / "glossary" / "プログラミング" / "冪等.md").exists()
+
+
+def _merge(keep: str, drop: str, yes: bool = False) -> int:
+    from glosspop.cli import cmd_merge
+
+    args = argparse.Namespace(
+        keep=keep, drop=drop, keep_category=None, drop_category=None, yes=yes
+    )
+    return cmd_merge(args)
+
+
+def test_merge_without_yes_changes_nothing(capsys, add_entry):
+    """**下見が既定。** データを消す操作なので、うっかり通らないようにする。"""
+    add_entry("主人", category="登場人物")
+    add_entry("苦沙弥先生", category="登場人物")
+    capsys.readouterr()
+
+    assert _merge("主人", "苦沙弥先生") == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "preview"
+    assert {e.term for e in store.load_all()} == {"主人", "苦沙弥先生"}
+
+
+def test_merge_with_yes_folds_them(capsys, add_entry):
+    add_entry("主人", category="登場人物")
+    add_entry("苦沙弥先生", category="登場人物")
+    capsys.readouterr()
+
+    assert _merge("主人", "苦沙弥先生", yes=True) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "merged"
+    entries = store.load_all()
+    assert [e.term for e in entries] == ["主人"]
+    # 消える側の呼び方が残ること（落ちると本文でリンクにならない）
+    assert entries[0].aliases == ["苦沙弥先生"]
+    assert entries[0].former_refs == ["登場人物/苦沙弥先生"]
+
+
+def test_merge_reports_an_ambiguous_target(capsys, add_entry):
+    """同名が複数あるときは黙ってどれかに寄せない。"""
+    add_entry("ソース", category="プログラミング")
+    add_entry("ソース", category="料理")
+    add_entry("原典", category="料理")
+    capsys.readouterr()
+
+    assert _merge("ソース", "原典") == 1
+    assert "2 件あります" in capsys.readouterr().err

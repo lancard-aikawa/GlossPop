@@ -14,5 +14,9 @@ sandbox/
 # 辞書テスト用カテゴリ
 文学/
 
+# content/ を開いたときに作られるフォルダの辞書。中身 (文学/) は上で外しているが、
+# カテゴリマスターも同じく手元だけのもの。data/glossary/ のサンプルとは別勘定
+content/.glosspop/
+
 # 専用ウィンドウ (glosspop app) のブラウザプロファイル。data/ 自体は追跡している
 data/window/

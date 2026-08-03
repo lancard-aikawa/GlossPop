@@ -132,6 +132,39 @@ def page(server):
         assert not seen["js"], f"ページで JS エラーが出ました: {seen['js']}"
 
 
+#: 画面が落ち着くまでに待つ時間。**1 か所に置く。** 呼び出しごとに数字を散らすと、
+#: 「遅いだけ」と「壊れている」を切り分けるときに全部直して回ることになる
+SETTLE_MS = 15000
+
+
+def open_glossary(page, server, query: str = ""):
+    """辞書一覧を開いて、**最初の描画が終わるまで**待つ。
+
+    `.card` が出るのを直接待つと、`reload()` が失敗して `.status.error` を出した
+    場合も**ただの 15 秒タイムアウト**になり、理由が残らない（`test_the_glossary_
+    filters_by_tag` が CI でこの落ち方をして、リリースを止めた）。
+
+    `#list` は読み込み中だけ `aria-busy` を持ち、終わると必ず何かを描く
+    （カード / 「該当する用語がありません」/ エラー）。つまり「busy でない
+    **かつ** 中身がある」が「1 回描き終わった」の合図になる。**画面の側に
+    テスト用の目印を足していない**ので、本番の挙動をそのまま見ている。
+    """
+    page.goto(f"{server}/glossary{query}")
+    wait_for_glossary(page)
+
+
+def wait_for_glossary(page):
+    page.wait_for_function(
+        "() => { const l = document.getElementById('list');"
+        " return l && !l.hasAttribute('aria-busy') && l.children.length > 0; }",
+        timeout=SETTLE_MS,
+    )
+    # 描き終わったうえで中身がエラーなら、その文言を持って落ちる
+    failed = page.locator("#list .status.error")
+    if failed.count():
+        raise AssertionError(f"一覧の読み込みに失敗しました: {failed.first.text_content()}")
+
+
 @pytest.fixture
 def seeded(isolated_dirs):
     """人物 2 人と、その名前が出てくる本文。"""
@@ -227,6 +260,59 @@ def test_the_entry_page_finds_where_the_term_appears_and_takes_an_example(page, 
     entry = store.get("登場人物/ジョバンニ")
     # 抜粋ではなく文の切れ目まで採る（「…」つきの半端な文を溜めない）
     assert entry.examples == ["ジョバンニは活版所で働いていた。"]
+
+
+def test_two_entries_can_be_merged_from_the_entry_page(page, server, isolated_dirs):
+    """割れてしまった同じものを、確認画面を通して 1 つにまとめる。
+
+    見るのは「本当にまとまったか」だけでなく、**畳めない項目を人が選べたか**と、
+    **消える側の呼び方が残ったか**。別名に回らないと、本文でその表記がリンクに
+    ならず「まとめたのに片方だけ引けない」になる。
+    """
+    store.save(EntryDraft(term="主人", category="登場人物",
+                          summary="猫の飼い主。", definition="飼い主の話。"))
+    store.save(EntryDraft(term="苦沙弥先生", category="登場人物",
+                          summary="中学校の英語教師。", definition="教師の話。"))
+    doc = config.content_dir() / "猫.md"
+    doc.write_text("# 一\n\n苦沙弥先生は書斎にいた。\n", encoding="utf-8")
+
+    page.goto(f"{server}/glossary/登場人物/主人")
+    page.locator(".entry-actions").wait_for(timeout=SETTLE_MS)
+    page.click("button:has-text('まとめる')")
+    # **候補は自動で挙げない。** 同じ表記のものだけ先に出し、あとは自分で探す
+    # （「同じ人物かもしれない」を機械で判定すると、正常なカテゴリ違いの同名を
+    #   大量に挙げて誰も読まなくなる）
+    page.locator("dialog.sheet[open] input[aria-label='まとめる相手を探す']").wait_for(
+        timeout=SETTLE_MS
+    )
+    assert "候補がありません" in page.locator("dialog.sheet[open] .body").inner_text()
+    page.fill("dialog.sheet[open] input[aria-label='まとめる相手を探す']", "苦沙弥")
+    page.locator("dialog.sheet[open] .merge-cand").first.wait_for(timeout=SETTLE_MS)
+    page.click("dialog.sheet[open] .merge-cand:has-text('苦沙弥先生')")
+
+    # 衝突した項目が並び、既定は残す側
+    page.locator("dialog.sheet[open] .merge-conflict").first.wait_for(timeout=SETTLE_MS)
+    body = page.locator("dialog.sheet[open] .body").inner_text()
+    assert "猫の飼い主。" in body and "中学校の英語教師。" in body
+
+    # 要約だけ消える側を選ぶ（本文は触らない＝残す側のまま）
+    page.click("dialog.sheet[open] .merge-choice:has-text('中学校の英語教師。')")
+    page.click("dialog.sheet[open] button:has-text('まとめる')")
+
+    page.wait_for_function(
+        "!!document.querySelector('.aliases')?.textContent.includes('苦沙弥先生')",
+        timeout=SETTLE_MS,
+    )
+    merged = store.get("登場人物/主人")
+    assert merged.summary == "中学校の英語教師。"       # 選んだほう
+    assert merged.definition == "飼い主の話。"          # 触らなければ残す側
+    assert "苦沙弥先生" in merged.aliases
+    assert store.get("登場人物/苦沙弥先生") is None
+
+    # **消える側の呼び方で本文がリンクになること。** ここが切れると意味がない
+    page.goto(f"{server}/?open=%E7%8C%AB.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+    assert page.locator("a.gloss-link").first.text_content() == "苦沙弥先生"
 
 
 def test_a_relation_can_be_edited_from_the_graph(page, server, seeded):
@@ -436,8 +522,7 @@ def test_the_glossary_filters_by_tag(page, server, isolated_dirs):
     store.save(EntryDraft(term="副作用", category="プログラミング",
                           summary="設計原則の話で出る。", definition="本文。"))
 
-    page.goto(f"{server}/glossary")
-    page.locator(".card").first.wait_for(timeout=15000)
+    open_glossary(page, server)
     assert page.locator(".card").count() == 2
 
     page.select_option("#tagFilter", "設計原則")
@@ -446,9 +531,9 @@ def test_the_glossary_filters_by_tag(page, server, isolated_dirs):
 
     # 用語ページの #タグ からも同じ絞り込みに入れること
     page.goto(f"{server}/glossary/プログラミング/冪等")
-    page.locator(".chips a").first.wait_for(timeout=15000)
+    page.locator(".chips a").first.wait_for(timeout=SETTLE_MS)
     page.click(".chips a")
-    page.locator(".card").first.wait_for(timeout=15000)
+    wait_for_glossary(page)
     assert page.locator(".card").count() == 1
     assert page.eval_on_selector("#tagFilter", "n => n.value") == "設計原則"
 
@@ -467,9 +552,12 @@ def test_the_category_manager_separates_the_two_dictionaries(page, server, isola
     categories.ensure("登場人物")                      # 全体には空で作っておく
     store.save(EntryDraft(term="ザネリ", category="登場人物", scope="local", definition="本文。"))
 
-    page.goto(f"{server}/glossary")
+    # **一覧が描き終わるまで開かない。** カテゴリ管理は読み込み済みの `tree` を
+    # そのまま描くだけで、あとから描き直さない。読み込みの前に開くと
+    # 「カテゴリがまだありません」のまま固まり、15 秒待って落ちる
+    open_glossary(page, server)
     page.click("#manageCats")
-    page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=15000)
+    page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=SETTLE_MS)
     rows = page.locator("dialog.sheet[open] .cat-row-name").all_text_contents()
     # 同じ名前が 2 つ並ぶので、印が無いと区別が付かない
     assert rows == ["登場人物", "📁 登場人物"]
@@ -485,8 +573,74 @@ def test_the_category_manager_separates_the_two_dictionaries(page, server, isola
         timeout=15000,
     )
     assert [e.ref for e in store.load_all()] == [".local/人物/ザネリ"]
-    # マスターはグローバルのもの。ローカルの改名では触らない
+    # マスターは辞書ごと。全体側は巻き添えにしない
     assert [c.name for c in categories.load()] == ["登場人物"]
+    assert [c.name for c in categories.load("local")] == ["人物"]
+
+
+def test_the_category_manager_catches_up_with_a_slow_load(page, server, isolated_dirs, monkeypatch):
+    """**読み込みの前に開かれても、届いた時点で描き直すこと。**
+
+    カテゴリ管理は読み込み済みの一覧をそのまま描くだけなので、間に合わない
+    うちに開かれると「カテゴリがまだありません」のまま固まっていた。手元では
+    一瞬で返るので絶対に踏まず、**負荷の高い CI でだけ落ちる**（要素が 15 秒
+    出てこない、という形。リリースを止めたのがこの類）。
+
+    **待ち時間で競走させない。** 応答を止めておき、確かめてから手で通す
+    （`sleep` で遅らせると、今度はこのテストが「たまに落ちる」側に回る。
+    playwright の sync API では route の中で寝ると `goto` ごと止まって、
+    そもそも再現もしない）。止めるのはサーバ側なので、一覧の描画
+    （`/api/entries`）は普通に進む。
+    """
+    store.save(EntryDraft(term="冪等", category="プログラミング", definition="本文。"))
+
+    gate = threading.Event()
+    original = store.category_tree
+    monkeypatch.setattr(store, "category_tree", lambda: (gate.wait(30), original())[1])
+
+    try:
+        page.goto(f"{server}/glossary")
+        page.click("#manageCats")                 # わざと読み込みを待たずに開く
+        page.locator("dialog.sheet[open]").wait_for(timeout=SETTLE_MS)
+        assert "カテゴリがまだありません" in page.locator("dialog.sheet[open] .body").inner_text()
+        gate.set()                                # ここで初めて応答を通す
+        page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=SETTLE_MS)
+        rows = page.locator("dialog.sheet[open] .cat-row-name").all_text_contents()
+        assert rows == ["プログラミング"]
+    finally:
+        gate.set()                                # 落ちてもサーバのスレッドを残さない
+
+
+def test_the_category_order_can_be_changed(page, server, isolated_dirs, tmp_path):
+    """カテゴリの並びを ↑ ↓ で変えられること（フォルダの辞書でも）。
+
+    小説なら 主要人物 → 脇役 の順に読みたい。並び順はマスターが持つので、
+    **フォルダ側にマスターが無いとこれができない**（登録順に固定される）。
+    """
+    from glosspop import categories
+
+    folder = tmp_path / "小説"
+    folder.mkdir()
+    config.set_content_dir(folder)
+    store.save(EntryDraft(term="ザネリ", category="級友", scope="local", definition="本文。"))
+    store.save(EntryDraft(term="ジョバンニ", category="主要人物", scope="local", definition="本文。"))
+    assert [c.name for c in categories.load("local")] == ["級友", "主要人物"]
+
+    open_glossary(page, server)
+    page.click("#manageCats")
+    page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=SETTLE_MS)
+    page.click("dialog.sheet[open] button[aria-label='主要人物 を 1 つ上へ']")
+
+    page.wait_for_function(
+        "[...document.querySelectorAll('dialog.sheet[open] .cat-row-name')]"
+        ".map(n => n.textContent).join('|') === '📁 主要人物|📁 級友'",
+        timeout=15000,
+    )
+    assert [c.name for c in categories.load("local")] == ["主要人物", "級友"]
+    # 一覧の見出しも同じ順になる（用語の並びがマスターに従う）
+    page.locator("#list .cat-group h2").first.wait_for(timeout=15000)
+    headings = page.locator("#list .cat-group h2 span:first-child").all_text_contents()
+    assert headings == ["📁 主要人物", "📁 級友"]
 
 
 def test_the_reading_position_survives_reopening(page, server, isolated_dirs):

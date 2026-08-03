@@ -248,6 +248,17 @@ def local_glossary_dir() -> Path | None:
     return None if root is None else root / LOCAL_DIR_NAME / "glossary"
 
 
+def local_categories_file() -> Path | None:
+    """いま使うローカル辞書のカテゴリマスター。無ければ ``None``。
+
+    **辞書と同じ場所に置く**（``.glosspop/`` の直下）。フォルダごとコピーすれば
+    並び順と説明も一緒についていく。グローバルのマスターとは別物なので、
+    小説の「登場人物」が全体のマスターに残ることはない。
+    """
+    root = local_root()
+    return None if root is None else root / LOCAL_DIR_NAME / "categories.yaml"
+
+
 def ensure_dirs() -> None:
     GLOSSARY_DIR.mkdir(parents=True, exist_ok=True)
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)

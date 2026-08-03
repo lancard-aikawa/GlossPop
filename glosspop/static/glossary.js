@@ -11,6 +11,8 @@ const catDialog = $("catDialog");
 
 let tree = [];
 let timer = null;
+//: 最初の読み込み。**開くのが速すぎたダイアログがこれを待って描き直す**
+let ready = null;
 
 function card(e) {
   return el("a", { class: "card", href: e.url }, [
@@ -19,31 +21,43 @@ function card(e) {
   ]);
 }
 
+/**
+ * グルーピングの鍵。**カテゴリ名だけでは割れない。**
+ *
+ * 同じ名前のカテゴリが全体とフォルダの両方にありうるので、名前で束ねると
+ * 2 つの辞書の用語が 1 つの見出しに混ざり、マスターの順で並べるときに
+ * 同じ見出しが 2 回出る。区切りは `<>`（カテゴリ名でも slug でも弾かれる）。
+ */
+const groupKey = (scope, category) => `${scope}<>${category}`;
+
 function paint(entries) {
   const filtering = Boolean(qInput.value.trim() || catFilter.value || tagFilter.value);
   const byCategory = new Map();
   for (const e of entries) {
-    if (!byCategory.has(e.category)) byCategory.set(e.category, new Map());
-    const subs = byCategory.get(e.category);
+    const gk = groupKey(e.scope, e.category);
+    if (!byCategory.has(gk)) byCategory.set(gk, new Map());
+    const subs = byCategory.get(gk);
     const key = e.subcategory || "";
     if (!subs.has(key)) subs.set(key, []);
     subs.get(key).push(e);
   }
 
   // マスターの順で並べ、マスターに無いカテゴリは後ろに付ける
-  const order = tree.map((n) => n.category);
-  for (const name of byCategory.keys()) if (!order.includes(name)) order.push(name);
+  const order = tree.map((n) => groupKey(n.scope, n.category));
+  for (const gk of byCategory.keys()) if (!order.includes(gk)) order.push(gk);
 
   const nodes = [];
-  for (const category of order) {
-    const subs = byCategory.get(category);
+  for (const gk of order) {
+    const subs = byCategory.get(gk);
+    const meta = tree.find((n) => groupKey(n.scope, n.category) === gk);
+    const category = meta ? meta.category : gk.slice(gk.indexOf("<>") + 2);
+    const heading = meta ? categoryLabel(meta) : category;
     if (!subs) {
       // 絞り込み中に空カテゴリを見せても邪魔なので、素の一覧のときだけ出す
       if (filtering) continue;
-      const meta = tree.find((n) => n.category === category);
       nodes.push(el("section", { class: "cat-group empty-cat" }, [
         el("h2", {}, [
-          el("span", { text: category }),
+          el("span", { text: heading }),
           el("span", { class: "count", text: "0 語" }),
           meta?.description ? el("span", { class: "count", text: meta.description }) : null,
         ]),
@@ -53,7 +67,7 @@ function paint(entries) {
     const total = [...subs.values()].reduce((n, arr) => n + arr.length, 0);
     const group = el("section", { class: "cat-group" }, [
       el("h2", {}, [
-        el("span", { text: category }),
+        el("span", { text: heading }),
         el("span", { class: "count", text: `${total} 語` }),
       ]),
     ]);
@@ -166,6 +180,11 @@ function categoryLabel(node) {
   return node.scope === "local" ? `📁 ${node.category}` : node.category;
 }
 
+/** そのスコープの中での位置。並べ替えは辞書を跨がない。 */
+function siblings(scope) {
+  return tree.filter((n) => n.scope === scope);
+}
+
 function categoryRow(node) {
   const nameNode = el("div", { class: "cat-row-name", text: categoryLabel(node) });
   const meta = el("div", { class: "cat-row-meta", text:
@@ -176,8 +195,22 @@ function categoryRow(node) {
     (node.description ? ` · ${node.description}` : "") +
     (node.scope === "local" ? " · このフォルダの辞書" : "")
   });
+  const peers = siblings(node.scope);
+  const at = peers.findIndex((n) => n.category === node.category);
   const row = el("div", { class: "cat-row" }, [
     el("div", { class: "cat-row-main" }, [nameNode, meta]),
+    el("button", {
+      type: "button", class: "ghost", text: "↑", title: "1 つ上へ",
+      "aria-label": `${node.category} を 1 つ上へ`,
+      disabled: at <= 0,
+      onclick: () => moveCategory(node, -1),
+    }),
+    el("button", {
+      type: "button", class: "ghost", text: "↓", title: "1 つ下へ",
+      "aria-label": `${node.category} を 1 つ下へ`,
+      disabled: at < 0 || at >= peers.length - 1,
+      onclick: () => moveCategory(node, 1),
+    }),
     el("button", { type: "button", text: "名前を変更", onclick: () => startRename(row, node) }),
     el("button", {
       type: "button", class: "danger", text: "削除",
@@ -187,6 +220,26 @@ function categoryRow(node) {
     }),
   ]);
   return row;
+}
+
+/**
+ * 1 つ上 / 下へ動かす。**送るのはそのスコープの全体の並び**（差分ではない）。
+ *
+ * 「これを 1 つ上へ」を送る形にすると、続けて押したときに後の書き込みが前の
+ * ものを消す（関係の書き込みを 1 本ずつ PUT しない、と同じ理由）。
+ */
+async function moveCategory(node, delta) {
+  const names = siblings(node.scope).map((n) => n.category);
+  const at = names.indexOf(node.category);
+  const to = at + delta;
+  if (at < 0 || to < 0 || to >= names.length) return;
+  names.splice(to, 0, ...names.splice(at, 1));
+  try {
+    await api("/api/category-order", { method: "PUT", body: { names, scope: node.scope } });
+    await refreshAll();
+  } catch (err) {
+    alert(`並べ替えできません: ${err.message}`);
+  }
 }
 
 /** 行をその場で入力欄に差し替える (prompt を使わない)。 */
@@ -201,12 +254,13 @@ function startRename(row, node) {
       save.disabled = true;
       setStatus(status, "変更中", "busy");
       try {
-        // ローカルにマスターは無いので、送るのは名前だけ
-        // （サブカテゴリと説明はマスターが持つもの）
-        const local = node.scope === "local";
-        const body = local
-          ? { name: next }
-          : { name: next, subcategories: node.subcategories.map((s) => s.name).filter(Boolean) };
+        // マスターは辞書ごとにあるので、どちらでも同じものを送る。
+        // **サブカテゴリを送らないと空リストで上書きされる**（省略と「全部消す」
+        // を区別するため、サーバ側の既定は null）
+        const body = {
+          name: next,
+          subcategories: node.subcategories.map((s) => s.name).filter(Boolean),
+        };
         await api(
           `/api/categories/${encodeURIComponent(node.category)}?scope=${node.scope}`,
           { method: "PUT", body }
@@ -266,20 +320,41 @@ async function removeCategory(node) {
 async function addCategory() {
   const input = catDialog.querySelector("[data-ref=catNew]");
   const status = catDialog.querySelector("[data-ref=catStatus]");
+  const scopeSel = catDialog.querySelector("[data-ref=catScope]");
   const name = input.value.trim();
   if (!name) {
     input.focus();
     return;
   }
+  // **スコープを必ず渡す。** 渡さないと、フォルダのカテゴリのつもりが
+  // 全体のマスターに残る（削除と同じ形の事故）
+  const scope = scopeSel.hidden ? "global" : scopeSel.value;
   setStatus(status, "登録中", "busy");
   try {
-    await api("/api/categories", { method: "POST", body: { name } });
+    await api(`/api/categories?scope=${scope}`, { method: "POST", body: { name } });
     input.value = "";
     setStatus(status, `「${name}」を登録しました`);
     await refreshAll();
   } catch (err) {
     setStatus(status, err.message, "error");
   }
+}
+
+/**
+ * フォルダの辞書が使えるときだけ、作る先を選ばせる。
+ *
+ * 使えないときに選択肢を出すと、選んでからサーバに断られる。
+ */
+async function paintScopeChoice() {
+  const scopeSel = catDialog.querySelector("[data-ref=catScope]");
+  let available = false;
+  try {
+    available = Boolean((await api("/api/health")).local_available);
+  } catch {
+    available = false;
+  }
+  scopeSel.hidden = !available;
+  if (!available) scopeSel.value = "global";
 }
 
 // ------------------------------------------------------------------- 起動
@@ -296,9 +371,17 @@ $("add").addEventListener("click", async () => {
   if (saved) await refreshAll();
 });
 
-$("manageCats").addEventListener("click", () => {
+$("manageCats").addEventListener("click", async () => {
+  // 開いた時点で持っているものを描き、**ダイアログを開いてから** await する
+  // （開く前に待つと、その間のクリックが黙って無視される）
   paintCategoryManager();
   catDialog.showModal();
+  paintScopeChoice();
+  // **読み込みが終わる前に開かれることがある。** `tree` を描くだけで描き直さない
+  // 作りだと、その場合「カテゴリがまだありません」のまま固まる（読み込みが
+  // 遅いときだけ起きるので気付きにくい）
+  await ready;
+  paintCategoryManager();
 });
 catDialog.querySelector("[data-ref=catAdd]").addEventListener("click", addCategory);
 catDialog.querySelector("[data-ref=catNew]").addEventListener("keydown", (ev) => {
@@ -313,7 +396,7 @@ const initial = new URLSearchParams(location.search);
 qInput.value = initial.get("q") || "";
 
 paintEntryCount($("count"));
-Promise.all([loadCategories(), loadTags()]).then(() => {
+ready = Promise.all([loadCategories(), loadTags()]).then(() => {
   // `?category=` はスコープを持たないことがある（用語ページからのリンクなど）。
   // `?scope=` があればそれで、無ければ最初に見つかったものに合わせる
   const cat = initial.get("category");

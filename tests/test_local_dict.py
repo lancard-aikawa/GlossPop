@@ -222,7 +222,12 @@ class TestApi:
 
 
 class TestDraftDoesNotPolluteTheMaster:
-    """ローカル辞書に入れるつもりの下書きで、グローバルのカテゴリマスターを汚さない。"""
+    """ローカル辞書に入れるつもりの下書きで、カテゴリマスターを汚さない。
+
+    マスターは辞書ごとに持てるが、**空振りぶんを登録するのはグローバルだけ**。
+    ローカルの書き込み先は利用者のフォルダなので、保存もしなかった提案でそこに
+    ファイルを作らない（保存すれば `store.save()` がそのとき登録する）。
+    """
 
     def _fake_ai(self, monkeypatch):
         from glosspop import ai, config as cfg
@@ -293,8 +298,9 @@ class TestCategoryManagement:
 
         assert store.rename_category("登場人物", "人物", "local") == 1
         assert [e.ref for e in store.load_all()] == [".local/人物/ザネリ"]
-        # マスターはグローバルのもの。ローカルの改名では触らない
+        # **グローバルのマスターは巻き添えにしない。** 直るのはフォルダ側だけ
         assert categories.names() == []
+        assert categories.names("local") == ["人物"]
 
     def test_renaming_a_missing_local_category_is_an_error(self, tmp_path):
         folder = tmp_path / "小説"
@@ -333,6 +339,139 @@ class TestCategoryManagement:
         assert res.status_code == 400, res.text
         assert "まだ用語があります" in res.json()["detail"]
         assert [e.ref for e in store.load_all()] == [".local/登場人物/ザネリ"]
+
+
+class TestLocalCategoryMaster:
+    """フォルダの辞書にもカテゴリマスターがある。
+
+    以前はディレクトリ名だけが正だったので、**並び順・説明・用語 0 件のカテゴリ・
+    サブカテゴリの先出し**をフォルダ側で持てなかった（小説なら 主要人物 → 脇役 の
+    順に並べたい）。マスターはフォルダに閉じているので、全体のマスターは汚れない。
+    """
+
+    def _folder(self, tmp_path):
+        folder = tmp_path / "小説"
+        folder.mkdir()
+        config.set_content_dir(folder)
+        return folder
+
+    def test_the_master_lands_in_the_folder_not_in_the_global_one(self, tmp_path):
+        from glosspop import categories
+
+        folder = self._folder(tmp_path)
+        add("ザネリ", scope="local", category="登場人物", subcategory="級友")
+
+        assert (folder / ".glosspop" / "categories.yaml").exists()
+        assert categories.names("local") == ["登場人物"]
+        assert categories.get("登場人物", "local").subcategories == ["級友"]
+        assert categories.names() == []          # 全体のマスターは触らない
+
+    def test_no_master_is_written_for_a_folder_without_a_dictionary(self, tmp_path):
+        from glosspop import categories
+
+        folder = self._folder(tmp_path)
+        assert categories.load("local") == []
+        assert store.category_tree() == []
+        # 開いただけのフォルダに勝手にファイルを作らない
+        assert not (folder / ".glosspop").exists()
+
+    def test_an_empty_local_category_survives_and_is_listed(self, tmp_path):
+        from glosspop import categories
+
+        self._folder(tmp_path)
+        categories.ensure("脇役", scope="local")
+        node = next(n for n in store.category_tree() if n["scope"] == "local")
+        assert (node["category"], node["count"]) == ("脇役", 0)
+
+    def test_the_folder_decides_its_own_order(self, tmp_path):
+        from glosspop import categories
+
+        self._folder(tmp_path)
+        add("ザネリ", scope="local", category="級友")
+        add("ジョバンニ", scope="local", category="主要人物")
+        assert categories.names("local") == ["級友", "主要人物"]   # 登録順
+
+        categories.reorder(["主要人物", "級友"], "local")
+        assert [n["category"] for n in store.category_tree()] == ["主要人物", "級友"]
+        # 用語の並びもマスターの順に従う（グローバルの順を当てない）
+        assert [e.term for e in store.load_all()] == ["ジョバンニ", "ザネリ"]
+
+    def test_reorder_keeps_categories_that_were_left_out(self, tmp_path):
+        from glosspop import categories
+
+        self._folder(tmp_path)
+        for name in ("A", "B", "C"):
+            categories.ensure(name, scope="local")
+        # 一覧を作ったあとに C が増えた、という形。落とすと黙って消える
+        categories.reorder(["B", "A"], "local")
+        assert categories.names("local") == ["B", "A", "C"]
+
+    def test_switching_folders_switches_the_master(self, tmp_path):
+        from glosspop import categories
+
+        self._folder(tmp_path)
+        categories.ensure("登場人物", scope="local")
+        assert categories.names("local") == ["登場人物"]
+
+        other = tmp_path / "別の作品"
+        other.mkdir()
+        config.set_content_dir(other)
+        # **キャッシュの鍵にパスを入れていないと前のフォルダのマスターが出てくる**
+        assert categories.names("local") == []
+
+    def test_the_global_master_keeps_its_own_order(self, tmp_path):
+        from glosspop import categories
+
+        self._folder(tmp_path)
+        categories.ensure("料理", scope="local")
+        categories.ensure("料理")
+        categories.ensure("設計")
+        categories.reorder(["設計", "料理"])
+        assert categories.names() == ["設計", "料理"]
+        assert categories.names("local") == ["料理"]
+
+    def test_deleting_a_local_category_leaves_the_global_master_alone(self, tmp_path):
+        from glosspop import categories
+
+        self._folder(tmp_path)
+        categories.ensure("料理")
+        categories.ensure("料理", scope="local")
+
+        store.delete_category("料理", "local")
+        assert categories.names("local") == []
+        assert categories.names() == ["料理"]
+
+    def test_the_api_can_create_and_reorder_in_the_folder(self, client, tmp_path):
+        self._folder(tmp_path)
+        for name in ("級友", "主要人物"):
+            res = client.post("/api/categories", params={"scope": "local"}, json={"name": name})
+            assert res.status_code == 201, res.text
+            assert res.json()["scope"] == "local"
+
+        res = client.put("/api/category-order", json={"names": ["主要人物", "級友"], "scope": "local"})
+        assert res.status_code == 200, res.text
+        assert [n["category"] for n in res.json()] == ["主要人物", "級友"]
+
+    def test_the_api_can_set_local_subcategories(self, client, tmp_path):
+        self._folder(tmp_path)
+        add("ザネリ", scope="local", category="登場人物")
+        res = client.put(
+            "/api/categories/登場人物",
+            params={"scope": "local"},
+            json={"subcategories": ["主要", "脇役"], "description": "この作品の人物"},
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["subcategories"] == ["主要", "脇役"]
+        node = next(n for n in store.category_tree() if n["scope"] == "local")
+        # 先出しした 2 つが並び、サブカテゴリ無し ("") は最後
+        assert [s["name"] for s in node["subcategories"]] == ["主要", "脇役", ""]
+        assert node["description"] == "この作品の人物"
+
+    def test_creating_a_local_category_without_a_folder_is_refused(self, client):
+        config.set_reading_url("https://example.com/docs/")   # URL 側は辞書を作らない
+        res = client.post("/api/categories", params={"scope": "local"}, json={"name": "用語"})
+        assert res.status_code == 422, res.text
+        assert "辞書がありません" in res.json()["detail"]
 
 
 class TestSharedAcrossVolumes:

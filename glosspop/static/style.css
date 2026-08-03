@@ -797,6 +797,55 @@ dialog.sheet .edge-editor > .hint { padding: 0 18px 12px; margin: 0; }
 }
 .move-panel[hidden] { display: none; }
 .move-panel input { width: auto; }
+/* 統合ダイアログ。**既存の変数だけで作る** —— 新しい色を足すと、ダークの定義が
+   2 か所にあるぶん片方だけ直す事故が起きる */
+.merge-results { display: grid; gap: 6px; margin-top: 10px; max-height: 40vh; overflow: auto; }
+.merge-cand {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  cursor: pointer;
+}
+.merge-cand:hover { border-color: var(--border-strong); background: var(--panel-2); }
+.merge-cand .t { display: block; font-weight: 600; font-size: 14px; }
+.merge-cand .s { display: block; font-size: 11px; color: var(--fg-faint); }
+.merge-section { margin-top: 18px; }
+.merge-section > h3 {
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--fg-faint);
+  margin: 0 0 6px;
+}
+.merge-union { margin: 0; padding-left: 18px; font-size: 12px; color: var(--fg-dim); }
+.merge-conflict { margin-bottom: 12px; }
+.merge-conflict > h4 { font-size: 12px; margin: 0 0 4px; }
+.merge-choice {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+.merge-choice:hover { background: var(--panel-2); }
+.merge-choice input { width: auto; margin-top: 3px; flex: none; }
+.merge-relation {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.merge-relation:last-child { border-bottom: 0; }
+.merge-relation .t { font-weight: 600; display: block; }
+.merge-relation .s { font-size: 12px; color: var(--fg-dim); }
+
 .entry-section { margin-top: 26px; }
 .entry-section > h2 {
   font-size: 11px;
