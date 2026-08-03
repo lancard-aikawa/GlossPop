@@ -538,6 +538,59 @@ def test_the_glossary_filters_by_tag(page, server, isolated_dirs):
     assert page.eval_on_selector("#tagFilter", "n => n.value") == "設計原則"
 
 
+def test_a_word_can_be_selected_and_registered_from_the_list(page, server, isolated_dirs):
+    """一覧の要約に出てきた語を、その場で選んで登録できること。
+
+    カードは `<a>` 全体なので、**そのままだとドラッグがリンク掴みになって
+    選択が安定しない**（一覧にだけこの口が無かった理由）。`draggable="false"` で
+    選べるようにし、選んだままのクリックでは遷移させないようにしてある。
+    """
+    store.save(EntryDraft(term="冪等", category="プログラミング",
+                          summary="結果整合性と並べて語られる。", definition="本文。"))
+
+    open_glossary(page, server)
+    summary = page.locator(".card .s").first
+    box = summary.bounding_box()
+
+    # 「結果整合性」をドラッグで選ぶ（ダブルクリックだと語境界の判定に頼ることになる）
+    page.mouse.move(box["x"] + 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] - 2, box["y"] + box["height"] / 2, steps=10)
+    page.mouse.up()
+
+    # **選べていること**（リンクを掴んでいたら選択は空のまま）
+    page.wait_for_function("!window.getSelection().isCollapsed", timeout=SETTLE_MS)
+    # 選んだままのクリックで用語ページへ飛んでいない
+    assert page.url.endswith("/glossary")
+
+    page.locator("button.sel-add").wait_for(timeout=SETTLE_MS)
+    page.click("button.sel-add")
+    dialog = page.locator("dialog.sheet[open]")
+    dialog.wait_for(timeout=SETTLE_MS)
+    assert page.input_value("dialog.sheet[open] [data-ref=term]").strip() != ""
+
+
+def test_a_card_still_opens_the_entry(page, server, isolated_dirs):
+    """カードを `<a>` から `<div>` にしたので、**飛べることを見張る**。
+
+    見出しは本物のリンクのまま（中クリック・Ctrl クリックが効く）、それ以外の
+    ところはクリックで飛ばしている。どちらも壊れると一覧から先に進めなくなる。
+    """
+    store.save(EntryDraft(term="冪等", category="プログラミング",
+                          summary="何度でも同じ。", definition="本文。"))
+
+    open_glossary(page, server)
+    # 見出しは <a>。href がそのまま入っていること
+    href = page.eval_on_selector(".card .t", "n => n.getAttribute('href')")
+    assert href and href.endswith("/glossary/%E3%83%97%E3%83%AD%E3%82%B0%E3%83%A9"
+                                  "%E3%83%9F%E3%83%B3%E3%82%B0/%E5%86%AA%E7%AD%89")
+
+    # 要約のところを押しても飛ぶ
+    page.click(".card .s")
+    page.locator("h1").first.wait_for(timeout=SETTLE_MS)
+    assert "冪等" in page.locator("h1").first.inner_text()
+
+
 def test_the_category_manager_separates_the_two_dictionaries(page, server, isolated_dirs, tmp_path):
     """カテゴリ管理で、フォルダの辞書と全体の辞書を取り違えないこと。
 

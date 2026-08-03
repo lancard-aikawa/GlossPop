@@ -1,6 +1,8 @@
 // 辞書一覧: カテゴリマスターの順にグルーピングして表示。
 import { api, el, esc, paintEntryCount, setStatus } from "./base.js";
 import { openEntryEditor } from "./editor.js";
+import { installSelectionAdd } from "./select-add.js";
+import { invalidatePopupCache } from "./popup.js";
 
 const $ = (id) => document.getElementById(id);
 const list = $("list");
@@ -14,11 +16,48 @@ let timer = null;
 //: 最初の読み込み。**開くのが速すぎたダイアログがこれを待って描き直す**
 let ready = null;
 
+// 一覧の要約に出てきた知らない語も、その場で選んで登録できるようにする
+// （ビューア・用語ページと同じ口。ここだけ「新規登録」ボタンからしか入れなかった）
+installSelectionAdd({
+  root: list,
+  source: () => "辞書一覧",
+  onSaved: async () => {
+    invalidatePopupCache();
+    await refreshAll();
+  },
+});
+
+/** 選択したまま指を離したか。カードの上でのドラッグ選択と、リンクの遷移を分ける。 */
+function hasSelection() {
+  const sel = window.getSelection();
+  return Boolean(sel && !sel.isCollapsed && sel.toString().trim());
+}
+
+/**
+ * 1 枚のカード。**カード全体を `<a>` にしない。**
+ *
+ * `<a>` の中ではドラッグが「リンクを掴む」になり、要約の語を選べない
+ * （`draggable="false"` を付けても Chrome は選択させてくれない。実際に試した）。
+ * 一覧にだけ選択 → 登録の口が無かった理由がこれ。
+ *
+ * 代わりに、**見出しだけを本物のリンク**にしてカード全体はクリックで飛ばす。
+ * こうすると見出しの中クリック・Ctrl クリック（別タブ）はそのまま効き、
+ * 要約の上ではふつうに文字を選べる。
+ */
 function card(e) {
-  return el("a", { class: "card", href: e.url }, [
-    el("div", { class: "t", html: esc(e.term) + (e.reading ? `<span class="r">${esc(e.reading)}</span>` : "") }),
+  const node = el("div", { class: "card" }, [
+    el("a", {
+      class: "t", href: e.url,
+      html: esc(e.term) + (e.reading ? `<span class="r">${esc(e.reading)}</span>` : ""),
+    }),
     el("div", { class: "s", text: e.summary || (e.aliases?.length ? `別名: ${e.aliases.join(" / ")}` : "（要約なし）") }),
   ]);
+  node.addEventListener("click", (ev) => {
+    if (ev.target.closest("a")) return;      // 見出しのリンクはブラウザに任せる
+    if (hasSelection()) return;              // 選んでいる最中は飛ばさない
+    location.href = e.url;
+  });
+  return node;
 }
 
 /**
