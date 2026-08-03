@@ -170,3 +170,149 @@ def test_a_huge_archive_is_refused(monkeypatch):
     monkeypatch.setattr(archive, "MAX_ARCHIVE_BYTES", 10)
     with pytest.raises(archive.ArchiveError, match="大きすぎます"):
         archive.inspect(_zip({archive.MANIFEST_NAME: "{}" * 100}))
+
+
+# --------------------------------------------------------------------------- #
+# 取り込み（併合）
+#
+# 衝突したら**取り込む側が勝つ**。規則を 1 つに絞る代わりに、控えを必ず取り、
+# 上書きした語を全部名前で返す。`updated_at` の新しいほうを採る手を使わないのは、
+# 時計がずれた PC が 1 台あると静かに古いほうが勝つため。
+# --------------------------------------------------------------------------- #
+
+def _entry(term: str, body: str = "本文。") -> str:
+    return f"---\nterm: {term}\n---\n\n{body}\n"
+
+
+def test_merge_keeps_what_is_only_here(add_entry):
+    """**手元にしか無い語が消えないこと。** 置き換えとの違いはここ。"""
+    add_entry("冪等", category="プログラミング")
+    add_entry("ソース", category="料理")
+
+    report = archive.import_bytes(_zip({
+        "glossary/文学/銀河.md": _entry("銀河"),
+        archive.MANIFEST_NAME: "{}",
+    }), "merge")
+
+    assert _terms() == {"冪等", "ソース", "銀河"}
+    assert report["added"] == ["文学/銀河"]
+    assert report["removed"] == []
+
+
+def test_merge_lets_the_incoming_side_win(add_entry):
+    add_entry("冪等", category="プログラミング", definition="手元で書いた説明。")
+
+    report = archive.import_bytes(_zip({
+        "glossary/プログラミング/冪等.md": _entry("冪等", "持ち込んだ説明。"),
+        archive.MANIFEST_NAME: "{}",
+    }), "merge")
+
+    assert store.get("プログラミング/冪等").definition == "持ち込んだ説明。"
+    # 上書きしたものは黙らずに名前で返す（控えからしか戻せないので）
+    assert report["updated"] == ["プログラミング/冪等"]
+    assert report["added"] == []
+
+
+def test_merge_takes_a_backup_too(add_entry):
+    """**上書きされた語は控えにしか残らない。** 併合でも必ず取る。"""
+    add_entry("冪等", category="プログラミング", definition="手元で書いた説明。")
+
+    report = archive.import_bytes(_zip({
+        "glossary/プログラミング/冪等.md": _entry("冪等", "持ち込んだ説明。"),
+        archive.MANIFEST_NAME: "{}",
+    }), "merge")
+
+    saved = Path(report["backup"]).read_bytes()
+    with zipfile.ZipFile(io.BytesIO(saved)) as zf:
+        text = zf.read("glossary/プログラミング/冪等.md").decode("utf-8")
+    assert "手元で書いた説明。" in text
+
+
+def test_merge_counts_identical_entries_as_unchanged(add_entry):
+    add_entry("冪等", category="プログラミング")
+    same = archive.export_bytes()
+
+    report = archive.import_bytes(same, "merge")
+    assert report["unchanged"] == 1
+    assert report["added"] == [] and report["updated"] == []
+
+
+def test_merge_keeps_the_local_category_order(add_entry):
+    """**手元の並びを保ったまま足す。**
+
+    マスターを丸ごと差し替えると、手元にしか無いカテゴリが順序と説明だけ失う
+    （ディレクトリは残るので名前順に復活し、決めた並びが黙って崩れる）。
+    """
+    add_entry("冪等", category="プログラミング")
+    add_entry("ソース", category="料理")
+    categories.reorder(["料理", "プログラミング"])
+    categories.ensure("料理", description="手元の説明")
+
+    archive.import_bytes(_zip({
+        "glossary/文学/銀河.md": _entry("銀河"),
+        archive.CATEGORIES_NAME:
+            "- name: 文学\n- name: 料理\n  subcategories: [和食]\n",
+        archive.MANIFEST_NAME: "{}",
+    }), "merge")
+
+    # 手元の順が先、持ち込んだだけのものは後ろ
+    assert [c.name for c in categories.load()] == ["料理", "プログラミング", "文学"]
+    # サブカテゴリは和集合（値ではなく先出しの候補なので消す理由が無い）
+    assert categories.get("料理").subcategories == ["和食"]
+    assert categories.get("料理").description == "手元の説明"
+
+
+def test_replace_still_wipes_the_master(add_entry):
+    add_entry("冪等", category="プログラミング")
+    archive.import_bytes(_zip({
+        "glossary/料理/ソース.md": _entry("ソース"),
+        archive.CATEGORIES_NAME: "- name: 料理\n",
+        archive.MANIFEST_NAME: "{}",
+    }), "replace")
+    assert [c.name for c in categories.load()] == ["料理"]
+
+
+def test_the_plan_shows_what_would_disappear(add_entry):
+    """**置き換えで消える語を押す前に見せる。** いちばん怖いのがそれ。"""
+    add_entry("冪等", category="プログラミング")
+    add_entry("ソース", category="料理")
+    incoming = _zip({
+        "glossary/プログラミング/冪等.md": _entry("冪等", "別の説明。"),
+        "glossary/文学/銀河.md": _entry("銀河"),
+        archive.MANIFEST_NAME: "{}",
+    })
+
+    replace = archive.plan(incoming, "replace")
+    assert replace["removed"] == ["料理/ソース"]
+    assert replace["added"] == ["文学/銀河"]
+    assert replace["updated"] == ["プログラミング/冪等"]
+
+    merge = archive.plan(incoming, "merge")
+    assert merge["removed"] == []           # 併合では消えない
+    assert merge["added"] == ["文学/銀河"]
+
+
+def test_the_plan_changes_nothing(add_entry):
+    add_entry("冪等", category="プログラミング")
+    archive.plan(_zip({
+        "glossary/料理/ソース.md": _entry("ソース"),
+        archive.MANIFEST_NAME: "{}",
+    }), "replace")
+    assert _terms() == {"冪等"}
+    assert not list((config.DATA_ROOT / "data" / archive.BACKUP_DIR_NAME).glob("*.zip"))
+
+
+def test_an_unknown_mode_is_refused():
+    with pytest.raises(archive.ArchiveError, match="不明な取り込み方"):
+        archive.import_bytes(_zip({archive.MANIFEST_NAME: "{}"}), "そのほか")
+
+
+def test_a_broken_master_does_not_undo_the_import(add_entry):
+    """**エントリはもう入れ替わっている。** ここで例外にすると片手落ちになる。"""
+    add_entry("冪等", category="プログラミング")
+    archive.import_bytes(_zip({
+        "glossary/文学/銀河.md": _entry("銀河"),
+        archive.CATEGORIES_NAME: "- name: [壊れた\n",
+        archive.MANIFEST_NAME: "{}",
+    }), "merge")
+    assert _terms() == {"冪等", "銀河"}

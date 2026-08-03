@@ -88,12 +88,19 @@ function build() {
           </p>
           <div class="setting-row setting-row-plain">
             <button type="button" data-ref="export">⬇ 書き出す</button>
+            <select data-ref="importMode" aria-label="取り込み方">
+              <option value="replace">置き換える</option>
+              <option value="merge">併合する（足して上書き）</option>
+            </select>
             <button type="button" data-ref="importPick">⬆ 取り込む…</button>
             <input type="file" accept=".zip,application/zip" data-ref="importFile" hidden>
           </div>
           <p class="notice">
-            <strong>取り込みは置き換えです。</strong>いまの辞書は zip の中身に入れ替わり、
-            zip に無い用語は消えます。実行の前に控えを自動で取るので、そこから戻せます。
+            <strong>置き換え</strong>は、いまの辞書が zip の中身に入れ替わり、zip に無い
+            用語が消えます。<strong>併合</strong>は zip にしか無い用語を足し、
+            <strong>両方にある用語は zip の側で上書き</strong>します（手元にしか無い用語は
+            消えません）。どちらも実行の前に控えを自動で取るので、そこから戻せます。
+            <strong>何が増えて・上書きされて・消えるかは、実行の前に件数で出ます。</strong>
           </p>
         </section>
         <section class="entry-section">
@@ -422,31 +429,60 @@ export async function openSettingsDialog() {
    * 控えはサーバ側が必ず取る（人の手順に任せない）。ここでは、何が消えるかを
    * 数で示してから確認を取り、控えの場所を必ず画面に出す。
    */
+  /** zip を送る。下見と本番で同じ形なので 1 か所にまとめる。 */
+  const postArchive = async (path, file, mode) => {
+    const res = await fetch(`${path}?mode=${encodeURIComponent(mode)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: file,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+    return data;
+  };
+
   const onImportFile = async (ev) => {
     const file = ev.target.files?.[0];
     ev.target.value = "";               // 同じファイルをもう一度選べるように
     if (!file) return;
-    const health = await api("/api/health").catch(() => null);
-    const now = health ? `いまの ${health.entry_count} 語` : "いまの辞書";
+    const mode = refs.importMode.value;
+
+    // **先に下見を取る。** 「入れ替わります」の一言だけで押させると、何語が
+    // 消えるのか分からないまま実行することになる
+    setStatus(refs.status, "中身を確かめています", "busy");
+    let plan;
+    try {
+      plan = await postArchive("/api/import-glossary/plan", file, mode);
+    } catch (err) {
+      setStatus(refs.status, err.message, "error");
+      return;
+    }
+    setStatus(refs.status, "");
+
+    const bits = [`足す ${plan.added_count} 語`, `上書き ${plan.updated_count} 語`];
+    if (mode === "replace") bits.push(`消える ${plan.removed_count} 語`);
+    bits.push(`変わらない ${plan.unchanged} 語`);
     const ok = confirm(
-      `「${file.name}」で辞書を置き換えます。\n\n` +
-        `${now}は zip の中身に入れ替わり、zip に無い用語は消えます。\n` +
+      `「${file.name}」を${mode === "merge" ? "併合" : "置き換え"}します。\n\n` +
+        bits.join(" / ") + "\n\n" +
+        (mode === "merge"
+          ? "両方にある用語は zip の側で上書きされます（手元の内容は控えに残ります）。\n"
+          : "zip に無い用語は消えます。\n") +
         "実行の前に控えを自動で取ります。よろしいですか？"
     );
     if (!ok) return;
+
     setStatus(refs.status, "取り込み中", "busy");
     try {
-      const res = await fetch("/api/import-glossary", {
-        method: "POST",
-        headers: { "Content-Type": "application/zip" },
-        body: file,
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+      const data = await postArchive("/api/import-glossary", file, mode);
       const lines = [
-        `${data.entries} 語 / ${data.categories} カテゴリに置き換えました。`,
+        mode === "merge"
+          ? `${data.added_count} 語を足し、${data.updated_count} 語を上書きしました。`
+          : `${data.entries} 語 / ${data.categories} カテゴリに置き換えました。`,
         `控えは「${data.backup}」です（ここから戻せます）。`,
       ];
+      // 名前を全部は出さないので、切ったことは言う
+      if (data.truncated) lines.push(`件数が多いので名前の一覧は先頭 ${data.added.length} 件までです。`);
       // 消せなかった作業用フォルダは黙らない
       if (data.leftover) lines.push(`片付けられなかったフォルダ: ${data.leftover}`);
       refs.result.hidden = false;

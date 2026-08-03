@@ -261,6 +261,42 @@ def test_import_replaces_the_glossary_and_keeps_a_backup(client):
     assert archive.BACKUP_DIR_NAME in res.json()["backup"]
 
 
+def test_import_can_merge_instead_of_replacing(client):
+    """併合では**手元にしか無い語が消えない**。置き換えとの違いはここだけ。"""
+    client.post("/api/entries", json=ENTRY)
+    exported = client.get("/api/export").content
+    client.post("/api/entries", json={**ENTRY, "term": "結果整合性"})
+
+    res = client.post("/api/import-glossary?mode=merge", content=exported,
+                      headers={"Content-Type": "application/zip"})
+    assert res.status_code == 200, res.text
+    assert {e["term"] for e in client.get("/api/entries").json()} == {"冪等", "結果整合性"}
+    assert Path(res.json()["backup"]).exists()
+
+
+def test_the_import_plan_changes_nothing(client):
+    """**押す前に見せる。** 下見は数えるだけで、控えも取らない。"""
+    client.post("/api/entries", json=ENTRY)
+    exported = client.get("/api/export").content
+    client.post("/api/entries", json={**ENTRY, "term": "結果整合性"})
+
+    res = client.post("/api/import-glossary/plan?mode=replace", content=exported,
+                      headers={"Content-Type": "application/zip"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["removed_count"] == 1 and body["unchanged"] == 1
+    assert len(client.get("/api/entries").json()) == 2      # 何も変わっていない
+
+
+def test_an_unknown_import_mode_is_rejected(client):
+    client.post("/api/entries", json=ENTRY)
+    exported = client.get("/api/export").content
+    res = client.post("/api/import-glossary?mode=そのほか", content=exported,
+                      headers={"Content-Type": "application/zip"})
+    assert res.status_code == 400
+    assert len(client.get("/api/entries").json()) == 1
+
+
 def test_import_of_a_foreign_zip_is_rejected(client):
     client.post("/api/entries", json=ENTRY)
     res = client.post("/api/import-glossary", content=b"not a zip",

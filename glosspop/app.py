@@ -538,23 +538,40 @@ def export_glossary() -> Response:
     )
 
 
-@app.post("/api/import-glossary")
-async def import_glossary(request: Request) -> dict:
-    """書き出した zip で辞書を**置き換える**。
-
-    **消える操作なので、先に控えを取る**（`archive.import_bytes`）。混ぜないのは、
-    同じカテゴリの同じ用語が両側にあったときにどちらを採るか決められないため。
-
-    保存先は変わらないので再起動は要らない。読み直しはサーバ側で済ませてある。
-    """
+async def _archive_body(request: Request) -> bytes:
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > archive.MAX_ARCHIVE_BYTES:
         raise HTTPException(413, "zip が大きすぎます")
     data = await request.body()
     if not data:
         raise HTTPException(400, "zip が空です")
+    return data
+
+
+@app.post("/api/import-glossary/plan")
+async def import_glossary_plan(request: Request, mode: str = "replace") -> dict:
+    """取り込む前の下見。**何が増えて・上書きされて・消えるか**を数える。
+
+    データを変える前に必ず通す。置き換えで消える語をここで見せておかないと、
+    「入れ替わる」という一言だけで押させることになる。
+    """
     try:
-        return archive.import_bytes(data)
+        return archive.plan(await _archive_body(request), mode)
+    except archive.ArchiveError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/import-glossary")
+async def import_glossary(request: Request, mode: str = "replace") -> dict:
+    """書き出した zip を取り込む。``replace`` は置き換え、``merge`` は併合。
+
+    **どちらも先に控えを取る**（`archive.import_bytes`）。併合で衝突したものは
+    **取り込む側が勝つ**ので、上書きされた語は控えにしか残らない。
+
+    保存先は変わらないので再起動は要らない。読み直しはサーバ側で済ませてある。
+    """
+    try:
+        return archive.import_bytes(await _archive_body(request), mode)
     except archive.ArchiveError as exc:
         raise HTTPException(400, str(exc)) from exc
 

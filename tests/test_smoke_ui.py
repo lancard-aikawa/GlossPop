@@ -737,6 +737,41 @@ def test_the_settings_dialog_exports_and_imports_the_glossary(page, server, isol
     assert "開き直して" not in result.inner_text()
 
 
+def test_the_settings_dialog_can_merge_instead_of_replacing(page, server, isolated_dirs, tmp_path):
+    """併合を選ぶと、**手元にしか無い語が消えないこと**。
+
+    置き換えと同じ画面・同じボタンなので、選び間違えると辞書が丸ごと消える。
+    実行の前に「足す / 上書き / 消える」の件数を出しているところまで見る。
+    """
+    from glosspop import archive
+
+    store.save(EntryDraft(term="冪等", category="プログラミング", definition="手元の説明。"))
+    exported = tmp_path / "backup.zip"
+    exported.write_bytes(archive.export_bytes())
+
+    # 書き出したあとに増やした語。**置き換えなら消えるが、併合では残る**
+    store.save(EntryDraft(term="結果整合性", category="プログラミング", definition="本文。"))
+
+    page.goto(f"{server}/glossary")
+    page.locator("#settings").wait_for(timeout=SETTLE_MS)
+    page.click("#settings")
+    page.locator("dialog.sheet[open] [data-ref=importPick]").wait_for(timeout=SETTLE_MS)
+    page.select_option("dialog.sheet[open] [data-ref=importMode]", "merge")
+
+    # 押す前に何が起きるかを出していること（黙って実行させない）
+    messages = []
+    page.on("dialog", lambda d: (messages.append(d.message), d.accept()))
+    page.set_input_files("dialog.sheet[open] [data-ref=importFile]", str(exported))
+
+    result = page.locator("dialog.sheet[open] [data-ref=result]")
+    result.wait_for(timeout=SETTLE_MS)
+    assert {e.term for e in store.load_all()} == {"冪等", "結果整合性"}
+    assert "併合します" in messages[0]
+    assert "変わらない 1 語" in messages[0]
+    assert "消える" not in messages[0]          # 併合では消えない
+    assert "控えは" in result.inner_text()
+
+
 def test_importing_a_foreign_zip_says_so_and_changes_nothing(page, server, isolated_dirs, tmp_path):
     store.save(EntryDraft(term="冪等", category="プログラミング", definition="本文。"))
     junk = tmp_path / "junk.zip"

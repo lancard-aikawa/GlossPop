@@ -87,10 +87,18 @@ def _read(scope: str) -> list[Category]:
     path = file_for(scope)
     if path is None or not path.exists():
         return []
+    return parse(path.read_text(encoding="utf-8"), name=path.name)
+
+
+def parse(text: str, *, name: str = "categories.yaml") -> list[Category]:
+    """マスターの YAML を読む。**壊れた項目だけ飛ばし、全体は落とさない。**
+
+    外から来た zip の中身を読むのにも使うので、ファイルではなく文字列を受ける。
+    """
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        raw = yaml.safe_load(text) or {}
     except yaml.YAMLError as exc:
-        raise CategoryNameError(f"{path.name} の YAML が壊れています: {exc}") from exc
+        raise CategoryNameError(f"{name} の YAML が壊れています: {exc}") from exc
     items = raw.get("categories") if isinstance(raw, dict) else raw
     out: list[Category] = []
     seen: set[str] = set()
@@ -115,6 +123,11 @@ def _read(scope: str) -> list[Category]:
             )
         )
     return out
+
+
+def write(categories: list[Category], scope: str = GLOBAL_SCOPE) -> None:
+    """マスターを丸ごと書き替える。並びはこのリストのとおりになる。"""
+    _write(categories, scope)
 
 
 def _write(categories: list[Category], scope: str = GLOBAL_SCOPE) -> None:
