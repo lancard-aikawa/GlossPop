@@ -1233,3 +1233,19 @@ def test_the_linker_notices_an_edit_made_outside(client):
 
     after, _ = app_module._linker().annotate("<p>冪等と結果整合性</p>")
     assert after.count("gloss-link") == 2
+
+
+def test_content_search_sees_a_file_edited_outside(client):
+    """**解釈済みの文書を使い回しても、外の編集を取りこぼさないこと。**
+
+    索引ではなく「変わっていないものを読み直さない」だけなので、ここが崩れると
+    「その語は無かった」と区別が付かなくなる（打ち切りを必ず返しているのと同じ理由）。
+    """
+    doc = config.content_dir() / "銀河.md"
+    doc.write_text("ジョバンニは活版所にいた。\n", encoding="utf-8")
+    first = client.get("/api/content-search", params={"q": "カムパネルラ"}).json()
+    assert first["results"] == []
+
+    doc.write_text("ジョバンニは活版所にいた。カムパネルラも来た。\n", encoding="utf-8")
+    second = client.get("/api/content-search", params={"q": "カムパネルラ"}).json()
+    assert [r["path"] for r in second["results"]] == ["銀河.md"]

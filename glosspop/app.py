@@ -1342,7 +1342,7 @@ def search_content(q: str = "", ref: str = "") -> dict:
             scanned += 1
             rel = path.relative_to(base).as_posix()
             try:
-                doc = documents.read(path)
+                doc = documents.read_cached(path)
             except (documents.DocumentError, OSError) as exc:
                 # 読めないファイルがあること自体を隠さない（「無かった」ではない）
                 skipped.append({"path": rel, "reason": str(exc)})
@@ -1377,7 +1377,7 @@ def search_content(q: str = "", ref: str = "") -> dict:
 def read_content(rel: str) -> dict:
     path = _safe_content_path(rel)
     try:
-        doc = documents.read(path)
+        doc = documents.read_cached(path)
     except documents.DocumentError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {
@@ -1542,7 +1542,7 @@ def _read_content_docs(max_files: int) -> tuple[list[tuple[str, str]], list[str]
             unread.append(rel)
             continue
         try:
-            docs.append((rel, documents.read(path).plain))
+            docs.append((rel, documents.read_cached(path).plain))
         except (OSError, documents.DocumentError):
             unread.append(rel)
     return docs, unread, base
@@ -1552,7 +1552,7 @@ def _first_seen_in_file(rel: str, term: str) -> tuple[str, str]:
     """content 内のファイルから初出位置と、その場面の抜粋を取る。"""
     try:
         path = _safe_content_path(rel)
-        doc = documents.read(path)
+        doc = documents.read_cached(path)
     except (HTTPException, documents.DocumentError):
         return "", ""
     return doc.locate(term), ai.context_up_to_first(doc.plain, term)

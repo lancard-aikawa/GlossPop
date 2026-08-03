@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 import re
+import threading
 import zipfile
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote
@@ -307,3 +309,75 @@ def read(path: Path) -> Document:
     plain = render.to_plain_text(text, kind=kind)
     title = render.html_title(text) if kind == "html" else ""
     return Document(kind=kind, text=text, segments=[("", plain)], title=title)
+
+
+# --------------------------------------------------------------------------- #
+# 解釈済みの文書を使い回す
+#
+# epub と pdf は 1 冊ぶんの解釈が重い（実測: epub 1 冊 9.6 ms。.md は 0.1 ms）。
+# 横断検索は**見つからない語**のとき全ファイルを読むので、epub の多いフォルダでは
+# そこが丸ごと効く。まとめ登録の初出探しも、同じファイルを語の数だけ読んでいた。
+#
+# **これは索引ではない。** 毎回すべてのファイルを見るのは変わらず、変わっていない
+# ものを読み直さないだけ。索引だと取りこぼしが「その語は無かった」と区別が付かなく
+# なるが、この形ならその危険は無い（辞書のキャッシュと同じ考え方）。
+# --------------------------------------------------------------------------- #
+
+#: 抱えておく数と総文字数の上限。**どちらも要る** —— 数だけだと長編ばかりの
+#: フォルダで数百 MB を抱えうるし、文字数だけだと小さいファイルが際限なく増える
+CACHE_MAX_FILES = 64
+CACHE_MAX_CHARS = 4_000_000
+
+_cache: "OrderedDict[tuple, Document]" = OrderedDict()
+_cache_chars = 0
+_cache_lock = threading.Lock()
+
+
+def _cache_key(path: Path) -> tuple | None:
+    """パス + mtime + サイズ。**外のエディタで書き換えられたら別物になる。**"""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path.resolve()), st.st_mtime_ns, st.st_size)
+
+
+def invalidate_cache() -> None:
+    global _cache_chars
+    with _cache_lock:
+        _cache.clear()
+        _cache_chars = 0
+
+
+def read_cached(path: Path) -> Document:
+    """``read()`` と同じものを返す。**中身が変わっていなければ読み直さない。**
+
+    返す ``Document`` は使い回されるので、**呼び出し側で書き換えないこと**
+    （いまはどのメソッドも読むだけ）。読み込み自体はロックの外でやる ——
+    中で読むと、重いファイルの解釈で他のリクエストまで直列になる。
+    """
+    global _cache_chars
+    key = _cache_key(path)
+    if key is None:
+        return read(path)              # stat できないなら素直に読ませて例外を出す
+
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is not None:
+            _cache.move_to_end(key)
+            return hit
+
+    doc = read(path)
+    size = len(doc.text) + sum(len(t) for _, t in doc.segments)
+
+    with _cache_lock:
+        if key not in _cache:
+            _cache[key] = doc
+            _cache_chars += size
+        # 古いものから捨てる。**上限を超えた時点で必ず 1 つは残す**
+        while len(_cache) > CACHE_MAX_FILES or (
+            _cache_chars > CACHE_MAX_CHARS and len(_cache) > 1
+        ):
+            _, dropped = _cache.popitem(last=False)
+            _cache_chars -= len(dropped.text) + sum(len(t) for _, t in dropped.segments)
+    return doc

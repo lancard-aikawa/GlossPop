@@ -295,3 +295,61 @@ def test_epub_without_headings_gets_a_generated_one(tmp_path):
     doc = documents.read(path)
     assert "<h2>第 1 章</h2>" in doc.text
     assert [label for label, _ in doc.segments] == ["第 1 章"]
+
+
+class TestReadCached:
+    """解釈済みの文書を使い回す。
+
+    **これは索引ではない。** 毎回すべてのファイルを見るのは変わらず、変わって
+    いないものを読み直さないだけ。だから「取りこぼして無かったことにする」は
+    起きない —— そこが崩れていないことを見張る。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        documents.invalidate_cache()
+        yield
+        documents.invalidate_cache()
+
+    def test_the_same_object_comes_back(self, tmp_path):
+        path = tmp_path / "銀河.txt"
+        path.write_text("ジョバンニ。\n", encoding="utf-8")
+        assert documents.read_cached(path) is documents.read_cached(path)
+
+    def test_an_edit_made_outside_is_picked_up(self, tmp_path):
+        """**外のエディタで書き換えたら読み直す。** ここが崩れると嘘をつく。"""
+        path = tmp_path / "銀河.txt"
+        path.write_text("ジョバンニ。\n", encoding="utf-8")
+        assert "ジョバンニ" in documents.read_cached(path).plain
+
+        # 中身も長さも変える（mtime だけに頼らない）
+        path.write_text("カムパネルラが増えた。\n", encoding="utf-8")
+        again = documents.read_cached(path)
+        assert "カムパネルラ" in again.plain
+        assert "ジョバンニ" not in again.plain
+
+    def test_a_deleted_file_still_raises(self, tmp_path):
+        path = tmp_path / "無い.txt"
+        with pytest.raises(OSError):
+            documents.read_cached(path)
+
+    def test_it_does_not_grow_without_bound(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(documents, "CACHE_MAX_FILES", 3)
+        paths = []
+        for i in range(6):
+            p = tmp_path / f"文書{i}.txt"
+            p.write_text(f"本文 {i}。\n", encoding="utf-8")
+            paths.append(p)
+            documents.read_cached(p)
+        assert len(documents._cache) == 3
+        # 捨てられていても、読み直せば同じものが返る
+        assert "本文 0" in documents.read_cached(paths[0]).plain
+
+    def test_the_character_budget_also_evicts(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(documents, "CACHE_MAX_CHARS", 100)
+        for i in range(4):
+            p = tmp_path / f"長い{i}.txt"
+            p.write_text("あ" * 200, encoding="utf-8")
+            documents.read_cached(p)
+        # 上限を超えても**必ず 1 つは残す**（入れた直後に捨てない）
+        assert len(documents._cache) == 1

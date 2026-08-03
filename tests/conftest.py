@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from glosspop import categories, config, store
+from glosspop import categories, config, documents, store
 
 
 @pytest.fixture(autouse=True)
@@ -70,11 +70,17 @@ def isolated_dirs(tmp_path, monkeypatch):
     config.set_reading_url(None)
     store.invalidate()
     categories.invalidate()
+    # 解釈済みの文書もプロセス内に残る。鍵にパスと mtime が入っているので
+    # 取り違えは起きないが、状態を持ち越さないのはほかと同じ扱いにする
+    documents.invalidate_cache()
     yield tmp_path
     config.set_content_dir(None)
     config.set_reading_url(None)
     store.invalidate()
     categories.invalidate()
+    # 解釈済みの文書もプロセス内に残る。鍵にパスと mtime が入っているので
+    # 取り違えは起きないが、状態を持ち越さないのはほかと同じ扱いにする
+    documents.invalidate_cache()
 
 
 @pytest.fixture
