@@ -504,11 +504,11 @@ class TestAIExtract:
         add_entry("冪等", category="プログラミング")
         text = "この API は結果整合性を前提にしている。冪等な操作は安全。"
 
-        def fake_run(prompt: str) -> str:
+        def fake_run(prompt: str, **_) -> str:
             assert "冪等" in prompt  # 登録済みの語は除外指示として渡っている
             return '[{"term": "結果整合性"}, {"term": "冪等"}, {"term": "無い語"}]'
 
-        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(ai, "_generate", fake_run)
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
 
         res = client.post("/api/ai/extract", json={"text": text}).json()
@@ -575,11 +575,11 @@ class TestAIExtractFolder:
         self._write("sub/b.md", "サーキットブレーカーは有効。")
         seen = {}
 
-        def fake_run(prompt: str) -> str:
+        def fake_run(prompt: str, **_) -> str:
             seen["prompt"] = prompt
             return '[{"term": "指数バックオフ"}, {"term": "サーキットブレーカー"}]'
 
-        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(ai, "_generate", fake_run)
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
 
         res = client.post("/api/ai/extract-folder", json={}).json()
@@ -592,11 +592,11 @@ class TestAIExtractFolder:
         self._write("page.html", "<html><body><p>サーキットブレーカーの説明</p></body></html>")
         captured = {}
 
-        def fake_run(prompt: str) -> str:
+        def fake_run(prompt: str, **_) -> str:
             captured["prompt"] = prompt
             return '[{"term": "サーキットブレーカー"}]'
 
-        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(ai, "_generate", fake_run)
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
 
         res = client.post("/api/ai/extract-folder", json={}).json()
@@ -606,7 +606,7 @@ class TestAIExtractFolder:
     def test_reports_files_it_did_not_read(self, client, monkeypatch):
         for i in range(3):
             self._write(f"{i}.md", "サーキットブレーカー")
-        monkeypatch.setattr(ai, "_run_claude", lambda prompt: '[{"term": "サーキットブレーカー"}]')
+        monkeypatch.setattr(ai, "_generate", lambda prompt, **_: '[{"term": "サーキットブレーカー"}]')
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
 
         res = client.post("/api/ai/extract-folder", json={"max_files": 1}).json()
@@ -631,7 +631,7 @@ class TestSpoilerLevels:
         def boom(prompt: str) -> str:
             raise AssertionError("AI を呼んではいけない")
 
-        monkeypatch.setattr(ai, "_run_claude", boom)
+        monkeypatch.setattr(ai, "_generate", boom)
         monkeypatch.setattr(config, "CLAUDE_BIN", "")   # claude が無くても通ること
 
         res = client.post(
@@ -649,11 +649,11 @@ class TestSpoilerLevels:
         self._write_novel()
         seen = {}
 
-        def fake_run(prompt: str) -> str:
+        def fake_run(prompt: str, **_) -> str:
             seen["prompt"] = prompt
             return '{"term": "太郎", "summary": "駅前にいた人物。", "category": "登場人物"}'
 
-        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(ai, "_generate", fake_run)
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
 
         res = client.post(
@@ -670,11 +670,11 @@ class TestSpoilerLevels:
         self._write_novel()
         seen = {}
 
-        def fake_run(prompt: str) -> str:
+        def fake_run(prompt: str, **_) -> str:
             seen["prompt"] = prompt
             return '{"term": "太郎", "category": "登場人物"}'
 
-        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(ai, "_generate", fake_run)
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
 
         client.post(
@@ -861,6 +861,94 @@ def test_apply_relations_reports_a_missing_source(client):
     assert body["results"][0]["ok"] is False
 
 
+class TestAISettings:
+    """使う AI・モデル・思考の深さの設定。**鍵は返さない。**"""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for name in ("GLOSSPOP_AI_PROVIDER", "GLOSSPOP_AI_MODEL", "GLOSSPOP_AI_EFFORT",
+                     "GLOSSPOP_GEMINI_KEY", "GEMINI_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_reports_the_current_choice(self, client):
+        body = client.get("/api/ai/settings").json()
+        assert body["provider"] == "claude"
+        assert [p["id"] for p in body["providers"]] == ["claude", "gemini"]
+        assert "" in [e["id"] for e in body["efforts"]]
+
+    def test_saves_and_takes_effect_without_a_restart(self, client):
+        res = client.put("/api/ai/settings", json={"provider": "claude", "model": "opus", "effort": "high"})
+        assert res.status_code == 200
+        assert res.json()["model"] == "opus" and res.json()["effort"] == "high"
+        # 次の呼び出しからそのまま効く（読み直しても同じ）
+        assert client.get("/api/ai/settings").json()["model"] == "opus"
+
+    def test_rejects_an_unknown_provider_or_effort(self, client):
+        assert client.put("/api/ai/settings", json={"provider": "でたらめ"}).status_code == 400
+        assert client.put("/api/ai/settings", json={"effort": "ものすごく"}).status_code == 400
+
+    def test_the_key_is_stored_but_never_returned(self, client):
+        body = client.put("/api/ai/settings", json={
+            "provider": "gemini", "gemini_api_key": "秘密の鍵",
+        }).json()
+        assert body["gemini_key_set"] is True
+        assert "秘密の鍵" not in client.get("/api/ai/settings").text
+        # 空文字は「消す」
+        cleared = client.put("/api/ai/settings", json={"gemini_api_key": ""}).json()
+        assert cleared["gemini_key_set"] is False
+
+    def test_omitted_fields_are_left_alone(self, client):
+        client.put("/api/ai/settings", json={"provider": "gemini", "gemini_api_key": "k"})
+        client.put("/api/ai/settings", json={"effort": "low"})     # 鍵は触らない
+        body = client.get("/api/ai/settings").json()
+        assert body["gemini_key_set"] is True and body["effort"] == "low"
+
+    def test_each_provider_keeps_its_own_model(self, client):
+        client.put("/api/ai/settings", json={"provider": "claude", "model": "opus"})
+        client.put("/api/ai/settings", json={"provider": "gemini", "model": "gemini-3.5-flash"})
+        assert client.get("/api/ai/settings").json()["model"] == "gemini-3.5-flash"
+        back = client.put("/api/ai/settings", json={"provider": "claude"}).json()
+        assert back["model"] == "opus"          # 選び直させない
+
+    def test_claude_models_come_from_the_app(self, client):
+        body = client.get("/api/ai/models", params={"provider": "claude"}).json()
+        assert [m["id"] for m in body["models"]] == ["", "haiku", "sonnet", "opus"]
+
+    def test_gemini_models_need_a_key(self, client):
+        res = client.get("/api/ai/models", params={"provider": "gemini"})
+        assert res.status_code == 502
+        assert "API キー" in res.json()["detail"]
+
+
+def test_apply_aliases_adds_another_name_to_an_existing_entry(client):
+    a = _person(client, "主人")
+    body = client.post("/api/aliases", json={
+        "aliases": [{"ref": a, "alias": "苦沙弥先生"}]
+    }).json()
+    assert body["applied"] == 1
+    detail = client.get(f"/api/entries/{ref_path(a)}").json()
+    assert detail["aliases"] == ["苦沙弥先生"]
+
+
+def test_apply_aliases_keeps_the_existing_ones(client):
+    a = _person(client, "主人")
+    client.post("/api/aliases", json={"aliases": [{"ref": a, "alias": "苦沙弥先生"}]})
+    # 同じエントリに 2 件付くとき、後の書き込みが前のものを消さないこと
+    body = client.post("/api/aliases", json={
+        "aliases": [{"ref": a, "alias": "珍野"}, {"ref": a, "alias": "先生"}]
+    }).json()
+    assert body["applied"] == 2
+    detail = client.get(f"/api/entries/{ref_path(a)}").json()
+    assert detail["aliases"] == ["苦沙弥先生", "珍野", "先生"]
+
+
+def test_apply_aliases_reports_a_missing_entry(client):
+    body = client.post("/api/aliases", json={
+        "aliases": [{"ref": "登場人物/いない", "alias": "別名"}]
+    }).json()
+    assert body["applied"] == 0 and body["results"][0]["ok"] is False
+
+
 def test_doctor_is_quiet_on_a_healthy_dictionary(client):
     client.post("/api/entries", json=ENTRY)
     body = client.get("/api/doctor").json()
@@ -905,13 +993,13 @@ def test_relations_draft_can_read_the_displayed_document(client, monkeypatch):
     _person(client, "カムパネルラ")
     seen = {}
 
-    def fake(prompt):
+    def fake(prompt, **_):        # 関係の下書きは timeout を渡して呼ぶ
         seen["prompt"] = prompt
         return _json.dumps([
             {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友", "back": "親友"}
         ])
 
-    monkeypatch.setattr(ai, "_run_claude", fake)
+    monkeypatch.setattr(ai, "_generate", fake)
     monkeypatch.setattr(ai, "available", lambda: True)
     body = client.post("/api/ai/relations", json={
         "category": "登場人物",

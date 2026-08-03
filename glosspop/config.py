@@ -116,11 +116,25 @@ WINDOW_PROFILE_DIR = _env_path("GLOSSPOP_WINDOW_PROFILE_DIR", DATA_ROOT / "data"
 #: claude CLI の場所 (見つからなければ AI 下書き機能だけが無効になる)
 CLAUDE_BIN = os.environ.get("GLOSSPOP_CLAUDE_BIN") or shutil.which("claude")
 
-#: claude -p に渡す追加引数
-CLAUDE_EXTRA_ARGS = shlex.split(os.environ.get("GLOSSPOP_CLAUDE_ARGS", "--model sonnet"))
+#: claude -p に渡す**追加**引数。
+#:
+#: **モデルはここに書かない**（既定は `llm.DEFAULT_CLAUDE_MODEL`、選択は設定から）。
+#: 以前ここに `--model sonnet` を焼き込んでいたため、⚙ でモデルを選んでも
+#: 追加引数が後勝ちして効かなかった。手で書いたぶんは尊重するので、
+#: ここに `--model` を入れた人の指定は設定より優先される
+CLAUDE_EXTRA_ARGS = shlex.split(os.environ.get("GLOSSPOP_CLAUDE_ARGS", ""))
 
-#: claude CLI のタイムアウト秒
+#: claude CLI のタイムアウト秒（1 語ぶんの下書きなど、短い呼び出しの既定）
 CLAUDE_TIMEOUT = int(os.environ.get("GLOSSPOP_CLAUDE_TIMEOUT", "180"))
+
+#: 長い呼び出し（抽出・関係の下書き）に許す上限秒。
+#:
+#: **かかる時間は出力トークン数（思考を含む）にほぼ比例する。** 実測で毎秒 90
+#: トークン前後で、関係 20 本ぶんの本文と根拠を書かせると 12,000 トークン＝約 140 秒。
+#: 読ませる本文を増やすと思考も増えるので、入力側も間接的に効く。既定の 180 秒では
+#: **足りずにタイムアウトする**（実際に踏んだ）ので、件数から見積もった秒数を
+#: ここまでの範囲で使う（`ai.relations_timeout()` / `ai.extract_timeout()`）
+CLAUDE_TIMEOUT_MAX = int(os.environ.get("GLOSSPOP_CLAUDE_TIMEOUT_MAX", "900"))
 
 #: AI にどこまで読ませるか（小説の人物辞書などでのネタバレ対策）
 #:

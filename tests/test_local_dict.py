@@ -227,7 +227,7 @@ class TestDraftDoesNotPolluteTheMaster:
     def _fake_ai(self, monkeypatch):
         from glosspop import ai, config as cfg
 
-        monkeypatch.setattr(ai, "_run_claude", lambda prompt: '{"term": "九条ミナ", "category": "登場人物"}')
+        monkeypatch.setattr(ai, "_generate", lambda prompt: '{"term": "九条ミナ", "category": "登場人物"}')
         monkeypatch.setattr(cfg, "CLAUDE_BIN", "claude")
 
     def test_local_draft_leaves_the_master_alone(self, client, monkeypatch):
@@ -411,7 +411,7 @@ class TestAutoScope:
                 seen["prompt"] = prompt
             return response
 
-        monkeypatch.setattr(ai, "_run_claude", fake_run)
+        monkeypatch.setattr(ai, "_generate", fake_run)
         monkeypatch.setattr(cfg, "CLAUDE_BIN", "claude")
 
     def test_ai_choice_is_used(self, client, monkeypatch):

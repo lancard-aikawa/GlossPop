@@ -1,4 +1,4 @@
-// 設定（データの保存先・表示テーマ・更新の確認）。全ページの topbar に差し込む。
+// 設定（データの保存先・AI・表示テーマ・更新の確認）。全ページの topbar に差し込む。
 //
 // 既定ではデータがアプリの隣にあるので、更新のたびに手で data\ と content\ を
 // コピーすることになる（`data\window` を取りこぼすとお気に入りと設定が静かに消える）。
@@ -90,6 +90,45 @@ function build() {
           </p>
         </section>
         <section class="entry-section">
+          <h2>AI（下書き・抽出・関係）</h2>
+          <p class="hint">
+            用語の下書き、候補の抽出、関係の下書きに使う AI です。
+            <strong>速さと精度はモデルと思考の深さで大きく変わります。</strong>
+            ここでの変更は<strong>次の呼び出しから効きます</strong>（再起動は要りません）。
+          </p>
+          <p class="notice" data-ref="aiLocked" hidden></p>
+          <div class="setting-row setting-row-plain">
+            <label class="field-inline" for="gp-ai-provider">使う AI</label>
+            <select id="gp-ai-provider" class="auto-width" data-ref="aiProvider"></select>
+          </div>
+          <p class="hint" data-ref="aiHint"></p>
+          <div class="setting-row" data-ref="aiKeyRow" hidden>
+            <input type="password" data-ref="aiKey" autocomplete="off"
+                   placeholder="Gemini API キー（AI Studio で発行）" aria-label="Gemini API キー">
+            <button type="button" data-ref="aiKeyClear">登録を消す</button>
+          </div>
+          <div class="setting-row">
+            <label class="field-inline" for="gp-ai-model">モデル</label>
+            <input id="gp-ai-model" type="text" list="gp-ai-models" data-ref="aiModel"
+                   placeholder="空なら既定" aria-label="モデル" autocomplete="off">
+            <datalist id="gp-ai-models" data-ref="aiModelList"></datalist>
+            <button type="button" data-ref="aiModelFetch">一覧を取り直す</button>
+          </div>
+          <p class="hint" data-ref="aiModelNote"></p>
+          <div class="setting-row setting-row-plain">
+            <label class="field-inline" for="gp-ai-effort">思考の深さ</label>
+            <select id="gp-ai-effort" class="auto-width" data-ref="aiEffort"></select>
+          </div>
+          <p class="hint">
+            深くするほど丁寧になり、そのぶん時間がかかります
+            （所要時間は考えた量にほぼ比例します）。
+          </p>
+          <div class="setting-row setting-row-plain">
+            <button type="button" data-ref="aiSave">AI の設定を保存</button>
+            <span class="status" data-ref="aiStatus"></span>
+          </div>
+        </section>
+        <section class="entry-section">
           <h2>表示</h2>
           <div class="setting-row setting-row-plain">
             <label class="field-inline" for="gp-theme">テーマ</label>
@@ -107,8 +146,10 @@ function build() {
             <input type="checkbox" data-ref="updateCheck">
             <span>
               新しい版が出ていないか GitHub に聞く
-              <span class="hint">1 日に 1 回まで。このアプリが外へ通信するのはここだけです。
-                切ると一切通信しません。</span>
+              <span class="hint">1 日に 1 回まで。切ると更新の確認では通信しません。
+                （AI に <strong>Gemini API</strong> を選んだときは、下書きのたびに
+                Google へ本文を送ります。Claude Code CLI を選んでいる場合は
+                CLI 側が通信します。）</span>
             </span>
           </label>
           <p class="hint" data-ref="updateState"></p>
@@ -228,6 +269,76 @@ async function paintUpdate() {
   refs.updateState.textContent = bits.join(" ");
   // 新しい版があるときだけ出す（無いときに押させても「最新です」と言うだけ）
   refs.downloadRow.hidden = !info.newer;
+}
+
+/** 環境変数で固定されている項目は触らせない（書いても効かないため）。 */
+function lockIfEnv(node, source, name) {
+  const locked = source === "env";
+  node.disabled = locked;
+  return locked ? `${name}は環境変数で固定されています。` : "";
+}
+
+/**
+ * AI の設定を描く。
+ *
+ * モデルの一覧は**サーバ経由で API から引く**（焼き込むと必ず古くなる）。
+ * 取れなくても手入力できるよう、select ではなく datalist 付きの input にしてある。
+ */
+function paintAI(info) {
+  refs.aiProvider.replaceChildren(
+    ...info.providers.map((p) =>
+      el("option", {
+        value: p.id,
+        text: p.available ? p.label : `${p.label}（使えません）`,
+      })
+    )
+  );
+  refs.aiProvider.value = info.provider;
+  refs.aiEffort.replaceChildren(
+    ...info.efforts.map((e) => el("option", { value: e.id, text: e.label }))
+  );
+  refs.aiEffort.value = info.effort;
+  refs.aiModel.value = info.model;
+
+  const spec = info.providers.find((p) => p.id === info.provider) || {};
+  refs.aiHint.textContent = [spec.hint, info.reason].filter(Boolean).join(" ");
+  refs.aiKeyRow.hidden = !spec.needs_key;
+  refs.aiKey.placeholder =
+    info.gemini_key_source === "env"
+      ? "環境変数で設定済み（ここでの入力より優先されます）"
+      : info.gemini_key_set
+        ? "登録済み（変えるときだけ入力）"
+        : "Gemini API キー（AI Studio で発行）";
+  refs.aiKey.value = "";
+  refs.aiKeyClear.disabled = !info.gemini_key_set || info.gemini_key_source === "env";
+
+  const notes = [
+    lockIfEnv(refs.aiProvider, info.provider_source, "使う AI"),
+    lockIfEnv(refs.aiModel, info.model_source, "モデル"),
+    lockIfEnv(refs.aiEffort, info.effort_source, "思考の深さ"),
+  ].filter(Boolean);
+  refs.aiLocked.hidden = !notes.length;
+  refs.aiLocked.textContent = notes.join(" ");
+}
+
+/** 選べるモデルを datalist に入れる。取れなければ理由を出して手入力に任せる。 */
+async function loadAIModels(provider) {
+  refs.aiModelNote.textContent = "";
+  try {
+    const res = await api(`/api/ai/models?provider=${encodeURIComponent(provider)}`);
+    refs.aiModelList.replaceChildren(
+      ...(res.models || []).map((m) =>
+        el("option", { value: m.id, text: m.label || m.id })
+      )
+    );
+    if (provider === "gemini") {
+      refs.aiModelNote.textContent =
+        `${res.models.length} 件を Gemini API から取得しました（一覧に無い名前も入力できます）。`;
+    }
+  } catch (err) {
+    refs.aiModelList.replaceChildren();
+    refs.aiModelNote.textContent = `モデル一覧を取れませんでした: ${err.message}`;
+  }
 }
 
 export async function openSettingsDialog() {
@@ -364,6 +475,49 @@ export async function openSettingsDialog() {
     refs.pick.disabled = false;
   };
 
+  /**
+   * AI の選択を保存する。**保存先の設定とは別のボタンにしてある。**
+   *
+   * 効くのが「次の起動から」ではなく「次の呼び出しから」で意味が違ううえ、
+   * 保存先が環境変数で固定されていると保存ボタンごと無効になるため、
+   * 同じボタンに載せると AI だけ変えたい人が詰む。
+   */
+  const onAISave = async (extra = {}) => {
+    refs.aiSave.disabled = true;
+    setStatus(refs.aiStatus, "保存中", "busy");
+    try {
+      const body = {
+        provider: refs.aiProvider.value,
+        model: refs.aiModel.value.trim(),
+        effort: refs.aiEffort.value,
+        ...extra,
+      };
+      // 入力欄が空のときは鍵を触らない（毎回消しに行かないため）
+      if (!("gemini_api_key" in body) && refs.aiKey.value.trim()) {
+        body.gemini_api_key = refs.aiKey.value.trim();
+      }
+      const res = await api("/api/ai/settings", { method: "PUT", body });
+      // 「保存できたか」と「いま使えるか」は別の話。混ぜると、CLI が無いだけで
+      // 保存が失敗したように見える（使えない理由は paintAI が説明の行に出す）
+      paintAI(res);
+      setStatus(refs.aiStatus, "保存しました");
+    } catch (err) {
+      setStatus(refs.aiStatus, err.message, "error");
+    }
+    refs.aiSave.disabled = false;
+  };
+
+  const onAIProvider = async () => {
+    // 選び直した時点で、その AI で選べるモデルに入れ替える
+    refs.aiModel.value = "";
+    await loadAIModels(refs.aiProvider.value);
+    await onAISave();
+  };
+
+  const onAISaveClick = () => onAISave();
+  const onAIKeyClear = () => onAISave({ gemini_api_key: "" });
+  const onAIModelFetch = () => loadAIModels(refs.aiProvider.value);
+
   const onSave = async () => {
     const custom = refs.modeCustom.checked;
     const path = refs.path.value.trim();
@@ -429,9 +583,22 @@ export async function openSettingsDialog() {
   refs.path.addEventListener("input", onMode);
   refs.pick.addEventListener("click", onPick);
   refs.save.addEventListener("click", onSave);
+  refs.aiSave.addEventListener("click", onAISaveClick);
+  refs.aiProvider.addEventListener("change", onAIProvider);
+  refs.aiKeyClear.addEventListener("click", onAIKeyClear);
+  refs.aiModelFetch.addEventListener("click", onAIModelFetch);
   refs.cancel.addEventListener("click", finish);
   refs.close.addEventListener("click", finish);
   refs.form.addEventListener("submit", onSubmit);
+
+  // AI の設定は保存先とは別に読む。片方が落ちてももう片方は使えるように
+  // （**listener を付けたあとの最初の await より前に**、読み込みを始めない）
+  api("/api/ai/settings")
+    .then((res) => {
+      paintAI(res);
+      return loadAIModels(res.provider);
+    })
+    .catch((err) => setStatus(refs.aiStatus, err.message, "error"));
 
   try {
     info = await api("/api/settings");
@@ -471,6 +638,10 @@ export async function openSettingsDialog() {
         refs.path.removeEventListener("input", onMode);
         refs.pick.removeEventListener("click", onPick);
         refs.save.removeEventListener("click", onSave);
+        refs.aiSave.removeEventListener("click", onAISaveClick);
+        refs.aiProvider.removeEventListener("change", onAIProvider);
+        refs.aiKeyClear.removeEventListener("click", onAIKeyClear);
+        refs.aiModelFetch.removeEventListener("click", onAIModelFetch);
         refs.cancel.removeEventListener("click", finish);
         refs.close.removeEventListener("click", finish);
         refs.form.removeEventListener("submit", onSubmit);

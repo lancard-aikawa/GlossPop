@@ -22,6 +22,7 @@ from . import (
     documents,
     fetcher,
     installer,
+    llm,
     picker,
     relations,
     render,
@@ -168,6 +169,33 @@ class RelationsApplyRequest(BaseModel):
     """
 
     relations: list[RelationItem] = []
+
+
+class AISettingsRequest(BaseModel):
+    """AI の選択。**省略した項目は触らない**（None と空文字を区別する）。
+
+    ``gemini_api_key`` に空文字を渡すと登録済みの鍵を消す。読み出す口は無い。
+    """
+
+    provider: str | None = None
+    model: str | None = None
+    effort: str | None = None
+    gemini_api_key: str | None = None
+
+
+class AliasItem(BaseModel):
+    ref: str
+    alias: str
+
+
+class AliasApplyRequest(BaseModel):
+    """抽出が見つけた「別の呼び方」をまとめて既存エントリに足す。
+
+    関係と同じ理由でエントリ単位にまとめる。同じ人物に別名が 2 つ付くとき、
+    1 件ずつ PUT すると後の書き込みが前のものを消す。
+    """
+
+    aliases: list[AliasItem] = []
 
 
 class CategoryRequest(BaseModel):
@@ -762,6 +790,46 @@ def apply_relations(req: RelationsApplyRequest) -> dict:
     return {"applied": applied, "results": results}
 
 
+@app.post("/api/aliases")
+def apply_aliases(req: AliasApplyRequest) -> dict:
+    """「同じものの別の呼び方」をまとめて既存エントリの別名に足す。
+
+    **新しいエントリを作らないための口。** 同じ人物が呼び方ごとに別エントリへ
+    割れると、本文のリンク先も相関図のノードも二重になる。
+    """
+    by_ref: dict[str, list[str]] = {}
+    for item in req.aliases:
+        alias = item.alias.strip()
+        if alias:
+            by_ref.setdefault(item.ref, []).append(alias)
+
+    applied = 0
+    results: list[dict] = []
+    for ref, names in by_ref.items():
+        entry = store.get(ref)
+        if entry is None:
+            results.append({"ref": ref, "ok": False, "detail": f"見つかりません: {ref}"})
+            continue
+        draft = EntryDraft.model_validate(entry.model_dump())
+        draft.aliases = [*entry.aliases, *names]
+        try:
+            saved = store.save(draft, ref=ref)
+        except store.StoreError as exc:
+            results.append({"ref": ref, "ok": False, "detail": str(exc)})
+            continue
+        added = len(saved.aliases) - len(entry.aliases)
+        applied += added
+        results.append({
+            "ref": saved.ref,
+            "ok": True,
+            "term": saved.term,
+            "added": added,
+            "path_label": saved.path_label,
+            "url": entry_url(saved),
+        })
+    return {"applied": applied, "results": results}
+
+
 # --------------------------------------------------------------------------- #
 # API: 点検
 # --------------------------------------------------------------------------- #
@@ -1236,6 +1304,58 @@ async def fetch_url(req: FetchRequest) -> dict:
 # --------------------------------------------------------------------------- #
 # API: AI 下書き
 # --------------------------------------------------------------------------- #
+
+@app.get("/api/ai/settings")
+def ai_settings() -> dict:
+    """いまどの AI・モデル・思考の深さで動くか。**キーそのものは返さない。**"""
+    return llm.describe()
+
+
+@app.put("/api/ai/settings")
+def put_ai_settings(req: AISettingsRequest) -> dict:
+    """AI の選択を保存する。**保存先の設定と違って、次の呼び出しから効く。**
+
+    ``store`` のキャッシュや開いているフォルダのような、途中で変わると食い違う
+    状態を持たないため、再起動を待たせる理由が無い。
+    """
+    if req.provider and req.provider not in llm.PROVIDERS:
+        raise HTTPException(400, f"知らない AI です: {req.provider}")
+    if req.effort is not None and req.effort not in llm.EFFORTS:
+        raise HTTPException(400, f"知らない思考の深さです: {req.effort}")
+
+    settings = config.load_settings()
+    if req.provider is not None:
+        settings["ai_provider"] = req.provider
+    if req.effort is not None:
+        settings["ai_effort"] = req.effort
+    if req.model is not None:
+        # モデルは AI ごとに覚える（切り替えて戻したときに選び直させない）
+        target = req.provider or llm.resolve()["provider"]
+        settings[llm.MODEL_SETTINGS[target]] = req.model.strip()
+    if req.gemini_api_key is not None:
+        key = req.gemini_api_key.strip()
+        if key:
+            settings["gemini_api_key"] = key
+        else:
+            settings.pop("gemini_api_key", None)     # 空文字は「消す」
+    config.save_settings(settings)
+    return llm.describe()
+
+
+@app.get("/api/ai/models")
+def ai_models(provider: str = "") -> dict:
+    """選べるモデルを返す。**Gemini は API から引く**（焼き込むと古くなる）。"""
+    provider = provider or llm.resolve()["provider"]
+    if provider not in llm.PROVIDERS:
+        raise HTTPException(400, f"知らない AI です: {provider}")
+    if provider != "gemini":
+        return {"provider": provider, "models": llm.CLAUDE_MODELS}
+    try:
+        models = llm.list_gemini_models()
+    except llm.LLMError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"provider": provider, "models": models}
+
 
 @app.get("/api/ai/kinds")
 def ai_kinds() -> dict:

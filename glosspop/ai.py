@@ -1,20 +1,20 @@
-"""Claude Code CLI (``claude -p``) をサブプロセスで叩いて辞書エントリの下書きを作る。
+"""辞書エントリの下書きを AI に作らせる。**プロンプトの組み立てと後処理**が仕事。
 
-API キー不要 (Claude Code の認証をそのまま流用する) 代わりに 1 回あたり数十秒
-かかるので、呼び出しはワーカースレッドに逃がす。
+どの AI に、どのモデルで、どれだけ考えさせて頼むかは ``llm.py`` が持つ
+（Claude Code CLI / Gemini API）。ここはその違いを知らない。
+
+1 回あたり数十秒〜数分かかるので、呼び出しはワーカースレッドに逃がす。
 """
 
 from __future__ import annotations
 
 import json
 import re
-import subprocess
-import tempfile
-from pathlib import Path
+from functools import partial
 
 from anyio import to_thread
 
-from . import config, relations, store
+from . import config, llm, relations, store
 from .linker import entry_url
 from .models import UNCATEGORIZED, Entry, EntryDraft, Relation
 
@@ -23,25 +23,17 @@ _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 #: 段落の切れ目。初出の場面をここで打ち切る
 _BLANK_LINE = re.compile(r"\n[ \t]*\n")
 
-#: 下書き生成はテキスト変換なので、ツールは全部落とす。
-#: 許可を出さないとサブプロセスが承認待ちで固まる (実際に踏んだ)。
-_DISALLOWED_TOOLS = ",".join([
-    "Agent", "Bash", "Edit", "Glob", "Grep", "NotebookEdit", "Read",
-    "Skill", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write",
-])
-
 _NO_TOOL_SYSTEM = (
     "あなたは JSON を返す変換器として動作します。ツールは一切使わず、"
     "ファイルも読まず、質問もせず、与えられた情報だけで即座に JSON を出力してください。"
 )
 
-
-class AIError(RuntimeError):
-    pass
+#: 失敗の型は提供元で分けない（呼ぶ側は「AI に頼めなかった」しか区別しない）
+AIError = llm.LLMError
 
 
 def available() -> bool:
-    return bool(config.CLAUDE_BIN)
+    return llm.available()
 
 
 # --------------------------------------------------------------------------- #
@@ -66,6 +58,58 @@ _SCHEMA_HINT = """{
 #: 初出の前後をどれだけ渡すか (spoiler="first")
 FIRST_LEAD_CHARS = 2000
 FIRST_TRAIL_CHARS = 400
+
+#: 長い本文を間引くときの窓の数と、窓の切れ目に入れる印。
+#: 印を入れるのは、飛んだことを AI に知らせて「連続した話」と読ませないため
+SAMPLE_WINDOWS = 8
+GAP_MARK = "〔中略〕"
+_GAP_JOIN = f"\n\n{GAP_MARK}\n\n"
+
+
+def sample_text(text: str, budget: int, *, windows: int = SAMPLE_WINDOWS) -> str:
+    """長すぎる本文を、**文書全体に散らした窓**に間引く。
+
+    頭から ``budget`` 文字取るだけだと、長編では冒頭しか AI に見えない
+    （345,000 字の小説に 12,000 字の枠なら先頭 3.5%）。後の章で初めて出てくる
+    登場人物は候補に挙がりようがなく、関係も引けない —— 実際に
+    『吾輩は猫である』で迷亭も寒月も一度も渡っていなかった。
+
+    先頭の窓は必ず 0 から始め、最後の窓は必ず末尾で終わる（書き出しと結びは
+    どちらも情報が多い。とくに末尾は、頭から切る実装では絶対に届かなかった）。
+    """
+    body = text or ""
+    if budget <= 0:
+        return ""
+    if len(body) <= budget:
+        return body
+
+    windows = max(1, min(windows, budget // 200 or 1))
+    take = budget // windows
+    # 窓の頭を [0, 末尾-take] に等間隔で置く。全体を len で割ると最後の窓が
+    # 文書の途中で終わり、**結びが一度も届かない**
+    step = (len(body) - take) / (windows - 1) if windows > 1 else 0
+    parts: list[str] = []
+    for i in range(windows):
+        start = int(i * step)
+        if i:
+            # 文の途中から始めない。近くに改行があればそこまで送る
+            nl = body.find("\n", start, start + max(take // 4, 1))
+            if nl != -1:
+                start = nl + 1
+        chunk = body[start:start + take].strip()
+        if chunk:
+            parts.append(chunk)
+    return _GAP_JOIN.join(parts)
+
+
+def _gap_note(text: str) -> list[str]:
+    """間引いたことをプロンプトに書き添える行。間引いていなければ空。"""
+    if GAP_MARK not in text:
+        return []
+    return [
+        f"（長い文書なので全体から抜粋しています。`{GAP_MARK}` は省略した箇所で、"
+        "その前後は連続していません。）",
+    ]
 
 
 def locator_of(text: str, term: str) -> str:
@@ -210,65 +254,44 @@ def build_prompt(
 # 実行
 # --------------------------------------------------------------------------- #
 
-def _neutral_cwd() -> Path:
-    """プロジェクト外の作業ディレクトリ。
+#: 1 件あたりの所要秒の見積もりと、起動などの固定ぶん。実測に余裕を足した値。
+#: 関係は根拠の引用まで書かせるぶん重い（21000 字の本文 + 20 本で約 140 秒。
+#: 遅い日には 270 秒かかった）。候補語は 1 件が短い（13 件 104 秒）
+RELATION_SECONDS_EACH = 22
+EXTRACT_SECONDS_EACH = 10
+TIMEOUT_BASE = 60
 
-    プロジェクト内で実行すると CLAUDE.md や ``gloss-add`` スキルを拾って
-    「重複を確認するため CLI を実行したい」と言い出し、承認が取れずに詰まる。
+
+def _scaled_timeout(count: int, each: int) -> int:
+    """出す件数から持ち時間を見積もる。**上限と、明示された指定は超えない。**
+
+    所要時間は**出力トークン数（思考を含む）にほぼ比例する** —— 実測で毎秒 90
+    トークン前後。関係 20 本ぶんの根拠つき JSON で 12,000 トークン＝約 140 秒に
+    なり、固定の 180 秒では**振れ幅を吸収できずに落ちる**（実際に踏んだ）。
+    ``GLOSSPOP_CLAUDE_TIMEOUT`` を大きくしている指定は下回らず、
+    ``CLAUDE_TIMEOUT_MAX`` より上には伸ばさない。
     """
-    path = Path(tempfile.gettempdir()) / "glosspop-ai"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    want = TIMEOUT_BASE + each * max(count, 1)
+    return max(config.CLAUDE_TIMEOUT, min(want, config.CLAUDE_TIMEOUT_MAX))
 
 
-def _run_claude(prompt: str) -> str:
-    if not config.CLAUDE_BIN:
-        raise AIError("claude CLI が見つかりません。PATH に追加するか GLOSSPOP_CLAUDE_BIN を設定してください。")
-    cmd = [
-        config.CLAUDE_BIN,
-        "-p", prompt,
-        "--output-format", "json",
-        "--disable-slash-commands",
-        "--strict-mcp-config",
-        "--disallowed-tools", _DISALLOWED_TOOLS,
-        "--append-system-prompt", _NO_TOOL_SYSTEM,
-        *config.CLAUDE_EXTRA_ARGS,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=config.CLAUDE_TIMEOUT,
-            cwd=str(_neutral_cwd()),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise AIError(f"claude CLI が {config.CLAUDE_TIMEOUT} 秒でタイムアウトしました") from exc
-    except OSError as exc:
-        raise AIError(f"claude CLI を起動できません: {exc}") from exc
+def relations_timeout(limit: int) -> int:
+    """関係の下書きに許す秒数。**頼んだ本数から見積もる。**"""
+    return _scaled_timeout(limit, RELATION_SECONDS_EACH)
 
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()[-800:]
-        raise AIError(f"claude CLI が異常終了しました (exit {proc.returncode}): {detail}")
 
-    stdout = (proc.stdout or "").strip()
-    if not stdout:
-        raise AIError("claude CLI が何も出力しませんでした")
+def extract_timeout(limit: int) -> int:
+    """候補語の抽出に許す秒数。**頼んだ語数から見積もる。**"""
+    return _scaled_timeout(limit, EXTRACT_SECONDS_EACH)
 
-    # --output-format json の外側エンベロープを剥がす
-    try:
-        envelope = json.loads(stdout)
-    except json.JSONDecodeError:
-        return stdout
-    if isinstance(envelope, dict):
-        if envelope.get("is_error"):
-            raise AIError(f"claude がエラーを返しました: {envelope.get('result') or envelope}")
-        result = envelope.get("result")
-        if isinstance(result, str):
-            return result
-    return stdout
+
+def _generate(prompt: str, *, timeout: int | None = None) -> str:
+    """AI に投げて本文を受け取る。**この 1 か所だけが外の頭脳に触る。**
+
+    どの提供元・モデル・思考の深さで動くかは ``llm.resolve()`` が決める。
+    テストはここを差し替える（提供元ごとに差し替え先が変わらないように）。
+    """
+    return llm.generate(prompt, timeout=timeout or config.CLAUDE_TIMEOUT, system=_NO_TOOL_SYSTEM)
 
 
 _EXTRACT_SCHEMA_HINT = """[
@@ -276,6 +299,7 @@ _EXTRACT_SCHEMA_HINT = """[
     "term": "文書中に出てくる表記そのまま（活用や助詞を含めない）",
     "kind": "下の種別コードのいずれか",
     "reading": "日本語の読み (かな)。不要なら空文字",
+    "alias_of": "登録済みの語と同じものを指す別の呼び方なら、その見出し語。違うなら空文字",
     "why": "なぜ辞書化する価値があるかを 20 字程度で",
     "context": "その語が出てくる文を 1 文そのまま抜き出す"
   }
@@ -317,6 +341,9 @@ EXTRACT_KINDS: dict[str, dict[str, str]] = {
 
 #: 既定で抜き出す種別。「鍵になる語」は他と重なりやすいので既定では外す
 DEFAULT_KINDS = ("person", "proper", "term")
+
+#: 抽出のプロンプトに載せる本文の量。超える文書は sample_text() で間引く
+EXTRACT_TEXT_CHARS = 12000
 
 
 def plain_hint(kind: str) -> str:
@@ -398,13 +425,21 @@ def build_extract_prompt(
             "",
             "## すでに辞書にある語（挙げないこと）",
             listed,
+            "",
+            "ただし、**この一覧の語と同じ対象を本文が別の呼び方で指している**とき"
+            "（同じ人物の呼び名が場面によって変わる、略称・敬称付きで呼ばれる、など）は、"
+            "`term` にその呼び方、`alias_of` に一覧の見出し語を入れて挙げてください。"
+            "**別のエントリを立てずに別名として登録します** ——"
+            "同じ人物が 2 つに割れると、相関図でも別人として並んでしまいます。",
         ]
     if source.strip():
         parts += ["", f"## 出典\n{source.strip()[:200]}"]
+    body = sample_text((text or "").strip(), EXTRACT_TEXT_CHARS)
     parts += [
         "",
         "## 文書",
-        (text or "").strip()[:12000],
+        *_gap_note(body),
+        body,
         "",
         "## 出力形式",
         "次の JSON 配列だけを出力してください。前置き・後置きの文章は書かないこと。",
@@ -459,6 +494,41 @@ def parse_candidates(text: str) -> list[dict]:
 def kind_label(kind: str) -> str:
     spec = EXTRACT_KINDS.get(kind)
     return spec["label"] if spec else "その他"
+
+
+def split_aliases(raw: list[dict], text: str) -> tuple[list[dict], list[dict]]:
+    """「すでにある語の別の呼び方」と申告されたものを候補から分ける。
+
+    返すのは (残りの候補, 別名の候補)。**別名は新しいエントリにしない** ——
+    『吾輩は猫である』の「主人」と「苦沙弥先生」のように、同じ人物が呼び方ごとに
+    別エントリへ割れると、本文のリンク先も相関図のノードも二重になる。
+
+    行き先が 1 つに決まらないとき（同名がカテゴリ違いで併存しているなど）は
+    **黙ってどれかに寄せず**、普通の候補として扱う。
+    """
+    haystack = (text or "").casefold()
+    rest: list[dict] = []
+    aliases: list[dict] = []
+    for item in raw:
+        term = str(item.get("term") or "").strip()
+        target = str(item.get("alias_of") or "").strip()
+        hits = store.find_by_surface(target) if term and target else []
+        if len(hits) != 1 or term.casefold() not in haystack:
+            rest.append(item)
+            continue
+        entry = hits[0]
+        if term.casefold() in {s.casefold() for s in entry.surfaces}:
+            continue                       # すでに別名として入っている
+        aliases.append({
+            "term": term,
+            "alias_of": entry.term,
+            "ref": entry.ref,
+            "path_label": entry.path_label,
+            "summary": entry.summary,
+            "why": str(item.get("why") or "").strip(),
+            "context": str(item.get("context") or "").strip()[:400],
+        })
+    return rest, aliases
 
 
 def filter_candidates(
@@ -545,19 +615,19 @@ async def extract_terms(
     prompt = build_extract_prompt(
         text, exclude=exclude, limit=limit, source=source, kinds=kinds
     )
-    raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
-    kept, dropped = filter_candidates(
-        parse_candidates(raw), text, limit=limit, kinds=kinds
-    )
-    return {"candidates": kept, "dropped": dropped, "kinds": kinds}
+    ask = partial(_generate, timeout=extract_timeout(limit))
+    raw = await to_thread.run_sync(ask, prompt, abandon_on_cancel=True)
+    parsed, aliases = split_aliases(parse_candidates(raw), text)
+    kept, dropped = filter_candidates(parsed, text, limit=limit, kinds=kinds)
+    return {"candidates": kept, "aliases": aliases, "dropped": dropped, "kinds": kinds}
 
 
 # --------------------------------------------------------------------------- #
 # フォルダ横断
 # --------------------------------------------------------------------------- #
 
-#: 1 ファイルあたり / 全体で AI に渡す文字数の上限。
-#: 全部渡すとプロンプトが膨らんで候補の質が落ちるので、頭から一定量だけ渡す
+#: 1 ファイルあたり / 全体で AI に渡す文字数の下限と上限。
+#: 全部渡すとプロンプトが膨らんで候補の質が落ちるので、全体から間引いて渡す
 PER_FILE_CHARS = 3000
 TOTAL_CHARS = 24000
 
@@ -569,19 +639,26 @@ def combine_documents(
 
     返すのは (まとめた本文, 使ったファイル, 入りきらなかったファイル)。
     切ったことは呼び出し側から UI に出す（黙って切らない）。
+
+    ``per_file`` は**下限**として使う。**文書が少ないときは全体の枠を等分する** ——
+    固定 3000 字のままだと、長編 1 冊だけのフォルダで冒頭 0.9% しか読めず、
+    後の章に出てくる人物の関係は引きようがなかった。1 ファイルの中では
+    ``sample_text()`` が全体に散らして採る（頭だけを読まない）。
     """
+    bodies = [(label, (text or "").strip()) for label, text in docs]
+    bodies = [(label, body) for label, body in bodies if body]
+    if bodies:
+        per_file = max(per_file, total // len(bodies))
+
     parts: list[str] = []
     used: list[str] = []
     skipped: list[str] = []
     budget = total
-    for label, text in docs:
-        body = (text or "").strip()
-        if not body:
-            continue
+    for label, body in bodies:
         if budget <= 0:
             skipped.append(label)
             continue
-        chunk = body[: min(per_file, budget)]
+        chunk = sample_text(body, min(per_file, budget))
         parts.append(f"### {label}\n{chunk}")
         used.append(label)
         budget -= len(chunk)
@@ -612,6 +689,24 @@ def _first_seen(docs: list[tuple[str, str]], term: str) -> tuple[str, str, str]:
     return "", "", ""
 
 
+def _first_context(docs: list[tuple[str, str]], surfaces: list[str]) -> str:
+    """**別名も含めて**いちばん早く現れた表記の初出の場面を返す。
+
+    見出し語だけで探すと、本文がもっぱら別の呼び方をしている人物
+    （「主人」に対する「苦沙弥先生」など）で場面が取れない。
+    """
+    for _, text in docs:
+        haystack = (text or "").casefold()
+        found = [
+            (index, surface)
+            for surface in surfaces
+            if surface and (index := haystack.find(surface.casefold())) >= 0
+        ]
+        if found:
+            return context_up_to_first(text, min(found)[1])
+    return ""
+
+
 async def extract_terms_from_documents(
     docs: list[tuple[str, str]], *, limit: int = 20, kinds: list[str] | None = None
 ) -> dict:
@@ -630,13 +725,13 @@ async def extract_terms_from_documents(
     limit = max(limit, len(kinds))
     exclude = [s for e in store.load_all() for s in e.surfaces]
     prompt = build_extract_prompt(combined, exclude=exclude, limit=limit, kinds=kinds)
-    raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
+    ask = partial(_generate, timeout=extract_timeout(limit))
+    raw = await to_thread.run_sync(ask, prompt, abandon_on_cancel=True)
     # 照合はプロンプトに載せた範囲ではなく全文に対して行う
     # (頭 3000 字しか渡していなくても、後ろに出てくる語なら採用してよい)
     haystack = "\n".join(text for _, text in docs)
-    kept, dropped = filter_candidates(
-        parse_candidates(raw), haystack, limit=limit, kinds=kinds
-    )
+    parsed, aliases = split_aliases(parse_candidates(raw), haystack)
+    kept, dropped = filter_candidates(parsed, haystack, limit=limit, kinds=kinds)
 
     for item in kept:
         files, count = _occurrences(docs, item["term"])
@@ -655,6 +750,7 @@ async def extract_terms_from_documents(
 
     return {
         "candidates": kept,
+        "aliases": aliases,
         "dropped": dropped,
         "files_used": used,
         "files_skipped": skipped,
@@ -669,6 +765,79 @@ async def extract_terms_from_documents(
 # **登録済みの用語を渡して、その間の関係だけを 1 回で挙げさせる**のがここ。
 # 用語そのものは作らない（それは extract の仕事）。
 # --------------------------------------------------------------------------- #
+
+#: 関係を探すときに切り出す窓の大きさ・本数と、プロンプトに載せる上限。
+#: 窓は「2 つ以上の登録語が一緒に出てくる」ところにだけ立てる
+RELATION_WINDOW = 1500
+RELATION_WINDOWS = 12
+RELATION_TEXT_CHARS = 20000
+
+def _surface_hits(text: str, entries: list[Entry]) -> list[tuple[int, str]]:
+    """本文中の (位置, ref) を全部集める。**別名も数える。**
+
+    「主人」と「苦沙弥先生」が同じ人物だと登録されていても、見出し語だけを
+    探すと本文が別名で呼んでいる場面を丸ごと取り落とす。
+    """
+    haystack = (text or "").casefold()
+    hits: list[tuple[int, str]] = []
+    for entry in entries:
+        for surface in entry.surfaces:
+            needle = surface.casefold()
+            if not needle:
+                continue
+            index = haystack.find(needle)
+            while index >= 0:
+                hits.append((index, entry.ref))
+                index = haystack.find(needle, index + len(needle))
+    hits.sort()
+    return hits
+
+
+def cooccurrence_context(
+    docs: list[tuple[str, str]],
+    entries: list[Entry],
+    *,
+    window: int = RELATION_WINDOW,
+    limit: int = RELATION_WINDOWS,
+) -> str:
+    """登録済みの用語が**一緒に出てくる**ところだけを切り出して繋ぐ。
+
+    関係が書いてあるのは、2 人の名前が近くに並ぶ場面であって文書の冒頭ではない。
+    頭から一定量渡す作りだと、長編では関係の書かれた場面が一度も AI に届かず
+    「関係が見つかりませんでした」で終わる（それがこの関数を足した理由）。
+
+    窓は**登場する語の種類が多い順**に採り、重なるものは捨てる。同じ場面を
+    何度も渡しても新しい関係は出てこないため。
+    """
+    spans: list[tuple[int, int, str, int]] = []      # (種類数, -位置, ラベル, 位置)
+    for order, (label, text) in enumerate(docs):
+        hits = _surface_hits(text, entries)
+        end = 0
+        for i, (start, _) in enumerate(hits):
+            while end < len(hits) and hits[end][0] - start <= window:
+                end += 1
+            names = {ref for _, ref in hits[i:end]}
+            if len(names) >= 2:
+                spans.append((len(names), -(order * 10**9 + start), label, start))
+
+    picked: list[tuple[str, int]] = []
+    for _, _, label, start in sorted(spans, reverse=True):
+        if len(picked) >= limit:
+            break
+        if any(l == label and abs(s - start) < window for l, s in picked):
+            continue
+        picked.append((label, start))
+
+    by_doc = {label: text for label, text in docs}
+    read_order = {label: i for i, (label, _) in enumerate(docs)}
+    parts: list[str] = []
+    for label, start in sorted(picked, key=lambda p: (read_order.get(p[0], 0), p[1])):
+        text = by_doc.get(label, "")
+        head = text.rfind("\n", max(0, start - 200), start)
+        begin = head + 1 if head >= 0 else start
+        parts.append(f"### {label}\n{text[begin:begin + window].strip()}")
+    return _GAP_JOIN.join(parts)[:RELATION_TEXT_CHARS]
+
 
 _RELATION_SCHEMA_HINT = """[
   {
@@ -693,7 +862,9 @@ def build_relations_prompt(
 ) -> str:
     """登録済みの用語どうしの関係を挙げさせるプロンプト。"""
     listed = "\n".join(
-        f"- {e.term}" + (f" — {e.summary}" if e.summary else "")
+        f"- {e.term}"
+        + (f"（本文での別の呼び方: {'、'.join(e.aliases)}）" if e.aliases else "")
+        + (f" — {e.summary}" if e.summary else "")
         for e in entries
     )
     reveal_desc = (
@@ -709,6 +880,8 @@ def build_relations_prompt(
         "## 対象の用語",
         "**この一覧にあるものだけ**を `from` と `to` に使ってください。"
         "一覧に無い語を勝手に足さないこと（関係だけを作る作業で、用語は作りません）。",
+        "**別の呼び方が添えてあるものは同じ相手を指します。**"
+        "本文がその呼び方をしていても、`from` / `to` には**見出しの表記**を書いてください。",
         listed,
         "",
         "## 書き方",
@@ -719,6 +892,9 @@ def build_relations_prompt(
         "- 一方的な関係（片思い、一方が知らない）なら `back` は空文字",
         "- 同じ 2 つの用語の組は **1 回だけ**。向きを変えて 2 行書かないこと",
         "- 本文から読み取れる関係だけを書く。推測で埋めないこと",
+        "- **一覧の語を上から順に見て、組になりうるものを取りこぼさないこと。**"
+        "同じ場に居合わせる、話題にする、呼び方が決まっている（飼い主と猫、友人、"
+        "師弟、家族、隣人）といった関係は、本文に書いてあれば挙げる",
         f"- 多くても {limit} 件まで。確かなものを優先する",
     ]
     if existing:
@@ -733,10 +909,12 @@ def build_relations_prompt(
             "後で明かされる関係（正体、血縁、裏切りなど）には触れず、"
             "この時点で分かる関係だけを書くこと。",
         ]
+    body = (text or "").strip()[:RELATION_TEXT_CHARS]
     parts += [
         "",
         "## 文書",
-        (text or "").strip()[:16000],
+        *_gap_note(body),
+        body,
         "",
         "## 出力形式",
         "次の JSON 配列だけを出力してください。前置き・後置きの文章は書かないこと。",
@@ -886,12 +1064,17 @@ async def draft_relations(
         # 関係（正体・血縁）が図に出てしまう
         chunks = []
         for entry in scope:
-            _, _, context = _first_seen(docs, entry.term)
+            context = _first_context(docs, entry.surfaces)
             if context:
                 chunks.append(f"### {entry.term} の初出\n{context}")
         text = "\n\n".join(chunks)
     else:
-        text, _, _ = combine_documents(docs)
+        # **登録済みの語が一緒に出てくる場面**を探して渡す。関係が書いてあるのは
+        # そこであって、文書の冒頭ではない。頭から一定量を渡していたころは、
+        # 長編で関係の場面が一度も届かず「見つかりませんでした」で終わっていた
+        text = cooccurrence_context(docs, scope)
+        if not text.strip():
+            text, _, _ = combine_documents(docs)
 
     if not text.strip():
         raise AIError("読める本文がありません")
@@ -903,7 +1086,9 @@ async def draft_relations(
         limit=limit,
         spoiler=spoiler,
     )
-    raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
+    # **本数に応じた持ち時間で呼ぶ。** 既定の 180 秒だと 11 本あたりで必ず溢れる
+    ask = partial(_generate, timeout=relations_timeout(limit))
+    raw = await to_thread.run_sync(ask, prompt, abandon_on_cancel=True)
     kept, dropped = filter_relations(
         parse_candidates(raw),
         entries,
@@ -935,7 +1120,7 @@ async def draft_entry(
         term, context, source=source, spoiler=spoiler,
         scope_folder=scope_folder, kind=kind,
     )
-    raw = await to_thread.run_sync(_run_claude, prompt, abandon_on_cancel=True)
+    raw = await to_thread.run_sync(_generate, prompt, abandon_on_cancel=True)
     data = parse_draft(raw)
     data.setdefault("term", term)
     if source and not data.get("source"):

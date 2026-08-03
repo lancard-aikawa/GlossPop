@@ -27,6 +27,26 @@ def forbid_real_network(monkeypatch):
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", boom, raising=False)
 
 
+#: AI の選択に効く環境変数。手元にあるだけで結果が変わるので、テストでは外す
+_AI_ENV = (
+    "GLOSSPOP_AI_PROVIDER", "GLOSSPOP_AI_MODEL", "GLOSSPOP_AI_EFFORT",
+    "GLOSSPOP_CLAUDE_ARGS", "GLOSSPOP_GEMINI_KEY", "GEMINI_API_KEY",
+)
+
+
+@pytest.fixture(autouse=True)
+def neutral_ai_env(monkeypatch):
+    """AI の選択を**手元の環境変数に左右させない。**
+
+    優先順が「環境変数 > 設定ファイル > 既定」なので、開発機に
+    ``GEMINI_API_KEY`` があるだけで「鍵は設定済み」になり、設定ファイル側を
+    見るテストが**手元でだけ違う結果になる**（実際に踏んだ）。
+    `claude` の有無をテストの前提にしないのと同じ話。
+    """
+    for name in _AI_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture(autouse=True)
 def isolated_dirs(tmp_path, monkeypatch):
     """各テストを使い捨ての辞書 / content ディレクトリで走らせる。"""

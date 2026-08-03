@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import socket
 import threading
 import time
@@ -704,6 +705,85 @@ def test_light_wins_over_a_dark_os(server, seeded):
             context.close()
         finally:
             browser.close()
+
+
+def test_extracting_offers_another_name_as_an_alias(page, server, seeded, monkeypatch):
+    """抽出が見つけた「別の呼び方」を、新しい語ではなく既存の語の別名として足す。
+
+    同じ人物が呼び方ごとに別エントリへ割れると、本文のリンク先も相関図のノードも
+    二重になる。AI を呼ぶ経路なので claude の応答は差し替えて画面だけを見る。
+    """
+    from glosspop import ai
+
+    monkeypatch.setattr(ai, "available", lambda: True)
+    monkeypatch.setattr(ai, "_generate", lambda prompt, **_: json.dumps([
+        {"term": "ジョバンニ君", "alias_of": "ジョバンニ", "why": "同じ人物の呼び方"},
+    ]))
+    doc = config.content_dir() / "銀河.md"
+    doc.write_text(doc.read_text(encoding="utf-8") + "\nジョバンニ君と呼ばれた。\n", encoding="utf-8")
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=15000)
+    page.click("#extract")
+    page.locator("dialog.sheet .kind-list .check").first.wait_for(timeout=10000)
+    page.click("dialog.sheet button:has-text('種別で候補を抽出する')")
+
+    alias_button = page.locator("dialog.sheet button:has-text('別名に追加')")
+    alias_button.wait_for(timeout=20000)
+    assert "ジョバンニ君" in page.locator("dialog.sheet .cand-list").inner_text()
+    alias_button.click()
+    page.locator("dialog.sheet .status:has-text('別名を 1 件追加しました')").wait_for(timeout=10000)
+
+    # 新しいエントリは増えず、既存の語に別名が付いていること
+    entries = store.load_all()
+    assert [e.term for e in entries] == ["カムパネルラ", "ジョバンニ"]
+    assert store.find_by_surface("ジョバンニ君")[0].term == "ジョバンニ"
+
+
+def test_the_settings_dialog_switches_the_ai(page, server, isolated_dirs, monkeypatch):
+    """⚙ でモデルと思考の深さを選べて、**次の呼び出しから効く**こと。"""
+    from glosspop import llm
+
+    page.goto(f"{server}/glossary")
+    page.locator(".topbar").wait_for(timeout=15000)
+    page.click("#settings")
+    page.locator("dialog.sheet [data-ref=aiProvider]").wait_for(timeout=10000)
+
+    # 既定は Claude。モデルの候補はアプリが持っている（API を叩かない）
+    assert page.eval_on_selector("[data-ref=aiProvider]", "n => n.value") == "claude"
+    page.wait_for_function(
+        "document.querySelectorAll('#gp-ai-models option').length >= 4", timeout=10000
+    )
+
+    page.fill("[data-ref=aiModel]", "opus")
+    page.select_option("[data-ref=aiEffort]", "high")
+    page.click("[data-ref=aiSave]")
+    page.locator("[data-ref=aiStatus]:has-text('保存しました')").wait_for(timeout=10000)
+
+    # サーバ側で解決した値が変わっていること（再起動を挟まない）
+    current = llm.resolve()
+    assert current["model"] == "opus" and current["effort"] == "high"
+
+
+def test_the_settings_dialog_never_shows_the_gemini_key(page, server, isolated_dirs, monkeypatch):
+    """鍵は「登録済み」とだけ出す。**値を返す口を作らない。**"""
+    from glosspop import config, llm
+
+    # 提供元を切り替えるとモデル一覧を API から取りに行く（外へ出さない）
+    monkeypatch.setattr(llm, "list_gemini_models", lambda *a, **k: [
+        {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash", "thinking": True},
+    ])
+    config.save_settings({**config.load_settings(), "gemini_api_key": "秘密の鍵"})
+    page.goto(f"{server}/glossary")
+    page.locator(".topbar").wait_for(timeout=15000)
+    page.click("#settings")
+    page.locator("dialog.sheet [data-ref=aiProvider]").wait_for(timeout=10000)
+    page.select_option("[data-ref=aiProvider]", "gemini")
+    page.locator("[data-ref=aiKeyRow]:visible").wait_for(timeout=10000)
+
+    assert page.eval_on_selector("[data-ref=aiKey]", "n => n.value") == ""
+    assert "登録済み" in page.eval_on_selector("[data-ref=aiKey]", "n => n.placeholder")
+    assert "秘密の鍵" not in page.content()
 
 
 def test_the_update_notice_appears(page, server, isolated_dirs):

@@ -30,6 +30,12 @@ function build() {
           <option value="first">各用語の初出の場面だけを読む</option>
           <option value="full">全文を読む（ネタバレ可）</option>
         </select>
+        <select data-ref="limit" class="auto-width" aria-label="探す本数"
+                title="多いほど時間がかかる（1 本あたり 20 秒ほど）">
+          <option value="10">10 本まで（速い）</option>
+          <option value="20" selected>20 本まで</option>
+          <option value="40">40 本まで（時間がかかる）</option>
+        </select>
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
         <button type="button" data-ref="stop" hidden>中止</button>
@@ -95,7 +101,8 @@ export async function openRelationsDialog({
   const from = text ? (source ? `「${source}」` : "表示中の文書") : "開いているフォルダの本文";
   refs.lead.textContent =
     `${where}に登録済みの用語どうしの関係を、${from}から探します。` +
-    "用語は作りません（すでに登録されているものだけを結びます）。";
+    "用語は作りません（すでに登録されているものだけを結びます）。" +
+    "見つかった関係 1 本につき 20 秒ほどかかるので、急ぐときは本数を減らしてください。";
   // 既定は初出の場面だけ。相関図は本文より先を一望させるので、伏せる側に倒す
   const remembered = await defaultSpoiler();
   refs.spoiler.value = remembered === "full" ? "full" : "first";
@@ -129,20 +136,37 @@ export async function openRelationsDialog({
     busy = true;
     aborted = false;
     refs.stop.hidden = false;
-    refs.spoiler.disabled = true;
+    refs.spoiler.disabled = refs.limit.disabled = true;
     paintGo();
-    setStatus(refs.status, "Claude が関係を探しています (数十秒かかります)", "busy");
+    // **1 本あたり 20 秒ほどかかる。** 進捗の出しようが無い（応答は最後にまとめて
+    // 返る）ので、せめて経過秒を出す —— 出さないと固まったように見えて閉じられる
+    const started = Date.now();
+    const tick = setInterval(() => {
+      const sec = Math.round((Date.now() - started) / 1000);
+      setStatus(refs.status, `Claude が関係を探しています（${sec} 秒経過）`, "busy");
+    }, 1000);
+    setStatus(refs.status, "Claude が関係を探しています（数分かかることがあります）", "busy");
     try {
       controller = new AbortController();
       const res = await api("/api/ai/relations", {
         method: "POST",
-        body: { category, scope, text, source, spoiler: refs.spoiler.value },
+        body: {
+          category, scope, text, source,
+          spoiler: refs.spoiler.value,
+          limit: Number(refs.limit.value),
+        },
         signal: controller.signal,
       });
       controller = null;
       rows = (res.relations || []).map(makeRow);
       if (!rows.length) {
-        refs.lead.textContent = "本文から読み取れる新しい関係は見つかりませんでした。";
+        // 初出モードでは各用語の初出の場面しか読ませないので、そもそも 2 人が
+        // 同じ場面に居合わせないことが多い。行き止まりに見せない
+        refs.lead.textContent =
+          "本文から読み取れる新しい関係は見つかりませんでした。" +
+          (res.spoiler === "first"
+            ? "いまは各用語の初出の場面だけを読んでいます。「全文を読む」に切り替えると見つかることがあります。"
+            : "");
       } else {
         refs.lead.textContent =
           "書き込む関係にチェックを残してください。関係は片側にだけ書かれ、" +
@@ -150,12 +174,19 @@ export async function openRelationsDialog({
         refs.list.replaceChildren(...rows.map((r) => r.li));
         for (const row of rows) row.check.addEventListener("change", paintGo);
       }
+      clearInterval(tick);
       setStatus(refs.status, `候補 ${rows.length} 本`);
       paintNotes(res);
     } catch (err) {
-      if (!aborted) setStatus(refs.status, err.message, "error");
-      refs.spoiler.disabled = false;    // やり直せるように戻す
+      clearInterval(tick);
+      // タイムアウトは「本数を減らせば通る」ので、そこまで言う
+      const hint = /タイムアウト/.test(err.message)
+        ? "（探す本数を減らすか、カテゴリで範囲を絞ってください）"
+        : "";
+      if (!aborted) setStatus(refs.status, err.message + hint, "error");
+      refs.spoiler.disabled = refs.limit.disabled = false;   // やり直せるように戻す
     }
+    clearInterval(tick);
     busy = false;
     refs.stop.hidden = true;
     paintGo();
@@ -248,7 +279,7 @@ export async function openRelationsDialog({
   refs.close.addEventListener("click", finish);
   refs.form.addEventListener("submit", onSubmit);
 
-  // 下書きは数十秒かかり、その間に閉じられる。listener は await の前に付ける
+  // 下書きは数分かかることがあり、その間に閉じられる。listener は await の前に付ける
   // （extract.js と同じ理由。あとで付けると close を取り逃がして解決しない）
   const done = new Promise((resolve) => {
     dialog.addEventListener(
@@ -256,7 +287,7 @@ export async function openRelationsDialog({
       () => {
         aborted = true;
         controller?.abort();
-        refs.spoiler.disabled = false;
+        refs.spoiler.disabled = refs.limit.disabled = false;
         cleanup();
         resolve(applied);
       },

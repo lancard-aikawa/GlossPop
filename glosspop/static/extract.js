@@ -69,6 +69,7 @@ function build() {
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
         <button type="button" data-ref="stop" hidden>中止</button>
+        <button type="button" data-ref="aliases" hidden></button>
         <button type="button" data-ref="relations" hidden>✨ 続けて関係を探す</button>
         <button type="button" data-ref="cancel">閉じる</button>
         <button type="button" class="primary" data-ref="go" hidden></button>
@@ -122,6 +123,31 @@ function makeRow(candidate) {
   return { li, check, state, edit, candidate, draft: null, saved: null };
 }
 
+/**
+ * 「既存の語の別の呼び方」1 件ぶんの行。
+ *
+ * 新しいエントリにはしない。同じ人物が呼び方ごとに別エントリへ割れると、
+ * 本文のリンク先も相関図のノードも二重になる。
+ */
+function makeAliasRow(alias) {
+  const check = el("input", { type: "checkbox", checked: true });
+  const state = el("span", { class: "status" });
+  const li = el("li", {}, [
+    el("div", { class: "check-row" }, [
+      el("label", { class: "check" }, [
+        check,
+        el("span", { class: "term", text: alias.term }),
+        el("span", { class: "rel-arrow", text: "→" }),
+        el("span", { text: `${alias.alias_of}（${alias.path_label}）` }),
+      ]),
+      el("span", { class: "spacer" }),
+      state,
+    ]),
+    el("p", { class: "hint", text: [alias.why, alias.context].filter(Boolean).join(" — ") }),
+  ]);
+  return { li, check, state, alias, saved: false };
+}
+
 /** 種別ごとの見出しを挟んだ行の並びを返す。 */
 function groupRows(rows) {
   const out = [];
@@ -166,7 +192,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   refs.kindbox.disabled = false;
   refs.dropped.hidden = true;
   refs.go.hidden = refs.stop.hidden = refs.toggle.hidden = true;
-  refs.relations.hidden = true;
+  refs.aliases.hidden = refs.relations.hidden = true;
   refs.lead.textContent =
     "抜き出すものを先に選んでください。種別ごとに別々の枠で挙げるので、" +
     "人物と専門用語が枠を取り合いません。";
@@ -174,6 +200,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   dialog.showModal();
 
   let rows = [];
+  let aliasRows = [];
   let kindBoxes = [];
   let saved = 0;
   let aborted = false;
@@ -181,8 +208,17 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   let controller = null;
 
   const pickedKinds = () => kindBoxes.filter((k) => k.check.checked).map((k) => k.key);
+  const pickedAliases = () => aliasRows.filter((r) => r.check.checked && !r.saved);
+
+  /** 別名ボタンは、足せるものが残っているときだけ出す。 */
+  const paintAliases = () => {
+    const n = pickedAliases().length;
+    refs.aliases.hidden = !n;
+    refs.aliases.textContent = `チェックした ${n} 件を別名に追加`;
+  };
 
   const paintGo = () => {
+    paintAliases();
     refs.go.hidden = false;
     // 段は 3 つ: 種別を選ぶ → 候補を選ぶ → 下書きを確認して保存する
     if (!rows.length) {
@@ -241,19 +277,34 @@ export async function openExtractDialog({ text = "", source = "", folder = false
         : await api("/api/ai/extract", { ...options, body: { text, source, kinds } });
       controller = null;
       rows = (res.candidates || []).map(makeRow);
-      if (!rows.length) {
+      aliasRows = (res.aliases || []).map(makeAliasRow);
+      if (!rows.length && !aliasRows.length) {
         refs.lead.textContent = "選んだ種別に当てはまる語は見つかりませんでした。";
         setStatus(refs.status, "");
       } else {
         const scope = folder ? `${res.files_used?.length || 0} ファイルから挙げました。` : "";
         refs.lead.textContent =
           scope + "登録する語を選んでください。下書きは 1 語あたり数十秒かかります（順に作ります）。";
-        refs.list.replaceChildren(...groupRows(rows));
+        const listed = [...groupRows(rows)];
+        if (aliasRows.length) {
+          // 既存の語に足すだけなので下書きは要らない。別の枠として先に見せる
+          listed.unshift(
+            el("li", { class: "cand-group", text: "別の呼び方（既存の語に足す）" }),
+            ...aliasRows.map((r) => r.li)
+          );
+        }
+        refs.list.replaceChildren(...listed);
         for (const row of rows) {
           row.check.addEventListener("change", paintGo);
           row.edit.addEventListener("click", () => onEdit(row));
         }
-        setStatus(refs.status, `候補 ${rows.length} 語`);
+        for (const row of aliasRows) row.check.addEventListener("change", paintGo);
+        setStatus(
+          refs.status,
+          [`候補 ${rows.length} 語`, aliasRows.length ? `別名 ${aliasRows.length} 件` : ""]
+            .filter(Boolean)
+            .join(" / ")
+        );
       }
       paintNotes(res);
     } catch (err) {
@@ -381,6 +432,43 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     paintGo();
   };
 
+  /**
+   * 「別の呼び方」を既存エントリの別名としてまとめて足す。
+   *
+   * まとめて送るのは関係と同じ理由。同じ人物に別名が 2 つ付くとき、1 件ずつ
+   * 送るとサーバ側の読み書きが競って先に書いたぶんが消える。
+   */
+  const onAliases = async () => {
+    const targets = pickedAliases();
+    if (!targets.length) return;
+    refs.aliases.disabled = true;
+    setStatus(refs.status, `別名 ${targets.length} 件を追加中`, "busy");
+    try {
+      const res = await api("/api/aliases", {
+        method: "POST",
+        body: { aliases: targets.map((r) => ({ ref: r.alias.ref, alias: r.alias.term })) },
+      });
+      const failed = new Map(res.results.filter((x) => !x.ok).map((x) => [x.ref, x.detail]));
+      for (const row of targets) {
+        const bad = failed.get(row.alias.ref);
+        if (bad) {
+          setStatus(row.state, bad, "error");
+          continue;
+        }
+        row.saved = true;
+        row.check.checked = false;
+        row.check.disabled = true;
+        setStatus(row.state, "別名に追加しました");
+      }
+      if (res.applied) invalidatePopupCache();   // 本文のリンクが増える
+      setStatus(refs.status, `別名を ${res.applied} 件追加しました`);
+    } catch (err) {
+      setStatus(refs.status, err.message, "error");
+    }
+    refs.aliases.disabled = false;
+    paintGo();
+  };
+
   /** 登録した語どうしの関係を続けて探す。同じ本文をそのまま渡す。 */
   const onRelations = async () => {
     const categories = [
@@ -428,6 +516,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   function cleanup() {
     refs.go.removeEventListener("click", onGo);
     refs.toggle.removeEventListener("click", onToggle);
+    refs.aliases.removeEventListener("click", onAliases);
     refs.relations.removeEventListener("click", onRelations);
     refs.stop.removeEventListener("click", onStop);
     refs.cancel.removeEventListener("click", finish);
@@ -436,6 +525,7 @@ export async function openExtractDialog({ text = "", source = "", folder = false
   }
   refs.go.addEventListener("click", onGo);
   refs.toggle.addEventListener("click", onToggle);
+  refs.aliases.addEventListener("click", onAliases);
   refs.relations.addEventListener("click", onRelations);
   refs.stop.addEventListener("click", onStop);
   refs.cancel.addEventListener("click", finish);

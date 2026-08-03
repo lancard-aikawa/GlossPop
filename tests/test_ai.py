@@ -6,9 +6,9 @@ import json
 
 import pytest
 
-from glosspop import ai
+from glosspop import ai, config
 
-TEXT = "この API は結果整合性を前提にしている。冪等な操作ならリトライしても安全だ。"
+TEXT ="この API は結果整合性を前提にしている。冪等な操作ならリトライしても安全だ。"
 
 
 def test_prompt_lists_known_terms_to_skip():
@@ -162,11 +162,116 @@ class TestExtractKinds:
         assert "人物・組織" not in ai.build_scope_block("銀河鉄道の夜")
 
 
+class TestTimeouts:
+    """**持ち時間は出す件数から見積もる。**
+
+    所要時間は出力トークン数（思考を含む）にほぼ比例し、関係 20 本ぶんで約 140 秒
+    （遅い日は 270 秒）。固定の 180 秒では吸収できずに落ちた（実際に踏んだ）。
+    """
+
+    def test_more_relations_get_more_time(self):
+        assert ai.relations_timeout(20) > ai.relations_timeout(10)
+        # 実測 15 本 271 秒。20 本を頼んだら少なくともそれ以上は待てること
+        assert ai.relations_timeout(20) >= 271
+
+    def test_never_below_the_configured_default(self, monkeypatch):
+        monkeypatch.setattr(config, "CLAUDE_TIMEOUT", 600)
+        assert ai.relations_timeout(1) == 600      # 明示された指定は下回らない
+
+    def test_never_above_the_ceiling(self, monkeypatch):
+        monkeypatch.setattr(config, "CLAUDE_TIMEOUT_MAX", 300)
+        assert ai.relations_timeout(999) == 300
+
+    def test_extraction_scales_too(self):
+        # 語数の上限は API で 40 まで許している。既定のままだと溢れる
+        assert ai.extract_timeout(40) > config.CLAUDE_TIMEOUT
+
+    def test_the_timeout_is_reported_in_the_error(self, monkeypatch):
+        import subprocess
+
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+        def boom(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd="claude", timeout=kw["timeout"])
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        with pytest.raises(ai.AIError, match="500 秒"):
+            ai._generate("お願い", timeout=500)
+
+
+class TestSplitAliases:
+    """同じ人物が呼び方ごとに別エントリへ割れるのを止める部分。"""
+
+    NOVEL = "苦沙弥先生は書斎にいる。吾輩はその膝に乗った。"
+
+    def test_pulls_out_another_name_for_an_existing_entry(self, add_entry):
+        add_entry("主人", category="登場人物")
+        raw = [{"term": "苦沙弥先生", "alias_of": "主人", "why": "同じ人物"}]
+        rest, aliases = ai.split_aliases(raw, self.NOVEL)
+        assert rest == []
+        assert aliases[0]["term"] == "苦沙弥先生"
+        assert aliases[0]["alias_of"] == "主人"
+        assert aliases[0]["ref"].endswith("主人")
+
+    def test_keeps_it_as_a_normal_candidate_when_the_target_is_unknown(self):
+        raw = [{"term": "苦沙弥先生", "alias_of": "いない人"}]
+        rest, aliases = ai.split_aliases(raw, self.NOVEL)
+        assert rest == raw and aliases == []
+
+    def test_skips_a_name_that_is_already_an_alias(self, add_entry):
+        add_entry("主人", category="登場人物", aliases=["苦沙弥先生"])
+        raw = [{"term": "苦沙弥先生", "alias_of": "主人"}]
+        rest, aliases = ai.split_aliases(raw, self.NOVEL)
+        assert rest == [] and aliases == []
+
+    def test_drops_a_name_that_is_not_in_the_document(self, add_entry):
+        # 本文に無い表記を別名にしてもリンクにならない（候補語と同じ規則）
+        add_entry("主人", category="登場人物")
+        raw = [{"term": "珍野苦沙弥", "alias_of": "主人"}]
+        rest, aliases = ai.split_aliases(raw, self.NOVEL)
+        assert aliases == [] and rest == raw
+
+    def test_leaves_other_candidates_alone(self, add_entry):
+        add_entry("主人", category="登場人物")
+        raw = [{"term": "苦沙弥先生", "alias_of": "主人"}, {"term": "吾輩"}]
+        rest, aliases = ai.split_aliases(raw, self.NOVEL)
+        assert [r["term"] for r in rest] == ["吾輩"]
+        assert len(aliases) == 1
+
+
 DOCS = [
     ("a.md", "サーキットブレーカーで止める。指数バックオフで待つ。"),
     ("sub/b.md", "サーキットブレーカーは有効だ。"),
     ("c.md", "無関係な文章。"),
 ]
+
+
+class TestSampleText:
+    """長い本文は**全体から間引く**。頭だけ渡すと後の章が一度も届かない。"""
+
+    def test_short_text_is_passed_through(self):
+        assert ai.sample_text("短い本文", 100) == "短い本文"
+
+    def test_long_text_keeps_the_beginning_and_the_end(self):
+        body = "書き出しの語" + "あ" * 20000 + "結びの語"
+        out = ai.sample_text(body, 4000)
+        assert len(out) <= 4000 + 200        # 印のぶんだけ超える
+        assert "書き出しの語" in out          # 書き出しは必ず入れる
+        assert "結びの語" in out              # 結びも届く（頭だけ切らない）
+        assert ai.GAP_MARK in out             # 飛んだことを黙らない
+
+    def test_windows_are_spread_over_the_whole_document(self):
+        # 章ごとに違う語を置き、冒頭だけでなく後半からも採れていることを見る
+        body = "\n".join(f"第{i}章の語" + "あ" * 2000 for i in range(10))
+        out = ai.sample_text(body, 4000)
+        found = [i for i in range(10) if f"第{i}章の語" in out]
+        assert 0 in found
+        assert max(found) >= 7                # 後半の章にも窓が立つ
+
+    def test_head_only_slicing_would_have_missed_the_tail(self):
+        body = "あ" * 5000 + "終章の語"
+        assert "終章の語" not in body[:1000]           # 直前の実装ならここで落ちていた
+        assert "終章の語" in ai.sample_text(body, 1000)
 
 
 class TestCombineDocuments:
@@ -186,10 +291,15 @@ class TestCombineDocuments:
         _, used, _ = ai.combine_documents([("empty.md", "  "), ("a.md", "本文")])
         assert used == ["a.md"]
 
+    def test_a_lone_long_document_gets_the_whole_budget(self):
+        # 長編 1 冊だけのフォルダで冒頭 3000 字しか読めない、を防ぐ
+        combined, _, _ = ai.combine_documents([("novel.epub", "あ" * 100_000)])
+        assert len(combined) > ai.PER_FILE_CHARS * 3
+
 
 class TestExtractFromDocuments:
     async def _extract(self, monkeypatch, response: str, **kwargs):
-        monkeypatch.setattr(ai, "_run_claude", lambda prompt: response)
+        monkeypatch.setattr(ai, "_generate", lambda prompt, **_: response)
         return await ai.extract_terms_from_documents(DOCS, **kwargs)
 
     @pytest.mark.anyio
@@ -208,13 +318,13 @@ class TestExtractFromDocuments:
     async def test_matches_against_the_whole_text_not_just_the_prompt(self, monkeypatch):
         # プロンプトには頭しか載せないが、後ろに出てくる語も採用してよい
         docs = [("long.md", "x" * 5000 + "サーキットブレーカー")]
-        monkeypatch.setattr(ai, "_run_claude", lambda prompt: '[{"term": "サーキットブレーカー"}]')
+        monkeypatch.setattr(ai, "_generate", lambda prompt, **_: '[{"term": "サーキットブレーカー"}]')
         res = await ai.extract_terms_from_documents(docs)
         assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー"]
 
     @pytest.mark.anyio
     async def test_no_documents_is_an_error(self, monkeypatch):
-        monkeypatch.setattr(ai, "_run_claude", lambda prompt: "[]")
+        monkeypatch.setattr(ai, "_generate", lambda prompt: "[]")
         with pytest.raises(ai.AIError):
             await ai.extract_terms_from_documents([])
 
@@ -395,14 +505,15 @@ class TestDraftRelations:
     async def test_needs_two_entries(self, add_entry, monkeypatch):
         add_entry("ジョバンニ", category="登場人物")
         from glosspop import store
-        monkeypatch.setattr(ai, "_run_claude", lambda prompt: "[]")
+        monkeypatch.setattr(ai, "_generate", lambda prompt: "[]")
         with pytest.raises(ai.AIError):
             await ai.draft_relations(store.load_all(), [("a.md", "本文")])
 
     @pytest.mark.anyio
     async def test_returns_validated_relations(self, cast, monkeypatch):
         from glosspop import store
-        monkeypatch.setattr(ai, "_run_claude", lambda prompt: json.dumps([
+        # 関係の下書きは持ち時間を指定して呼ぶので、差し替えも timeout を受ける
+        monkeypatch.setattr(ai, "_generate", lambda prompt, **_: json.dumps([
             {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友", "back": "親友"},
             {"from": "ジョバンニ", "to": "存在しない人", "label": "兄"},
         ]))
@@ -417,11 +528,75 @@ class TestDraftRelations:
         from glosspop import store
         seen = {}
 
-        def capture(prompt):
+        def capture(prompt, **_):
             seen["prompt"] = prompt
             return "[]"
 
-        monkeypatch.setattr(ai, "_run_claude", capture)
+        monkeypatch.setattr(ai, "_generate", capture)
         docs = [("a.md", "ジョバンニが出た。\n\nカムパネルラが出た。\n\n実は二人は兄弟だった。")]
         await ai.draft_relations(store.load_all(), docs, spoiler="first")
         assert "実は二人は兄弟だった" not in seen["prompt"]
+
+    @pytest.mark.anyio
+    async def test_first_scene_mode_finds_the_scene_through_an_alias(self, add_entry, monkeypatch):
+        """本文が別の呼び方しかしていない人物でも、初出の場面を取れること。"""
+        from glosspop import store
+        add_entry("主人", category="登場人物", aliases=["苦沙弥先生"])
+        add_entry("吾輩", category="登場人物")
+        seen = {}
+        monkeypatch.setattr(ai, "_generate", lambda p, **_: seen.setdefault("prompt", p) and "[]")
+
+        docs = [("a.md", "吾輩は猫である。\n苦沙弥先生は書斎にいる。")]
+        await ai.draft_relations(store.load_all(), docs, spoiler="first")
+        assert "苦沙弥先生は書斎にいる" in seen["prompt"]
+
+    @pytest.mark.anyio
+    async def test_full_mode_sends_the_scene_where_the_terms_meet(self, cast, monkeypatch):
+        """関係が書いてあるのは 2 人が並ぶ場面。冒頭ではない。"""
+        from glosspop import store
+        seen = {}
+        monkeypatch.setattr(ai, "_generate", lambda p, **_: seen.setdefault("prompt", p) and "[]")
+
+        docs = [("a.md", "無関係な前置き。" * 3000 + "ジョバンニとカムパネルラは親友だった。")]
+        await ai.draft_relations(store.load_all(), docs, spoiler="full")
+        assert "ジョバンニとカムパネルラは親友だった" in seen["prompt"]
+
+
+class TestCooccurrenceContext:
+    """関係の下書きに渡す本文の選び方。"""
+
+    def _entries(self):
+        from glosspop import store
+        return store.load_all()
+
+    def test_picks_the_window_where_two_terms_appear_together(self, cast):
+        filler = "遠い前置き。" * 500
+        docs = [("a.md", filler + "ジョバンニはカムパネルラに声をかけた。" + filler)]
+        out = ai.cooccurrence_context(docs, self._entries())
+        assert "ジョバンニはカムパネルラに声をかけた" in out
+
+    def test_ignores_places_where_only_one_term_appears(self, cast):
+        docs = [("a.md", "ジョバンニだけがいる場面。" * 200)]
+        assert ai.cooccurrence_context(docs, self._entries()) == ""
+
+    def test_counts_aliases_as_the_same_entry(self, add_entry):
+        add_entry("主人", category="登場人物", aliases=["苦沙弥先生"])
+        add_entry("吾輩", category="登場人物")
+        docs = [("a.md", "余談。" * 400 + "吾輩は苦沙弥先生の膝に乗った。")]
+        out = ai.cooccurrence_context(docs, self._entries())
+        assert "吾輩は苦沙弥先生の膝に乗った" in out
+
+    def test_does_not_return_the_same_scene_twice(self, cast):
+        docs = [("a.md", "ジョバンニとカムパネルラ。" * 200)]
+        out = ai.cooccurrence_context(docs, self._entries(), window=100, limit=5)
+        assert out.count("###") == 5      # 重なる窓は捨てて別の場面を採る
+
+    @pytest.mark.anyio
+    async def test_falls_back_when_no_pair_shares_a_scene(self, cast, monkeypatch):
+        """窓が 1 つも立たないときに空の本文を渡さない（combine に落ちる）。"""
+        from glosspop import store
+        seen = {}
+        monkeypatch.setattr(ai, "_generate", lambda p, **_: seen.setdefault("prompt", p) and "[]")
+        docs = [("a.md", "ジョバンニ" + "。" * 5000 + "カムパネルラ")]
+        await ai.draft_relations(store.load_all(), docs, spoiler="full")
+        assert "ジョバンニ" in seen["prompt"]
