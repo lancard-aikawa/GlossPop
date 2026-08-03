@@ -294,6 +294,47 @@ def test_content_search_finds_text_across_files(client):
     assert not res["files_truncated"] and not res["hits_truncated"]
 
 
+def test_searching_by_entry_uses_the_auto_link_rules(client):
+    """用語で探すときは**自動リンクと同じ規則**で当てる。
+
+    素の部分一致にすると `API` が `rapid` に当たり、**リンクにならない語を
+    「出てくる」と言う**ことになる。別名も一緒に探す。
+    """
+    ref = client.post("/api/entries", json={
+        "term": "API", "aliases": ["ＡＰＩ"], "category": "プログラミング", "definition": "本文。",
+    }).json()["ref"]
+    (config.content_dir() / "a.md").write_text(
+        "API を叩く。rapid な開発。ＡＰＩ とも書く。\n", encoding="utf-8"
+    )
+
+    res = client.get("/api/content-search", params={"ref": ref}).json()
+    assert res["query"] == "API"
+    # API と ＡＰＩ の 2 件。3 件なら rapid まで拾っている（＝素の部分一致）
+    assert res["total_hits"] == 2
+    assert len(res["results"][0]["hits"]) == 2
+
+
+def test_searching_by_entry_returns_a_whole_sentence_for_examples(client):
+    """使用例に貼るので、抜粋ではなく文の切れ目まで採る。"""
+    ref = client.post("/api/entries", json={
+        "term": "冪等", "category": "プログラミング", "definition": "本文。",
+    }).json()["ref"]
+    (config.content_dir() / "a.md").write_text(
+        "前の文です。PUT は冪等なのでリトライしても安全。次の文です。\n", encoding="utf-8"
+    )
+
+    hit = client.get("/api/content-search", params={"ref": ref}).json()["results"][0]["hits"][0]
+    assert hit["sentence"] == "PUT は冪等なのでリトライしても安全。"
+
+
+def test_searching_by_an_unknown_entry_is_404(client):
+    assert client.get("/api/content-search", params={"ref": "無い/語"}).status_code == 404
+
+
+def test_content_search_needs_something_to_look_for(client):
+    assert client.get("/api/content-search").status_code == 400
+
+
 def test_content_search_is_case_insensitive_and_reports_nothing_found(client):
     (config.content_dir() / "a.md").write_text("The API is idempotent.\n", encoding="utf-8")
     assert client.get("/api/content-search", params={"q": "api"}).json()["total_hits"] == 1
@@ -323,6 +364,23 @@ def test_content_search_reports_unreadable_files(client):
     res = client.get("/api/content-search", params={"q": "ジョバンニ"}).json()
     assert res["total_hits"] == 1
     assert [s["path"] for s in res["skipped"]] == ["壊れた.epub"]
+
+
+def test_content_read_returns_sections_for_an_epub(client):
+    """目次の材料。**名前のある区切りを持つ文書だけ**が返す。"""
+    from tests.test_documents import make_epub
+
+    make_epub(config.content_dir() / "本.epub", [("一、午后の授業", "本文"), ("二、活版所", "本文")])
+    res = client.get("/api/content/本.epub").json()
+    assert res["sections"] == ["一、午后の授業", "二、活版所"]
+    # 章の名前は本文にも入っている（目次はこれを段落に対応づける）
+    for label in res["sections"]:
+        assert label in res["text"]
+
+
+def test_content_read_has_no_sections_for_plain_text(client):
+    (config.content_dir() / "a.txt").write_text("ただの文章。\n", encoding="utf-8")
+    assert client.get("/api/content/a.txt").json()["sections"] == []
 
 
 def test_content_path_traversal_blocked(client):

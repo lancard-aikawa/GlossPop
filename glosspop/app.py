@@ -1035,6 +1035,12 @@ MAX_HITS_PER_FILE = 5
 SNIPPET_LEAD = 30
 SNIPPET_TRAIL = 60
 
+#: 例文として拾う 1 文の上限。句点の無い段落で壁にならないように
+MAX_SENTENCE_CHARS = 200
+
+#: 文の切れ目。改行も 1 文の終わりとして扱う（詩や台詞で句点が無い）
+_SENTENCE_END = "。．.!?！？\n"
+
 
 def _snippet(text: str, start: int, end: int) -> str:
     """一致の周りを 1 行に均して切り出す。"""
@@ -1044,7 +1050,47 @@ def _snippet(text: str, start: int, end: int) -> str:
     return ("…" if lead > 0 else "") + piece + ("…" if tail < len(text) else "")
 
 
-def _search_document(doc: documents.Document, needle: str) -> tuple[list[dict], int]:
+def _sentence(text: str, start: int, end: int) -> str:
+    """一致を含む 1 文。**そのまま使用例に貼れる形**にする。
+
+    抜粋 (`_snippet`) は文字数で切るので前後が欠ける。例文として辞書に残すなら
+    文の切れ目まで採らないと、「…」の付いた半端な文が溜まる。
+    """
+    lo = start
+    while lo > 0 and text[lo - 1] not in _SENTENCE_END:
+        lo -= 1
+    hi = end
+    while hi < len(text) and text[hi - 1] not in _SENTENCE_END:
+        hi += 1
+    return " ".join(text[lo:hi].split())[:MAX_SENTENCE_CHARS]
+
+
+def _plain_finder(needle: str):
+    """ただの部分一致。フォルダの横断検索はこちら。"""
+    def find(text: str):
+        folded = (text or "").casefold()
+        start = folded.find(needle)
+        while start >= 0:
+            yield start, start + len(needle)
+            start = folded.find(needle, start + len(needle))
+    return find
+
+
+def _entry_finder(entry: Entry):
+    """**自動リンクと同じ規則**で当てる。用語の出現を探すのはこちら。
+
+    素の部分一致にすると、`API` が `rapid` に当たるなど**リンクにならない語を
+    「出てくる」と言う**ことになる。規則は `Linker` 1 か所から出す。
+    """
+    linker = Linker([entry])
+
+    def find(text: str):
+        for m in linker.finditer(text or ""):
+            yield m.start(), m.end()
+    return find
+
+
+def _search_document(doc: documents.Document, find) -> tuple[list[dict], int]:
     """1 文書の中を探す。``(抜粋のリスト, 総ヒット数)``。
 
     位置は章 / ページの名前があればそれを、無ければ行番号を使う
@@ -1053,22 +1099,20 @@ def _search_document(doc: documents.Document, needle: str) -> tuple[list[dict], 
     hits: list[dict] = []
     total = 0
     for label, text in doc.segments:
-        folded = (text or "").casefold()
-        start = folded.find(needle)
-        while start >= 0:
+        for start, end in find(text):
             total += 1
             if len(hits) < MAX_HITS_PER_FILE:
-                end = start + len(needle)
                 hits.append({
                     "locator": label or f"L.{text[:start].count(chr(10)) + 1}",
                     "snippet": _snippet(text, start, end),
+                    # 使用例にそのまま貼れる形（文の切れ目まで）
+                    "sentence": _sentence(text, start, end),
                 })
-            start = folded.find(needle, start + len(needle))
     return hits, total
 
 
 @app.get("/api/content-search")
-def search_content(q: str = Query(..., min_length=1)) -> dict:
+def search_content(q: str = "", ref: str = "") -> dict:
     """開いているフォルダの**本文**を横断して探す。
 
     一覧はファイル名しか見ていないので、「あの言い回しがどこに出てきたか」を
@@ -1076,9 +1120,23 @@ def search_content(q: str = Query(..., min_length=1)) -> dict:
     書き換えられたファイルとずれる（辞書が mtime で読み直しているのと同じ問題を、
     こちらは本文の量で抱えることになる）。
 
+    ``ref`` を渡すと、その用語の**表記すべて**（別名を含む）を自動リンクと同じ
+    規則で探す。用語ページの「この語が出てくる文書」がこれを使う。
+
     **打ち切ったことは必ず返す。** 黙って切ると「無かった」と区別が付かない。
     """
-    needle = q.strip().casefold()
+    if ref:
+        entry = store.get(ref)
+        if entry is None:
+            raise HTTPException(404, f"見つかりません: {ref}")
+        find = _entry_finder(entry)
+        label = entry.term
+    else:
+        needle = q.strip().casefold()
+        if not needle:
+            raise HTTPException(400, "探す語を入れてください")
+        find = _plain_finder(needle)
+        label = q.strip()
     base = config.content_dir()
     results: list[dict] = []
     skipped: list[dict] = []
@@ -1086,7 +1144,7 @@ def search_content(q: str = Query(..., min_length=1)) -> dict:
     hit_count = 0
     files_truncated = hits_truncated = False
 
-    if needle and base.exists():
+    if base.exists():
         for path in _iter_content_files(base):
             if scanned >= MAX_SEARCH_FILES:
                 files_truncated = True
@@ -1102,7 +1160,7 @@ def search_content(q: str = Query(..., min_length=1)) -> dict:
                 # 読めないファイルがあること自体を隠さない（「無かった」ではない）
                 skipped.append({"path": rel, "reason": str(exc)})
                 continue
-            hits, total = _search_document(doc, needle)
+            hits, total = _search_document(doc, find)
             if not total:
                 continue
             hit_count += total
@@ -1117,7 +1175,7 @@ def search_content(q: str = Query(..., min_length=1)) -> dict:
     # 多く出てくる文書ほど上。同数ならパス順（同じ検索で並びが揺れない）
     results.sort(key=lambda r: (-r["count"], r["path"]))
     return {
-        "query": q.strip(),
+        "query": label,
         "root": str(base),
         "files_scanned": scanned,
         "files_truncated": files_truncated,
@@ -1144,6 +1202,9 @@ def read_content(rel: str) -> dict:
         "title": doc.title,
         # 読めなかった章。黙って欠けた本文を出さないための報告
         "skipped": doc.skipped,
+        # 目次。**名前のある区切りを持つ文書だけ**（epub は章、pdf はページ）。
+        # .md / .txt は区切りが 1 つしかないので空になる
+        "sections": [label for label, _ in doc.segments if label],
     }
 
 

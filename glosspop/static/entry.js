@@ -189,6 +189,103 @@ function relationForm(entry) {
   ]);
 }
 
+// --------------------------------------------------------------------------- //
+// この語が出てくる文書
+//
+// 探すのは**開いているフォルダ**で、押したときに読む（索引を持たない）。
+// 用語ページを開くたびに全文書を読ませないよう、`<details>` を開いた時点で
+// 初めて呼ぶ。どのフォルダを読んだかは必ず出す —— 出さないと「無い」のか
+// 「別のフォルダを見ている」のか区別が付かない。
+// --------------------------------------------------------------------------- //
+
+/** 使用例に 1 文足す。すでに入っていれば何もしない。 */
+async function addExample(entry, sentence, status) {
+  const examples = [...(entry.examples || [])];
+  if (examples.includes(sentence)) {
+    setStatus(status, "その文はもう使用例に入っています");
+    return;
+  }
+  setStatus(status, "保存中", "busy");
+  try {
+    await api(`/api/entries/${encodePath(entry.ref)}`, {
+      method: "PUT",
+      body: { ...entry, examples: [...examples, sentence] },
+    });
+    invalidatePopupCache();
+    await reload(entry.ref);
+  } catch (err) {
+    setStatus(status, err.message, "error");
+  }
+}
+
+function appearanceFile(entry, file, status) {
+  const query = new URLSearchParams({ open: file.path, term: entry.term });
+  const rows = file.hits.map((hit) =>
+    el("li", { class: "rel-row" }, [
+      el("span", { class: "rel-rank", text: hit.locator }),
+      el("span", { class: "rel-label", text: hit.sentence || hit.snippet }),
+      el("span", { class: "spacer" }),
+      // AI を呼ばずに使用例が埋まる経路。文の切れ目まで採ってある
+      el("button", {
+        type: "button",
+        class: "ghost",
+        text: "使用例に足す",
+        title: "この文を使用例に追加する",
+        onclick: () => addExample(entry, hit.sentence || hit.snippet, status),
+      }),
+    ])
+  );
+  if (file.count > file.hits.length) {
+    rows.push(el("li", { class: "hint", text: `ほか ${file.count - file.hits.length} 件` }));
+  }
+  return el("div", { class: "appearance-file" }, [
+    // **`.rel-sub` を使い回さない。** あれは uppercase の小見出し用で、
+    // ファイル名に当てると `銀河.md` が `銀河.MD` になる
+    el("h3", { class: "appearance-name" }, [
+      el("a", { href: `/?${query}`, text: file.title || file.name, title: file.path }),
+      el("span", { class: "count", text: `${file.count} 件` }),
+    ]),
+    el("ul", { class: "rel-list" }, rows),
+  ]);
+}
+
+async function loadAppearances(entry, body, status) {
+  body.replaceChildren(el("p", { class: "hint", text: "本文を読んでいます…" }));
+  try {
+    const res = await api(`/api/content-search?ref=${encodeURIComponent(entry.ref)}`);
+    const notes = [`「${res.root}」の ${res.files_scanned} 文書を読みました。`];
+    if (res.files_truncated) notes.push("文書が多いので途中で打ち切りました。");
+    if (res.hits_truncated) notes.push("ヒットが多いので途中で打ち切りました。");
+    if (res.skipped.length) notes.push(`読めなかったファイルが ${res.skipped.length} 件あります。`);
+    body.replaceChildren(
+      ...(res.results.length
+        ? res.results.map((file) => appearanceFile(entry, file, status))
+        : [el("p", { class: "empty", text: "このフォルダには出てきませんでした" })]),
+      el("p", { class: "hint", text: notes.join(" ") }),
+      status,
+    );
+  } catch (err) {
+    body.replaceChildren(el("p", { class: "status error", text: err.message }));
+  }
+}
+
+function appearancesSection(entry) {
+  const status = el("span", { class: "status" });
+  const body = el("div", { class: "appearances" });
+  const box = el("details", { class: "appearances-box" }, [
+    el("summary", { text: "この語が出てくる文書を探す（開いているフォルダを読みます）" }),
+    body,
+  ]);
+  // 開いた 1 回だけ読む。用語ページを開くたびに全文書を読ませない
+  box.addEventListener("toggle", () => {
+    if (box.open && !body.dataset.loaded) {
+      body.dataset.loaded = "1";
+      loadAppearances(entry, body, status);
+    }
+  });
+  return section("本文での使われ方", box);
+}
+
 function relationsSection(entry) {
   const resolved = entry.relations_resolved || [];
   const links = entry.backlinks || [];
@@ -270,6 +367,7 @@ function render(entry) {
     parts.push(section("使用例", el("div", { class: "doc", html: entry.examples_html.join("") })));
   }
 
+  parts.push(appearancesSection(entry));
   parts.push(relationsSection(entry));
 
   const movePanel = el("div", { class: "move-panel", hidden: true });

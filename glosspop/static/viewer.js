@@ -49,6 +49,8 @@ async function renderCurrent() {
     docHead.hidden = false;
     paintDocMeta(res);
     paintTerms(res.terms);
+    // 段落の番号で覚えているので、描き直したら対応づけ直す
+    paintToc(source.sections || []);
     document.title = `${res.title || sourceLabel() || "テキスト"} — GlossPop`;
   } catch (err) {
     doc.innerHTML = `<p class="status error">表示できません: ${esc(err.message)}</p>`;
@@ -111,6 +113,65 @@ async function setSource(next, { restore = true, highlight = "" } = {}) {
   // 戻さないなら先頭から。前の文書のスクロール位置が残ると途中から始まって見える
   if (at) noteResumed(at);
   else tracker.toTop();
+}
+
+// --------------------------------------------------------------------- 目次
+//
+// **位置を作り直さない。** epub は章ごとに見出しが、pdf はページごとに `【p.N】` が
+// すでに本文へ入っている（`documents.py`）ので、描き終わった本文を頭から 1 回なぞって
+// 段落の番号に対応づける。アンカーを埋める必要が無いぶん、サニタイザや
+// Markdown の描画に手を入れずに済む。
+
+/**
+ * 節の名前を段落の番号に対応づける。
+ *
+ * **頭から順に、前の節より後ろだけを探す。** 章の名前が本文にも出てくることは
+ * あるので、文書全体から最初の一致を採ると手前へ飛ぶ。節は必ず文書順に並ぶ、
+ * という性質でそれを避けている。
+ */
+function locateSections(labels) {
+  const blocks = [...doc.children];
+  const found = [];
+  let cursor = 0;
+  for (const label of labels) {
+    const needle = label.toLowerCase();
+    const at = blocks.findIndex(
+      (block, i) => i >= cursor && (block.textContent || "").toLowerCase().includes(needle)
+    );
+    if (at < 0) continue;              // 見つからない節は出さない（数だけ知らせる）
+    found.push({ label, block: at });
+    cursor = at + 1;
+  }
+  return found;
+}
+
+function paintToc(labels) {
+  const list = $("toc");
+  const head = $("tocHead");
+  const note = $("tocNote");
+  const found = labels.length ? locateSections(labels) : [];
+  head.hidden = list.hidden = !found.length;
+  list.replaceChildren(
+    ...found.map((s) =>
+      el("li", {}, [
+        el("button", {
+          type: "button",
+          title: s.label,
+          text: s.label,
+          onclick: () => {
+            const block = doc.children[s.block];
+            if (!block) return;
+            block.scrollIntoView({ block: "start" });
+            block.classList.add("gloss-flash");
+          },
+        }),
+      ])
+    )
+  );
+  // 黙って欠けた目次を出さない
+  const missing = labels.length - found.length;
+  note.hidden = !missing;
+  note.textContent = missing ? `${missing} 件は本文の中に見つかりませんでした` : "";
 }
 
 /**
@@ -639,6 +700,8 @@ async function openContent(path, { restore = true, highlight = "" } = {}) {
         filename: res.name,
         contentPath: path,
         title: res.title || "",
+        // 章 / ページの名前。目次はこれを本文の段落に対応づけて作る
+        sections: res.sections || [],
       },
       { restore, highlight }
     );

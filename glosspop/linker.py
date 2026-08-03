@@ -226,6 +226,17 @@ class Linker:
     def __bool__(self) -> bool:
         return self._re is not None
 
+    def finditer(self, text: str):
+        """**素のテキスト**の上で表記を探す。``annotate()`` と同じ規則で当たる。
+
+        ``annotate()`` は HTML を走査するが、本文をそのまま探したい場面
+        （「この語が出てくる文書」）もある。規則を書き分けると、**リンクにならない
+        語を「出てくる」と言う**ようになるので、同じ正規表現から出す。
+        """
+        if self._re is None or not text:
+            return iter(())
+        return self._re.finditer(text)
+
     def annotate(
         self,
         html: str,

@@ -706,6 +706,27 @@ dialog.sheet .cat-manager footer { flex-wrap: wrap; }
   padding: 9px 0;
   border-bottom: 1px solid var(--border);
 }
+/* 目次。章が多い本でも脇のパネルを占領しないよう、高さで区切ってスクロールさせる */
+.toc { max-height: 40vh; overflow: auto; margin-bottom: 6px; }
+
+/* 「この語が出てくる文書」。押したときに読むので details で畳んでおく */
+.appearances-box > summary { cursor: pointer; font-size: 13px; color: var(--fg-dim); }
+.appearances { margin-top: 10px; }
+.appearance-file + .appearance-file { margin-top: 12px; }
+.appearance-name {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  /* ファイル名なので変形しない（`.rel-sub` は uppercase の小見出し用） */
+  text-transform: none;
+}
+.appearance-name .count { font-size: 11px; color: var(--fg-faint); font-weight: 400; }
+/* 例文は折り返して読ませる（関係の 1 行とは別物） */
+.appearances .rel-row .rel-label { white-space: normal; }
+
 /* 相関図から関係 1 本を直すダイアログ。カテゴリ管理と同じ骨格に揃える */
 dialog.sheet .edge-editor { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
 dialog.sheet .edge-editor .body { padding: 8px 18px; overflow: auto; }

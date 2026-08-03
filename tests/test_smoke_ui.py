@@ -156,6 +156,34 @@ def test_the_graph_draws_nodes_and_an_edge(page, server, seeded):
     assert "親友" in (page.locator("svg.rel-graph").text_content() or "")
 
 
+def test_the_entry_page_finds_where_the_term_appears_and_takes_an_example(page, server, seeded):
+    """用語ページ →「出てくる文書」→ その文を使用例に足す、まで通す。
+
+    開くたびに全文書を読ませないよう、`<details>` を開いた時点で初めて探す。
+    畳んだままなら読みに行かないことも見る。
+    """
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    page.locator(".appearances-box").wait_for(timeout=15000)
+    # 畳んでいる間は読みに行かない（用語ページの表示を重くしない）
+    assert page.locator(".appearance-file").count() == 0
+
+    page.click(".appearances-box > summary")
+    page.locator(".appearance-file").first.wait_for(timeout=15000)
+    # ファイル名はそのまま出す（小見出し用の uppercase を当てると 銀河.MD になる）
+    assert "銀河.md" in page.locator(".appearances").inner_text()
+    assert "1 件" in page.locator(".appearance-name").inner_text()
+
+    page.click(".appearance-file button:has-text('使用例に足す')")
+    page.locator("text=使用例").first.wait_for(timeout=15000)
+    page.wait_for_function(
+        "!!document.querySelector('.entry-section .doc')?.textContent.includes('活版所')",
+        timeout=15000,
+    )
+    entry = store.get("登場人物/ジョバンニ")
+    # 抜粋ではなく文の切れ目まで採る（「…」つきの半端な文を溜めない）
+    assert entry.examples == ["ジョバンニは活版所で働いていた。"]
+
+
 def test_a_relation_can_be_edited_from_the_graph(page, server, seeded):
     """図の線を押してその場で直せること（辞書ページへ渡り歩かせない）。
 
@@ -316,6 +344,41 @@ def test_content_search_says_when_nothing_matched(page, server, isolated_dirs):
     page.locator("#searchResults .empty").wait_for(timeout=15000)
     assert "見つかりませんでした" in page.locator("#searchResults").inner_text()
     assert "1 文書を読みました" in page.locator("#searchStatus").inner_text()
+
+
+def test_an_epub_gets_a_table_of_contents_that_jumps(page, server, isolated_dirs):
+    """epub の章を目次から辿れること。
+
+    位置は作り直さない（章の見出しはすでに本文に入っている）。描き終わった本文を
+    頭からなぞって段落に対応づけるので、**対応づけに失敗すると黙って空の目次**に
+    なる。ここでしか捕まらない。
+    """
+    from tests.test_documents import make_epub
+
+    make_epub(
+        config.content_dir() / "本.epub",
+        [("一、午后の授業", "ジョバンニは考えた。"), ("二、活版所", "活字を拾った。")],
+    )
+
+    page.goto(f"{server}/?open=%E6%9C%AC.epub")
+    page.locator("#toc button").first.wait_for(timeout=15000)
+    assert [b.strip() for b in page.locator("#toc button").all_text_contents()] == [
+        "一、午后の授業", "二、活版所",
+    ]
+    assert page.locator("#tocNote").is_hidden()      # 取りこぼしなし
+
+    page.click("#toc button >> nth=1")
+    page.locator("#doc .gloss-flash").wait_for(timeout=10000)
+    assert "二、活版所" in page.locator("#doc .gloss-flash").inner_text()
+
+
+def test_plain_text_has_no_table_of_contents(page, server, isolated_dirs):
+    """区切りが 1 つしかない文書に空の目次を出さない。"""
+    (config.content_dir() / "a.txt").write_text("ただの文章。\n", encoding="utf-8")
+    page.goto(f"{server}/?open=a.txt")
+    page.locator("#doc p").first.wait_for(timeout=15000)
+    assert page.locator("#toc").is_hidden()
+    assert page.locator("#tocHead").is_hidden()
 
 
 def test_the_glossary_filters_by_tag(page, server, isolated_dirs):
