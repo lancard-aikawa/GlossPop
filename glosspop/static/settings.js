@@ -23,7 +23,14 @@ function build() {
         <div class="spacer"></div>
         <button type="button" class="ghost" data-ref="close" aria-label="閉じる">✕</button>
       </header>
-      <div class="body">
+      <div class="sheet-tabs" role="tablist" data-ref="tabs">
+        <button type="button" role="tab" data-tab="general" aria-selected="true"
+                aria-controls="gp-tab-general" id="gp-tab-general-btn">一般</button>
+        <button type="button" role="tab" data-tab="ai" aria-selected="false"
+                aria-controls="gp-tab-ai" id="gp-tab-ai-btn">AI<span class="tab-mark" data-ref="aiMark" hidden>●</span></button>
+      </div>
+      <div class="body" data-panel="general" id="gp-tab-general"
+           role="tabpanel" aria-labelledby="gp-tab-general-btn">
         <section class="entry-section" data-ref="importBox" hidden>
           <h2>隣のフォルダにデータがあります</h2>
           <p class="hint">
@@ -90,6 +97,42 @@ function build() {
           </p>
         </section>
         <section class="entry-section">
+          <h2>表示</h2>
+          <div class="setting-row setting-row-plain">
+            <label class="field-inline" for="gp-theme">テーマ</label>
+            <select id="gp-theme" class="auto-width" data-ref="theme">
+              <option value="system">OS の設定に合わせる</option>
+              <option value="light">ライト</option>
+              <option value="dark">ダーク</option>
+            </select>
+          </div>
+          <p class="hint">この設定はブラウザごとに残ります（専用ウィンドウとふだんのブラウザは別勘定）。</p>
+        </section>
+        <section class="entry-section">
+          <h2>更新の確認</h2>
+          <label class="check">
+            <input type="checkbox" data-ref="updateCheck">
+            <span>
+              新しい版が出ていないか GitHub に聞く
+              <span class="hint">1 日に 1 回まで。切ると更新の確認では通信しません。
+                （AI に <strong>Gemini API</strong> を選んだときは、下書きのたびに
+                Google へ本文を送ります。Claude Code CLI を選んでいる場合は
+                CLI 側が通信します。）</span>
+            </span>
+          </label>
+          <p class="hint" data-ref="updateState"></p>
+          <div class="setting-row setting-row-plain" data-ref="downloadRow" hidden>
+            <button type="button" data-ref="download">⬇ 新しい版を隣に展開する</button>
+            <span class="hint">
+              いまのフォルダは触りません。展開したら、そちらを起動してください。
+            </span>
+          </div>
+        </section>
+        <p class="notice" data-ref="result" hidden></p>
+      </div>
+      <div class="body" data-panel="ai" id="gp-tab-ai"
+           role="tabpanel" aria-labelledby="gp-tab-ai-btn" hidden>
+        <section class="entry-section">
           <h2>AI（下書き・抽出・関係）</h2>
           <p class="hint">
             用語の下書き、候補の抽出、関係の下書きに使う AI です。
@@ -128,39 +171,6 @@ function build() {
             <span class="status" data-ref="aiStatus"></span>
           </div>
         </section>
-        <section class="entry-section">
-          <h2>表示</h2>
-          <div class="setting-row setting-row-plain">
-            <label class="field-inline" for="gp-theme">テーマ</label>
-            <select id="gp-theme" class="auto-width" data-ref="theme">
-              <option value="system">OS の設定に合わせる</option>
-              <option value="light">ライト</option>
-              <option value="dark">ダーク</option>
-            </select>
-          </div>
-          <p class="hint">この設定はブラウザごとに残ります（専用ウィンドウとふだんのブラウザは別勘定）。</p>
-        </section>
-        <section class="entry-section">
-          <h2>更新の確認</h2>
-          <label class="check">
-            <input type="checkbox" data-ref="updateCheck">
-            <span>
-              新しい版が出ていないか GitHub に聞く
-              <span class="hint">1 日に 1 回まで。切ると更新の確認では通信しません。
-                （AI に <strong>Gemini API</strong> を選んだときは、下書きのたびに
-                Google へ本文を送ります。Claude Code CLI を選んでいる場合は
-                CLI 側が通信します。）</span>
-            </span>
-          </label>
-          <p class="hint" data-ref="updateState"></p>
-          <div class="setting-row setting-row-plain" data-ref="downloadRow" hidden>
-            <button type="button" data-ref="download">⬇ 新しい版を隣に展開する</button>
-            <span class="hint">
-              いまのフォルダは触りません。展開したら、そちらを起動してください。
-            </span>
-          </div>
-        </section>
-        <p class="notice" data-ref="result" hidden></p>
       </div>
       <footer>
         <span class="status" data-ref="status"></span>
@@ -271,6 +281,23 @@ async function paintUpdate() {
   refs.downloadRow.hidden = !info.newer;
 }
 
+/**
+ * タブを切り替える。
+ *
+ * **フッタの「保存」はデータの保存先のもの**（AI 側は自前の保存ボタンを持つ）。
+ * 出しっぱなしにすると、AI を変えたあとにこちらを押して「保存したのに効かない」
+ * になるので、「一般」のときだけ出す。
+ */
+function showTab(name) {
+  for (const button of refs.tabs.querySelectorAll("[data-tab]")) {
+    button.setAttribute("aria-selected", String(button.dataset.tab === name));
+  }
+  for (const panel of dialog.querySelectorAll("[data-panel]")) {
+    panel.hidden = panel.dataset.panel !== name;
+  }
+  refs.save.hidden = name !== "general";
+}
+
 /** 環境変数で固定されている項目は触らせない（書いても効かないため）。 */
 function lockIfEnv(node, source, name) {
   const locked = source === "env";
@@ -319,6 +346,10 @@ function paintAI(info) {
   ].filter(Boolean);
   refs.aiLocked.hidden = !notes.length;
   refs.aiLocked.textContent = notes.join(" ");
+
+  // 選んだ AI が使えないことは、タブを開かなくても分かるようにする
+  refs.aiMark.hidden = info.available;
+  refs.aiMark.title = info.reason;
 }
 
 /** 選べるモデルを datalist に入れる。取れなければ理由を出して手入力に任せる。 */
@@ -344,6 +375,7 @@ async function loadAIModels(provider) {
 export async function openSettingsDialog() {
   build();
   refs.result.hidden = true;
+  showTab("general");                     // 開き直したら必ず先頭のタブから
   refs.theme.value = currentTheme();      // ローカルの設定なので待たずに出せる
   setStatus(refs.status, "読み込み中", "busy");
   dialog.showModal();
@@ -514,6 +546,23 @@ export async function openSettingsDialog() {
     await onAISave();
   };
 
+  const onTab = (ev) => {
+    const button = ev.target.closest("[data-tab]");
+    if (button) showTab(button.dataset.tab);
+  };
+
+  /** 矢印キーでもタブを移れるようにする（tablist の作法）。 */
+  const onTabKey = (ev) => {
+    if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+    const buttons = [...refs.tabs.querySelectorAll("[data-tab]")];
+    const at = buttons.findIndex((b) => b.getAttribute("aria-selected") === "true");
+    const step = ev.key === "ArrowRight" ? 1 : buttons.length - 1;
+    const next = buttons[(at + step) % buttons.length];
+    showTab(next.dataset.tab);
+    next.focus();
+    ev.preventDefault();
+  };
+
   const onAISaveClick = () => onAISave();
   const onAIKeyClear = () => onAISave({ gemini_api_key: "" });
   const onAIModelFetch = () => loadAIModels(refs.aiProvider.value);
@@ -583,6 +632,8 @@ export async function openSettingsDialog() {
   refs.path.addEventListener("input", onMode);
   refs.pick.addEventListener("click", onPick);
   refs.save.addEventListener("click", onSave);
+  refs.tabs.addEventListener("click", onTab);
+  refs.tabs.addEventListener("keydown", onTabKey);
   refs.aiSave.addEventListener("click", onAISaveClick);
   refs.aiProvider.addEventListener("change", onAIProvider);
   refs.aiKeyClear.addEventListener("click", onAIKeyClear);
@@ -638,6 +689,8 @@ export async function openSettingsDialog() {
         refs.path.removeEventListener("input", onMode);
         refs.pick.removeEventListener("click", onPick);
         refs.save.removeEventListener("click", onSave);
+        refs.tabs.removeEventListener("click", onTab);
+        refs.tabs.removeEventListener("keydown", onTabKey);
         refs.aiSave.removeEventListener("click", onAISaveClick);
         refs.aiProvider.removeEventListener("change", onAIProvider);
         refs.aiKeyClear.removeEventListener("click", onAIKeyClear);
@@ -666,7 +719,7 @@ function install() {
     type: "button",
     id: "settings",
     class: "topbar-action",
-    title: "設定（データの保存先・更新の確認）",
+    title: "設定（データの保存先・AI・更新の確認）",
     onclick: () => openSettingsDialog(),
   }, [
     el("span", { class: "topbar-action-icon", "aria-hidden": "true", text: "⚙" }),

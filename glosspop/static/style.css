@@ -541,6 +541,38 @@ dialog.sheet footer {
 dialog.sheet footer button { white-space: nowrap; }
 dialog.sheet footer .spacer { flex: 1; }
 
+/* ダイアログのタブ。**選択中がひと目で分かる差を付けること** —— 下線だけだと
+   淡いテーマで見分けが付かず、「いまどれを開いているのか分からない」になる。
+   色は既存の変数だけで作る（新しい色を足すと、ダークの定義が 2 か所あるぶん
+   片方だけ直す事故が起きる）。 */
+.sheet-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 18px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.sheet-tabs button {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: none;
+  color: var(--fg-dim);
+  font-size: 13px;
+  padding: 7px 16px;
+  margin-bottom: -1px;
+  cursor: pointer;
+}
+.sheet-tabs button:hover { color: var(--fg); }
+.sheet-tabs button[aria-selected="true"] {
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--fg);
+  font-weight: 600;
+}
+/* 中身が変わったことを知らせる印（例: AI が使えない）。文字だけだと気付かれない */
+.sheet-tabs button .tab-mark { color: var(--warn); margin-left: 5px; }
+
 .status { font-size: 12px; color: var(--fg-dim); }
 .status.error { color: var(--danger); }
 .status.busy::after {

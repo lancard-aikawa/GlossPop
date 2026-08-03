@@ -188,7 +188,7 @@ def available(provider: str | None = None) -> bool:
 
 def unavailable_reason(provider: str) -> str:
     if provider == "gemini":
-        return "Gemini の API キーが設定されていません。⚙ の「AI」で登録してください。"
+        return "Gemini の API キーが設定されていません。⚙ の「AI」タブで登録してください。"
     return "claude CLI が見つかりません。PATH に追加するか GLOSSPOP_CLAUDE_BIN を設定してください。"
 
 

@@ -740,6 +740,33 @@ def test_extracting_offers_another_name_as_an_alias(page, server, seeded, monkey
     assert store.find_by_surface("ジョバンニ君")[0].term == "ジョバンニ"
 
 
+def test_the_settings_dialog_separates_the_ai_tab(page, server, isolated_dirs):
+    """設定はタブで分ける。**フッタの「保存」は一般タブのものなので AI では出さない。**
+
+    出しっぱなしにすると、AI を変えたあとにこちらを押して「保存したのに効かない」
+    になる（AI 側は自前の保存ボタンを持つ）。
+    """
+    page.goto(f"{server}/glossary")
+    page.locator(".topbar").wait_for(timeout=15000)
+    page.click("#settings")
+    page.locator("dialog.sheet .sheet-tabs").wait_for(timeout=10000)
+
+    # 開いた直後は「一般」。データの保存先が見えていて、AI は隠れている
+    assert page.locator("dialog.sheet [data-panel=general]").is_visible()
+    assert not page.locator("dialog.sheet [data-panel=ai]").is_visible()
+    assert page.locator("dialog.sheet [data-ref=save]").is_visible()
+
+    page.click("dialog.sheet [data-tab=ai]")
+    assert page.locator("dialog.sheet [data-panel=ai]").is_visible()
+    assert not page.locator("dialog.sheet [data-panel=general]").is_visible()
+    assert not page.locator("dialog.sheet [data-ref=save]").is_visible()
+    assert page.get_attribute("dialog.sheet [data-tab=ai]", "aria-selected") == "true"
+
+    # 矢印キーでも戻れる（tablist の作法）
+    page.keyboard.press("ArrowLeft")
+    assert page.locator("dialog.sheet [data-panel=general]").is_visible()
+
+
 def test_the_settings_dialog_switches_the_ai(page, server, isolated_dirs, monkeypatch):
     """⚙ でモデルと思考の深さを選べて、**次の呼び出しから効く**こと。"""
     from glosspop import llm
@@ -747,6 +774,8 @@ def test_the_settings_dialog_switches_the_ai(page, server, isolated_dirs, monkey
     page.goto(f"{server}/glossary")
     page.locator(".topbar").wait_for(timeout=15000)
     page.click("#settings")
+    # AI は別のタブ。開くまでは触れない（タブで分けたのはここが見つけやすいように）
+    page.locator("dialog.sheet [data-tab=ai]").click()
     page.locator("dialog.sheet [data-ref=aiProvider]").wait_for(timeout=10000)
 
     # 既定は Claude。モデルの候補はアプリが持っている（API を叩かない）
@@ -777,6 +806,8 @@ def test_the_settings_dialog_never_shows_the_gemini_key(page, server, isolated_d
     page.goto(f"{server}/glossary")
     page.locator(".topbar").wait_for(timeout=15000)
     page.click("#settings")
+    # AI は別のタブ。開くまでは触れない（タブで分けたのはここが見つけやすいように）
+    page.locator("dialog.sheet [data-tab=ai]").click()
     page.locator("dialog.sheet [data-ref=aiProvider]").wait_for(timeout=10000)
     page.select_option("[data-ref=aiProvider]", "gemini")
     page.locator("[data-ref=aiKeyRow]:visible").wait_for(timeout=10000)
