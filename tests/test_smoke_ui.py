@@ -236,3 +236,18 @@ def test_the_settings_dialog_moves_the_data_root(page, server, isolated_dirs, tm
     assert (target / "data" / "glossary" / "プログラミング" / "冪等.md").exists()
     # 元は消さない（戻れるようにする）
     assert (cfg.GLOSSARY_DIR / "プログラミング" / "冪等.md").exists()
+
+
+def test_the_settings_entry_is_labelled_and_next_to_the_nav(page, server, isolated_dirs):
+    """歯車だけを右端に置くと気づかれない。文字つきでナビの直後に出すこと。"""
+    page.goto(f"{server}/glossary")
+    button = page.locator(".topbar #settings")
+    button.wait_for(timeout=15000)
+    assert "設定" in button.inner_text()
+
+    nav = page.locator(".topbar .topnav").bounding_box()
+    box = button.bounding_box()
+    meta = page.locator(".topbar .meta").bounding_box()
+    # ナビの直後（＝タイトル寄り）にあること。右端の隅ではない
+    assert nav["x"] < box["x"] < meta["x"]
+    assert box["x"] - (nav["x"] + nav["width"]) < 40

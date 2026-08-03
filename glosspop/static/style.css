@@ -93,6 +93,43 @@ a { color: var(--accent); }
 .topbar .spacer { flex: 1; }
 .topbar .meta { font-size: 12px; color: var(--fg-faint); white-space: nowrap; }
 
+/* 設定。ナビの直後に置くが、ページ移動ではないので区切り線で少し離す */
+.topbar-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 4px;
+  padding: 4px 12px 4px 14px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0 999px 999px 0;
+  background: transparent;
+  /* ナビのリンクより濃くする。同じ色だと「押せるもの」に見えない */
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.topbar-action:hover { background: var(--panel-2); }
+.topbar-action:hover .topbar-action-icon { transform: rotate(30deg); }
+.topbar-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.topbar-action-icon {
+  font-size: 15px;
+  line-height: 1;
+  color: var(--accent);
+  transition: transform .15s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .topbar-action-icon { transition: none; }
+  .topbar-action:hover .topbar-action-icon { transform: none; }
+}
+/* 幅が足りないときは歯車だけにする（ナビが折り返して崩れるより良い） */
+@media (max-width: 640px) {
+  .topbar-action span:not(.topbar-action-icon) { display: none; }
+  .topbar-action { padding: 4px 10px; }
+}
+
 /* ---------------------------------------------------------------- layout */
 
 .layout {
@@ -795,7 +832,6 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .issue-detail { color: var(--fg-dim); font-size: 13px; }
 
 /* ---------------------------------------------------------------- 設定 */
-.topbar #settings { font-size: 15px; line-height: 1; padding: 6px 8px; }
 .setting-choice { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
 .setting-choice label.check { align-items: flex-start; }
 .setting-choice label.check > span { display: flex; flex-direction: column; gap: 2px; }

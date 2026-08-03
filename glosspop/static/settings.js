@@ -301,22 +301,28 @@ export async function openSettingsDialog() {
   });
 }
 
-/** topbar に ⚙ を差し込む。どのページからも開けるように。 */
+/**
+ * topbar に「⚙ 設定」を差し込む。どのページからも開けるように。
+ *
+ * **右端の隅に小さく置かない。** 最初そうしたら、更新のお知らせと語数表示に
+ * 挟まれて誰も気づかない大きさになった。ナビゲーションの並びの直後に、
+ * 文字つきで置く（ページ移動ではないので、区切り線で少し離す）。
+ */
 function install() {
   const bar = document.querySelector(".topbar");
   if (!bar || bar.querySelector("#settings")) return;
   const button = el("button", {
     type: "button",
     id: "settings",
-    class: "ghost",
-    title: "設定（データの保存先）",
-    "aria-label": "設定",
-    text: "⚙",
+    class: "topbar-action",
+    title: "設定（データの保存先・更新の確認）",
     onclick: () => openSettingsDialog(),
-  });
-  // 語数表示 (.meta) の手前に置く
-  const meta = bar.querySelector(".meta");
-  if (meta) bar.insertBefore(button, meta);
+  }, [
+    el("span", { class: "topbar-action-icon", "aria-hidden": "true", text: "⚙" }),
+    el("span", { text: "設定" }),
+  ]);
+  const nav = bar.querySelector(".topnav");
+  if (nav) nav.after(button);
   else bar.append(button);
 }
 
