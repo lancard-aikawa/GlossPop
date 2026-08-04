@@ -10,7 +10,9 @@
 //
 // **入れ物は外から渡される**（`mount()`）。`/graph` を直接開いたときは
 // そのページの器に、ビューアの上に重ねるときは覆いの器に、同じものを描く。
-import { api, el, paintEntryCount, RANK_OPTIONS, setStatus } from "./base.js";
+import { api, el, estTextWidth, paintEntryCount, RANK_OPTIONS, setStatus, svgEl } from "./base.js";
+import { levelsOf, seedOrder, splitLonely } from "./graph-model.js";
+import { buildFabric } from "./fabric.js";
 import { encodePath } from "./editor.js";
 
 //: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
@@ -22,6 +24,12 @@ const TEMPLATE = `
        ここから外した。→ docs/design-notes.md） -->
   <span class="hint" id="scopeNote"></span>
   <a class="btn" id="scopeAll" href="/graph" hidden>辞書全体を出す</a>
+  <!-- **見せ方は足すもので、置き換えではない。** 同じ辞書を別の読み方で出すだけ
+       なので、段の図の約束（上下は段で表す・伏せた本数を返す）は両方で守る -->
+  <select id="mode" class="auto-width" aria-label="見せ方">
+    <option value="layered">段の図</option>
+    <option value="fabric">交差しない図</option>
+  </select>
   <select id="category" class="auto-width" aria-label="カテゴリ"></select>
   <label class="check">
     <input type="checkbox" id="spoilers">
@@ -89,12 +97,17 @@ const TEMPLATE = `
 `;
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
+let modeSelect;
+
+//: 見せ方。layered = 段の図（既定） / fabric = 交差しない図。
+//: **覚えておく** —— 覆いは何度でも開き直されるので、毎回選び直させない
+const MODE_KEY = "glosspop.graphMode";
+const MODES = ["layered", "fabric"];
+let mode = "layered";
 
 //: 2 つの ref をつないで組の鍵にするための区切り。カテゴリ名も slug も
 //: "<" ">" を弾いているので、ref の中身と衝突しない
 const SEP = "<>";
-
-const SVG_NS = "http://www.w3.org/2000/svg";
 
 // ノードの箱。日本語は 1 文字がほぼ全角なので、文字数から幅を見積もる
 const CHAR_W = 15;
@@ -118,16 +131,8 @@ const W_CROSS = 24;
 const W_THROUGH = 30;
 const W_LENGTH = 0.02;
 
-function svg(tag, attrs = {}, children = []) {
-  const node = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (v === null || v === undefined || v === false) continue;
-    if (k === "text") node.textContent = v;
-    else node.setAttribute(k, v);
-  }
-  for (const child of [].concat(children)) if (child) node.append(child);
-  return node;
-}
+//: SVG の要素づくりは base.js（fabric.js と同じものを使う）
+const svg = svgEl;
 
 function nodeWidth(term) {
   const chars = [...String(term || "")].length;
@@ -137,74 +142,6 @@ function nodeWidth(term) {
 // --------------------------------------------------------------------------- //
 // 配置
 // --------------------------------------------------------------------------- //
-
-/**
- * `rank` から層を決める。`上` は「相手が自分より上」なので、辺の向きに関係なく
- * 上下の制約だけを見る。
- *
- * **`対等` は「同じ段」という制約**なので、先にまとめてから上下を解く。
- * これをやらないと、A と B が対等でも B だけが誰かの下に引っ張られて段が割れ、
- * 「上下は段で表す」という説明と食い違う（実際にそうなった）。
- * 閉路や矛盾した指定があっても回数で打ち切るので止まらなくはならない。
- */
-function levelsOf(nodes, edges) {
-  const parent = new Map(nodes.map((n) => [n.ref, n.ref]));
-  const find = (x) => {
-    while (parent.get(x) !== x) {
-      parent.set(x, parent.get(parent.get(x)));
-      x = parent.get(x);
-    }
-    return x;
-  };
-  for (const e of edges) {
-    if (e.rank !== "対等" || !parent.has(e.from) || !parent.has(e.to)) continue;
-    const a = find(e.from);
-    const b = find(e.to);
-    if (a !== b) parent.set(a, b);
-  }
-
-  const level = new Map([...parent.keys()].map((ref) => [find(ref), 0]));
-  const constraints = [];
-  for (const e of edges) {
-    if (!parent.has(e.from) || !parent.has(e.to)) continue;
-    const a = find(e.from);
-    const b = find(e.to);
-    if (a === b) continue;                                 // 対等でまとめた者どうし
-    if (e.rank === "上") constraints.push([b, a]);         // to が上
-    else if (e.rank === "下") constraints.push([a, b]);    // from が上
-  }
-  for (let pass = 0; pass < nodes.length; pass++) {
-    let moved = false;
-    for (const [up, down] of constraints) {
-      if (level.get(down) <= level.get(up)) {
-        level.set(down, level.get(up) + 1);
-        moved = true;
-      }
-    }
-    if (!moved) break;
-  }
-  return new Map(nodes.map((n) => [n.ref, level.get(find(n.ref)) || 0]));
-}
-
-/**
- * 関係が 1 本も書かれていない語を段から外す。
- *
- * 段に混ぜると、**繋がっている語どうしを横へ押し広げるだけ**になり、そのぶん
- * 線が図の端から端まで飛ぶ。18 語のうち 6 語が孤立していた実例では、いちばん
- * 多く繋がっている語が最上段の右端に追いやられて図が読めなくなっていた。
- * 消しはしない（その文書に出てくる語ではある）ので、下に帯で並べる。
- */
-function splitLonely(nodes, edges) {
-  const linked = new Set();
-  for (const e of edges) {
-    linked.add(e.from);
-    linked.add(e.to);
-  }
-  return {
-    linked: nodes.filter((n) => linked.has(n.ref)),
-    lonely: nodes.filter((n) => !linked.has(n.ref)),
-  };
-}
 
 /** 線分どうしが交わるか。端点を共有するものは呼ぶ側で除く。 */
 function crosses(p1, p2, p3, p4) {
@@ -304,43 +241,6 @@ function relaxRow(row, pos, neighbors) {
     })
     .sort((a, b) => a.key - b.key || a.here - b.here)
     .map((x) => x.ref);
-}
-
-/**
- * 繋がっているものを隣どうしにした初期の並び（ref → 通し番号）。
- *
- * **最初の段には「前の段」が無い。** 平均位置へ寄せる緩和だけでは、最初の段は
- * 入力順のまま残り、いちばん多く繋がっている語がたまたま端に居るとそこから
- * 全部の線が伸びる（実例がまさにそれだった）。多く繋がっているものから
- * 幅優先でたどって、componentごとにまとめた並びを緩和の出発点にする。
- */
-function seedOrder(nodes, edges) {
-  const adj = new Map(nodes.map((n) => [n.ref, []]));
-  for (const e of edges) {
-    adj.get(e.from)?.push(e.to);
-    adj.get(e.to)?.push(e.from);
-  }
-  const degree = (ref) => (adj.get(ref) || []).length;
-  // 同点は入力順（サーバが返した順）で決める。乱数も時刻も混ぜない
-  const index = new Map(nodes.map((n, i) => [n.ref, i]));
-  const by = (a, b) => degree(b) - degree(a) || index.get(a) - index.get(b);
-  const rank = new Map();
-  const seen = new Set();
-  for (const root of [...adj.keys()].sort(by)) {
-    if (seen.has(root)) continue;
-    seen.add(root);
-    const queue = [root];
-    while (queue.length) {
-      const ref = queue.shift();
-      rank.set(ref, rank.size);
-      for (const next of [...(adj.get(ref) || [])].sort(by)) {
-        if (seen.has(next)) continue;
-        seen.add(next);
-        queue.push(next);
-      }
-    }
-  }
-  return rank;
 }
 
 /** 層が 1 枚しかないときの円配置。横一列に並べると辺が全部重なる。 */
@@ -854,12 +754,8 @@ function edgeGeometry(edge, pos, parallel = 0, side = -1) {
   };
 }
 
-/** 11px の文字列の幅。全角は約 11.5、半角は約 6.2 で見積もる。 */
-function textWidth(text) {
-  let w = 0;
-  for (const ch of text) w += ch.codePointAt(0) > 0x2e7f ? 11.5 : 6.2;
-  return w;
-}
+//: 一言は 11px。見積もりの規則は base.js（fabric.js と同じ）
+const textWidth = (text) => estTextWidth(text, 11);
 
 /**
  * ラベルが占める箱（`x` `y` は中央寄せしたときの基準点）。
@@ -1132,6 +1028,13 @@ function boundsOf(pos, geoms, spots, width, height, extras = []) {
 }
 
 /** 描く。戻り値は画面に添える数（帯にまわした語の数）。 */
+/**
+ * 描く。戻り値は画面に添える数（帯にまわした語の数と、畳んだ一言の数）。
+ *
+ * **見せ方の分岐はここ 1 か所。** どちらの見せ方も `{ root, box }` を返し、
+ * 入れ物への差し込み・拡大縮小の初期化・凡例は共通で面倒を見る
+ * （見せ方ごとに別々の道を作ると、片方だけ拡大できない、が起きる）。
+ */
 function draw(graph) {
   const { nodes, edges } = graph;
   termByRef = new Map(nodes.map((n) => [n.ref, n.term]));
@@ -1148,6 +1051,20 @@ function draw(graph) {
     return { lonely: 0 };
   }
 
+  const drawn = mode === "fabric"
+    ? buildFabric(graph, { onEdge: openEdgeEditor })
+    : buildLayered(nodes, edges);
+  canvas.classList.remove("is-empty");
+  canvas.replaceChildren(drawn.root);
+  svgRoot = drawn.root;
+  contentBox = drawn.box;
+  zoomBar.hidden = false;
+  fitView();
+  return { lonely: drawn.lonely, linked: nodes.length - drawn.lonely, tucked: drawn.tucked || 0 };
+}
+
+/** 段の図（既定）。上下を段で表し、関係は段のあいだ・段の上下に線で結ぶ。 */
+function buildLayered(nodes, edges) {
   // 同じ 2 ノードを結ぶ辺が何本目か。弧の高さはこれで決まる
   const pairs = new Map();
   const parallels = edges.map((edge) => {
@@ -1230,13 +1147,12 @@ function draw(graph) {
     nodeGroups.set(node.ref, group);
   }
   installFocus(root, nodeGroups, touching);
-  canvas.classList.remove("is-empty");
-  canvas.replaceChildren(root);
-  svgRoot = root;
-  contentBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-  zoomBar.hidden = false;
-  fitView();
-  return { lonely: lonely.length, linked: linked.length, tucked };
+  return {
+    root,
+    box: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
+    lonely: lonely.length,
+    tucked,
+  };
 }
 
 // --------------------------------------------------------------------------- //
@@ -1414,6 +1330,53 @@ function paintNotes(graph) {
   notes.textContent = lines.join(" / ");
 }
 
+/** 覚えている見せ方。読めない値なら段の図へ落ちる（起動できなくならないこと）。 */
+function rememberedMode() {
+  try {
+    const saved = localStorage.getItem(MODE_KEY);
+    return MODES.includes(saved) ? saved : "layered";
+  } catch {
+    return "layered";
+  }
+}
+
+//: 直前に描いたグラフ。見せ方を変えるだけならサーバへ行き直さない
+let lastGraph = null;
+
+/** 受け取ったグラフを描いて、凡例と注意書きを添える。 */
+function paintGraph(graph) {
+  lastGraph = graph;
+  const drawn = draw(graph);
+  paintNotes(graph);
+  setStatus(statusNode, `${graph.nodes.length} 語 / ${graph.edges.length} 本の関係`);
+  const common =
+    "→ は一方的、⇄ は相互。破線の枠はまだ登録されていない語で、押すと辞書で探せます。"
+    + "線を押すとその関係を直せます。"
+    + "図はドラッグで動かし、ホイールで拡大縮小できます（右下のボタンと、"
+    + "図を選んでからの ← ↑ ↓ → ＋ − 0 でも）。"
+    + "語に乗せると、その語の関係だけが濃く出ます。";
+  // **見せ方が違えば読み方の説明も違う。** 同じ文言を出すと、交差しない図でも
+  // 「上下は段」を探すことになる（どちらも上下は保っているが、形が違う）
+  const shape = mode === "fabric"
+    ? "用語が横線、関係が縦線です。関係ごとに列が分かれているので線どうしは交差しません。"
+      + "上下の関係は行の並びで表しています（上にあるものが上位）。"
+    : "▲▼ の代わりに上下の関係は段で表しています。";
+  legend.textContent =
+    shape + common
+    // **畳んだことは書く。** 黙って出さないと「一言が書かれていない関係」と
+    // 見分けが付かない（隠した本数を必ず返すのと同じ約束）
+    + (drawn.tucked
+      ? `重なって置けない一言 ${drawn.tucked} 本は畳んでいます（線かその語に乗せると出ます）。`
+      : "")
+    // **段の外に出したことは書く。** 黙って別のところへ置くと、上下の並びを
+    // 読んでいる人には「下にあるから下位」に見える
+    + (drawn.lonely && drawn.linked
+      ? `関係が 1 本も書かれていない ${drawn.lonely} 語は、`
+        + (mode === "fabric" ? "区切り線の下" : "段の外（区切り線の下）")
+        + "に並べています。"
+      : "");
+}
+
 async function refresh() {
   const { category, scope } = selection();
   setStatus(statusNode, "読み込み中", "busy");
@@ -1423,30 +1386,9 @@ async function refresh() {
   if (spoilerCheck.checked) query.set("spoilers", "true");
   if (currentDoc) query.set("doc", currentDoc);
   try {
-    const graph = await api(`/api/graph?${query}`);
-    const drawn = draw(graph);
-    paintNotes(graph);
-    const shown = graph.edges.length;
-    setStatus(statusNode, `${graph.nodes.length} 語 / ${shown} 本の関係`);
-    legend.textContent =
-      "→ は一方的、⇄ は相互。▲▼ の代わりに上下の関係は段で表しています。" +
-      "破線の枠はまだ登録されていない語で、押すと辞書で探せます。" +
-      "線を押すとその関係を直せます。" +
-      "図はドラッグで動かし、ホイールで拡大縮小できます（右下のボタンと、" +
-      "図を選んでからの ← ↑ ↓ → ＋ − 0 でも）。" +
-      "語に乗せると、その語の関係だけが濃く出ます。" +
-      // **畳んだことは書く。** 黙って出さないと「一言が書かれていない関係」と
-      // 見分けが付かない（隠した本数を必ず返すのと同じ約束）
-      (drawn.tucked
-        ? `重なって置けない一言 ${drawn.tucked} 本は畳んでいます（線かその語に乗せると出ます）。`
-        : "") +
-      // **段の外に出したことは書く。** 黙って別のところへ置くと、上下の段を
-      // 読んでいる人には「下にあるから下位」に見える。区切り線が出るのは
-      // 上に段があるときだけなので、文もそこで分ける
-      (drawn.lonely && drawn.linked
-        ? `関係が 1 本も書かれていない ${drawn.lonely} 語は、段の外（区切り線の下）に並べています。`
-        : "");
+    paintGraph(await api(`/api/graph?${query}`));
   } catch (err) {
+    lastGraph = null;
     setStatus(statusNode, err.message, "error");
     canvas.replaceChildren(el("p", { class: "status error", text: err.message }));
   }
@@ -1463,6 +1405,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   host.innerHTML = TEMPLATE;
   canvas = host.querySelector("#canvas");
   zoomBar = host.querySelector("#zoom");
+  modeSelect = host.querySelector("#mode");
   notes = host.querySelector("#notes");
   legend = host.querySelector("#legend");
   statusNode = host.querySelector("#status");
@@ -1475,9 +1418,22 @@ export async function mount(host, { search = "", embed = false } = {}) {
   currentDoc = params.get("doc") || "";
   embedded = embed;
   termByRef = new Map();
+  lastGraph = null;
 
   // **listener は最初の await より前に付ける。** あとに回すと、その間の操作が
   // 黙って無視される（設定ダイアログと extract.js で 2 回踏んだ）
+  mode = rememberedMode();
+  modeSelect.value = mode;
+  modeSelect.addEventListener("change", () => {
+    mode = MODES.includes(modeSelect.value) ? modeSelect.value : "layered";
+    try {
+      localStorage.setItem(MODE_KEY, mode);
+    } catch {
+      /* 使えない環境でも選べること自体は動く */
+    }
+    // 見せ方を変えるだけならサーバへ行き直さない（同じデータを描き替えるだけ）
+    if (lastGraph) paintGraph(lastGraph);
+  });
   categorySelect.addEventListener("change", refresh);
   spoilerCheck.addEventListener("change", refresh);
   installViewControls();

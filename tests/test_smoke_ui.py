@@ -348,6 +348,58 @@ def test_the_graph_lights_a_relation_and_its_words_together(page, server, seeded
     assert page.locator("svg.rel-graph .rel-edge-label").text_content() == "親友"
 
 
+def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
+    """見せ方を「交差しない図」に切り替えられる。
+
+    段の図で交差が消せないのは `rank` でノードが段に固定されているから
+    （→ docs/design-notes.md）。こちらは**関係 1 本ごとに独立した列**を与えて
+    その制約ごと外している。見張るのはその性質そのもの —— **どの 2 本の縦線も
+    同じ列に居ない**。同じ列に載せる実装に戻ると、絵は似ているのに交差する。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    zanelli = store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[
+                {"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"},
+                {"to": zanelli.ref, "label": "同級生", "rank": "対等"},
+            ],
+        ),
+        ref=a.ref,
+    )
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+
+    page.select_option("#mode", "fabric")
+    page.locator("svg.rel-fabric").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+    # 用語は横線、関係は縦線。関係の本数だけ列がある
+    assert page.locator("svg.rel-fabric .rel-edge-group").count() == 2
+    assert page.locator("svg.rel-fabric .rel-node").count() == 3
+    xs = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-fabric .rel-edge-group .rel-edge')]"
+        ".map((l) => Number(l.getAttribute('x1')))"
+    )
+    assert len(set(xs)) == len(xs), f"2 本が同じ列に載っている: {xs}"
+    assert "交差しません" in (page.text_content("#legend") or "")
+
+    # 線を押せば同じ編集ダイアログが開く（見せ方が変わっても直し方は 1 つ）
+    page.click("svg.rel-fabric .rel-edge-group")
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+    page.keyboard.press("Escape")
+
+    # 選んだ見せ方は覚えている（覆いは何度でも開き直される）
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-fabric").wait_for(timeout=10000)
+    assert page.locator("#mode").input_value() == "fabric"
+
+    # 戻せること。戻したら段の図（サーバへは行き直さない）
+    page.select_option("#mode", "layered")
+    page.locator("svg.rel-graph:not(.rel-fabric)").wait_for(timeout=10000)
+
+
 def test_the_graph_dims_everything_but_the_word_you_point_at(page, server, seeded):
     """1 つの語に乗せると、その語の関係だけが濃く出る。
 

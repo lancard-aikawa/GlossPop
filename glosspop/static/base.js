@@ -114,6 +114,34 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** ``el`` の SVG 版。名前空間が違うので `createElement` では作れない。 */
+export function svgEl(tag, attrs = {}, children = []) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "text") node.textContent = v;
+    else node.setAttribute(k, v);
+  }
+  for (const child of [].concat(children)) if (child) node.append(child);
+  return node;
+}
+
+/**
+ * 文字列の描画幅の**見積もり**。全角は字送りとほぼ同じ、半角はその 57%。
+ *
+ * **実測より少し大きく出る**（11px で 1〜2 割）。小さく見積もると、重ならない
+ * つもりで置いたものが実際には触れる。相関図が置き場所を決めるのに使う。
+ */
+export function estTextWidth(text, size = 11) {
+  let w = 0;
+  for (const ch of String(text || "")) {
+    w += ch.codePointAt(0) > 0x2e7f ? size * 1.05 : size * 0.57;
+  }
+  return w;
+}
+
 //: http(s) の URL だけをリンクにする。javascript: などは href に載せない
 const HTTP_URL = /^https?:\/\/[^\s<>"]+$/i;
 

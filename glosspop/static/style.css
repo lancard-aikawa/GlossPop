@@ -1103,6 +1103,17 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-edge-group:focus-visible .rel-edge,
 .rel-edge-group.hot .rel-edge { stroke: var(--accent); stroke-width: 2.5; }
 .rel-edge-group:focus-visible { outline: none; }
+/* 交差しない見せ方（用語が横線、関係が縦線）。線の色・太さ・当たり判定・
+   強調はすべて段の図と同じクラスを使い回す。ここに足すのは形だけ */
+.rel-fabric .fab-line { stroke: var(--border-strong); stroke-width: 1; }
+.rel-fabric .rel-node text { font: 600 12px var(--sans); }
+.rel-fabric .rel-node.lit .fab-line { stroke: var(--accent); }
+.rel-fabric .fab-end { fill: var(--border-strong); }
+.rel-fabric .rel-edge-group.hot .fab-end,
+.rel-fabric .rel-edge-group.lit .fab-end { fill: var(--accent); }
+/* 一言は列の上に縦書き。22px の列幅に横書きは入らない */
+.rel-fabric .rel-edge-label { stroke-width: 2px; }
+
 /* 関係の無い語をまとめた帯。**段ではない**と見て分かるように区切る */
 .rel-lonely-rule line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; }
 .rel-lonely-caption { fill: var(--fg-dim); font: 11px var(--sans); }
