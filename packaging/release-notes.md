@@ -62,7 +62,7 @@ Windows 版（Python のインストールは不要）。
   まだ書いていない相手はそのまま登録に入れるので「次に書くべき語の一覧」にもなる
 - **⚙ 設定** — データの保存先（更新のたびのコピーを無くせる）、**使う AI**、表示テーマ
   （OS に合わせる / ライト / ダーク）、更新の確認の切り替え
-- **使う AI を選べる** — Claude Code CLI（既定。API キー不要）か Gemini API。
+- **使う AI を選べる** — Claude Code CLI（既定・推奨。API キー不要）か Gemini API。
   **モデルと思考の深さ**も選べるので、速く済ませるか丁寧に書かせるかを決められる
   （変更は次の呼び出しから効く。再起動は要らない）
 - **フォルダ辞書** — そのフォルダを開いている間だけ有効な辞書を持てる
@@ -142,11 +142,18 @@ glosspop migrate --from "C:\旧\GlossPop"
 下書き・抽出・関係の下書きに使う AI は ⚙ の **AI** タブで選べる。**変更は次の
 呼び出しから効く**（再起動は要らない）。
 
-| | Claude Code CLI（既定） | Gemini API |
+**特に理由がなければ [Claude Code](https://claude.com/claude-code) を入れること。**
+`claude` を入れて一度ログインすれば、**このアプリ側の設定は何も要らない**。
+**exe には同梱していない**ので、別に入れる必要がある。
+
+| | Claude Code CLI（既定・推奨） | Gemini API |
 | --- | --- | --- |
-| 準備 | PATH に [Claude Code](https://claude.com/claude-code) の `claude` | Google AI Studio の API キー |
+| 準備 | `claude` を入れて一度ログインする | Google AI Studio で API キーを発行して ⚙ に貼る |
 | API キー | **要らない**（CLI の認証を使う） | 要る |
+| 費用 | Claude の契約に含まれる | API の従量課金（無料枠あり） |
 | モデル | Haiku / Sonnet（既定）/ Opus | API から一覧を取得して選ぶ |
+
+Gemini は API キーの発行という手順を踏める人向け。迷うなら Claude Code CLI にすること。
 
 どちらも用意が無ければ、AI を使う機能だけが無効になる（手入力での登録はできる）。
 

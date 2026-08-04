@@ -1,0 +1,177 @@
+# 開発
+
+ソースから動かす・ビルドする・リリースする人向け。使いかたは [MANUAL.md](MANUAL.md)。
+
+**設計の前提と壊しやすい不変条件は [CLAUDE.md](CLAUDE.md) にある。**
+コードを触る前にそちらを読むこと —— ここには手順しか書いていない。
+
+## ソースから動かす
+
+```powershell
+uv sync
+uv run glosspop app                     # 専用ウィンドウで開く
+uv run glosspop serve                   # 開くだけ (ブラウザは自分で) http://127.0.0.1:8765/
+uv run glosspop serve --port 9000       # ポートを変える
+uv run glosspop serve --reload          # 開発用 (ソース変更で再起動)
+```
+
+`Ctrl+C` で止まる。**止まらない / 直したのに反映されないときは、ポートを掴んだままの
+古いプロセスが残っている**（`uv` の親を kill しても子の python が生き残る）。
+
+```powershell
+Get-NetTCPConnection -LocalPort 8765 -State Listen |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+### 確認用のショートカット
+
+よく使う操作は [`check.cmd`](check.cmd) にまとめてある（引数なしで実行するとメニュー）。
+
+```powershell
+.\check.cmd test       # テスト
+.\check.cmd app        # ソースから起動（専用ウィンドウ）
+.\check.cmd build      # exe をビルド（キャッシュを使う。約 21 秒）
+.\check.cmd rebuild    # キャッシュを消してビルド（約 48 秒）
+.\check.cmd exe        # ビルドした exe を起動して応答を確かめる
+.\check.cmd kill       # ポートの所有者を落とす
+.\check.cmd all        # test + build + exe
+.\check.cmd ci         # リリース前の予行演習（CI と同じ条件。タグは打たない）
+```
+
+`exe` は [`packaging/check-exe.ps1`](packaging/check-exe.ps1) を呼ぶ。**凍結してからでないと
+壊れないところ**（`DATA_ROOT` の位置、`datas` の漏れ、`hiddenimports` の漏れ）を、
+release ワークフローと同じ観点で見る。`serve` で専用ウィンドウが開かないことも確かめる
+（開くと CI の起動確認が返ってこなくなる）。
+
+`check.cmd` は **ASCII のみ**で書くこと。`cmd.exe` はバッチをコンソールのコードページ
+（日本語環境では CP932）で読むので、UTF-8 の日本語は化ける。さらに CP932 の 2 バイト目が
+`0x5C` になる文字（`表` `十` `ソ` など）があると構文解析そのものが壊れる。
+日本語を書きたい処理は `.ps1` 側に置く。
+
+Windows 用の exe を自分でビルドする手順は[後述](#windows-向けビルド)。
+
+## 構成
+
+```
+glosspop/
+  app.py        FastAPI ルーティング
+  store.py      辞書 CRUD (カテゴリ別ディレクトリ + frontmatter)
+  categories.py カテゴリマスター (categories.yaml)
+  models.py     データモデルとカテゴリ名の検証
+  relations.py  エントリ間の関係の解決 (ref / 旧 ref / 用語名) と相関図のグラフ
+  doctor.py     辞書の点検 (壊れた参照・空の本文など)
+  updates.py    新しい版の確認 (外へ通信する唯一の経路)
+  installer.py  新しい版の zip を落として隣に展開する
+  archive.py    辞書の書き出しと取り込み (取り込みは置き換え。先に控えを取る)
+  merge.py      割れてしまった同じものを 1 つにまとめる (下見 → 実行)
+  linker.py     レンダリング済み HTML への自動リンク挿入
+  render.py     Markdown / テキスト → HTML、本文の改行整形
+  fetcher.py    URL 取得
+  htmlclean.py  外部 HTML の本文抽出とサニタイズ
+  ai.py         claude CLI サブプロセス呼び出し
+  cli.py        app / serve / add / list / show / move / merge / rm / categories
+  appwindow.py  専用ウィンドウ (ブラウザのアプリモード) の起動
+  static/
+    viewer.js      ビューア (下層。他の画面はこの上に重なる)
+    overlay.js     重ねる仕組み (URL も合わせる。ブラウザの「戻る」で閉じる)
+    progress.js    読書位置の記憶 (段落の番号で持つ)
+    glossary.js    辞書一覧
+    entry.js       用語ページ
+    graph.js       相関図 (配置はここ。力学モデルは使わない)
+    relations-draft.js 関係の AI 下書き → まとめて書き込み
+    doctor.js      辞書の点検
+    settings.js    ⚙ (データの保存先・更新の確認)
+    update.js      更新のお知らせ
+    select-add.js  選択 → 登録 (ビューア・用語ページ・一覧で共用)
+    popup.js       吹き出し
+    editor.js      登録 / 編集ダイアログ
+    merge.js       まとめるダイアログ (相手を選ぶ → 下見 → 実行)
+.claude/skills/gloss-add/   Claude Code 用スキル
+packaging/                  Windows 向け PyInstaller ビルド
+  build.ps1     ビルド実行 (dist/GlossPop/ を作る)
+  glosspop.spec PyInstaller の定義
+  entry.py      exe のエントリスクリプト
+```
+
+## Windows 向けビルド
+
+Python も uv も入っていない PC で動かすなら、PyInstaller で onedir 形式に固める。
+
+```powershell
+.\packaging\build.ps1
+```
+
+`dist\GlossPop\` ができる。**このフォルダごと**コピーすれば動く（`glosspop.exe` 単体では
+動かない。`_internal\` に依存関係が入っている）。
+
+```
+dist\GlossPop\
+  glosspop.exe    引数なしで起動 = app (専用ウィンドウが開く)
+  _internal\      Python ランタイムと依存 (触らない)
+  data\glossary\  辞書        ← exe の隣に読み書きされる
+  data\window\    専用ウィンドウのブラウザプロファイル (消しても支障はない)
+  content\        既定で開くフォルダ (.md / .txt / .html)
+```
+
+`glosspop.exe` は CLI もそのまま使える（`glosspop.exe list`、`glosspop.exe add --json -` など）。
+辞書と content の場所は環境変数で変えられる（[環境変数](MANUAL.md#環境変数)）。既定は exe の隣なので、
+`Program Files` のような書き込めない場所に置く場合は `GLOSSPOP_GLOSSARY_DIR` を指定すること。
+
+exe の隣に何を置くかは `-Seed` で決まる。
+
+| モード | content/ | data/ | 用途 |
+| --- | --- | --- | --- |
+| `dev`（既定） | リポジトリの `content/` | リポジトリの `data/` | 手元での確認 |
+| `dist` | リポジトリの `content/` | `packaging/sample-data/` | 配布用（個人の辞書を入れない） |
+| `none` | 入れない | 入れない | 初回起動時に空で作らせる |
+
+リリースの zip は `dist` で作る。サンプル辞書（`冪等` と、カテゴリ違いで 2 件ある `ソース`）が
+入っているので、展開してすぐ `ようこそ.md` の中で自動リンクと吹き出しを試せる。
+
+### リリース
+
+**タグを打つ前に `.\check.cmd ci` を通すこと。** release ワークフローと同じ順で、
+バージョンの一致・テスト・ビルド・exe の起動まで手元で走らせる予行演習で、
+Release は作らない。
+
+これがあるのは、**手元では通って CI で落ちる**失敗を 2 回続けて踏んだため
+（`claude` が PATH にあるかの差、実時間に依存するテスト）。落ちるたびに壊れたタグを
+消して付け直すことになり、GitHub から失敗のメールも飛ぶ。
+
+`ci` が見ているのは 3 つ:
+
+| 見るもの | なぜ |
+| --- | --- |
+| `pyproject.toml` と `__init__.py` のバージョン一致 | 食い違うとワークフローが最初で落ちる |
+| **`claude` を PATH から外して**全テスト | CI に `claude` は無い。`ai.available()` の分岐が変わる |
+| 時間に依存するテストを 40 回 | たまたま通っただけでないか。**網であって証明ではない** |
+
+ネットワークは `tests/conftest.py` が常に塞いでいるので、ここでは何もしない。
+
+タグを push すると [GitHub Actions](.github/workflows/release.yml) がビルドし、
+zip を付けた**ドラフト**の Release を作る（内容を確認して手で publish する）。
+
+```powershell
+# バージョンを 2 箇所とも上げてからタグを打つ
+#   pyproject.toml の version
+#   glosspop/__init__.py の __version__
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+タグとコードのバージョンが食い違っていると、ビルドせずに失敗する。
+Actions は手動実行（workflow_dispatch）もでき、その場合は Release を作らず
+artifact に zip を置くだけなので、リリース前の確認に使える。
+
+## テスト
+
+```powershell
+uv run pytest
+uv run pytest tests/test_smoke_ui.py     # ブラウザで実際に動かす通しテストだけ
+```
+
+`tests/test_smoke_ui.py` は本物のサーバを立てて Chrome で操作する。「登録 → 本文で
+リンクになる → 吹き出しが出る → 関係が図になる → 点検が黙る」まで通す —— この
+リポジトリの機能は、そこまで見ないと動いているか分からない（HTML は正しいのに JS が
+落ちている、が起きる）。**手元の Chrome を使う**ので、ブラウザのダウンロードは要らない。
+Chrome も playwright も無い環境では丸ごと skip する。

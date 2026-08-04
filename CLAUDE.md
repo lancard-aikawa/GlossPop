@@ -2,8 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-使い方・データ形式・自動リンクの規則は [README.md](README.md) にある。ここには
-**README を読んでも分からないこと**（設計の前提、壊しやすい不変条件、開発時の落とし穴）
+使い方・データ形式・自動リンクの規則は [MANUAL.md](MANUAL.md)、動かし方とビルドは
+[DEVELOP.md](DEVELOP.md) にある（[README.md](README.md) は入口だけ）。ここには
+**それらを読んでも分からないこと**（設計の前提、壊しやすい不変条件、開発時の落とし穴）
 だけを書く。
 
 ## コマンド
@@ -543,7 +544,7 @@ renderer / gpu）も数に入るので、ブラウザ本体だけを見ること
 ## Windows ビルド（`packaging/`）
 
 `.\packaging\build.ps1` で PyInstaller の onedir ビルド（`dist\GlossPop\`）を作る。
-手順は README にある。ここには**壊しやすい点**だけ:
+手順は [DEVELOP.md](DEVELOP.md) にある。ここには**壊しやすい点**だけ:
 
 **凍結すると `__file__` は一時展開先（`_internal`）を指す。** そのため
 `config.APP_DIR` は `sys.frozen` のとき `sys.executable` の親を基準にする。
@@ -1156,17 +1157,20 @@ Playwright を動かして確かめる。
 | 変えたもの | 一緒に直す |
 | --- | --- |
 | 辞書のスキーマ / CLI 引数 | `.claude/skills/gloss-add/SKILL.md` |
-| 関係 (`relations`) の項目 | SKILL.md の「関係を書く」、README の「関係と相関図」、`base.js` の `RANK_OPTIONS` / `RANK_MARK` |
-| 抽出の種別 (`EXTRACT_KINDS`) | README の「まとめて登録する」の表 |
+| 関係 (`relations`) の項目 | SKILL.md の「関係を書く」、MANUAL の「関係と相関図」、`base.js` の `RANK_OPTIONS` / `RANK_MARK` |
+| 抽出の種別 (`EXTRACT_KINDS`) | MANUAL の「まとめて登録する」の表 |
 | 統合で選ばせる項目 (`merge.CONFLICT_FIELDS`) | `merge.js` の `FIELD_LABELS`（載っていない項目は英語の名前のまま画面に出る） |
-| 設定に足した項目 | README の「設定」、`packaging/release-notes.md` の「できること」、`settings.js` の `PATH_LABELS`（場所を足したとき） |
-| AI の提供元・モデル・思考の深さ | `llm.py`（`PROVIDERS` / `EFFORTS` / `CLAUDE_MODELS`）、README の「使う AI」と環境変数の表、`settings.js` の「AI」節 |
-| 更新まわりの挙動 | README の「更新のしかた」、`packaging/release-notes.md` の「更新するとき」 |
-| 自動リンクの規則 | README.md の「自動リンクの規則」、`content/ようこそ.md` |
-| カテゴリ名の制約 | `models.normalize_category()`、README、SKILL.md、`ai.build_prompt()` |
+| 設定に足した項目 | MANUAL の「設定」、`packaging/release-notes.md` の「できること」、`settings.js` の `PATH_LABELS`（場所を足したとき） |
+| AI の提供元・モデル・思考の深さ | `llm.py`（`PROVIDERS` / `EFFORTS` / `CLAUDE_MODELS`）、MANUAL の「使う AI」と環境変数の表、`settings.js` の「AI」節、`packaging/release-notes.md` の「AI 下書きについて」（**同じ表が載っている**）、README の「AI について」 |
+| 更新まわりの挙動 | MANUAL の「更新のしかた」、`packaging/release-notes.md` の「更新するとき」 |
+| 自動リンクの規則 | MANUAL.md の「自動リンクの規則」、`content/ようこそ.md` |
+| カテゴリ名の制約 | `models.normalize_category()`、MANUAL、SKILL.md、`ai.build_prompt()` |
 | 画面 (`glossary` / `entry` / `graph` / `doctor`) の中身 | そのモジュールの `TEMPLATE`（**HTML 側には写しを置かない**）。新しい画面を足したら `overlay.js` の `ROUTES` |
 | 相関図の形の規則（段・孤立語・並び・帯の折り返し） | `graph-model.js`（**1 つの見せ方だけに写しを作らない** —— `graph.js` / `fabric.js` / `matrix.js` / `ego.js` / `timeline.js` が同じものを読む） |
-| 相関図の見せ方を足した | `graph.js` の `MODES` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、README の「見せ方は 5 つある」、CLAUDE.md のこの節 |
+| 相関図の見せ方を足した | `graph.js` の `MODES` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 5 つある」、CLAUDE.md のこの節 |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
+| 画面の見た目（ビューア・一覧・用語ページ・相関図・抽出ダイアログ） | `docs/images/` の該当スクショ（README と MANUAL が貼っている。撮り直しは content/ を開いて 1280×820 のライトで撮る） |
 | 機能を足した / 設計の判断をした | `docs/open-questions.md`（**片付いた宿題は消す** —— 残ると「まだ無いもの」に見える）、`docs/design-notes.md`（決めたことと、その代償を書く） |
+| 使い方の説明を増やした | `MANUAL.md`（**README には移さない** —— README は入口だけに保つ。目次も一緒に直す） |
+| ビルド・リリースの手順 | `DEVELOP.md` |
 | バージョン | `pyproject.toml` と `glosspop/__init__.py` の**両方**（タグと不一致だと release ワークフローが落ちる）。`release-notes.md` の版番号の例も見る |
