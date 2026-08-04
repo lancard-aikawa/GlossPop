@@ -199,9 +199,38 @@ function build() {
             深くするほど丁寧になり、そのぶん時間がかかります
             （所要時間は考えた量にほぼ比例します）。
           </p>
+        </section>
           <div class="setting-row setting-row-plain">
             <button type="button" data-ref="aiSave">AI の設定を保存</button>
             <span class="status" data-ref="aiStatus"></span>
+          </div>
+        </section>
+        <section class="entry-section">
+          <h2>文体（口調）</h2>
+          <p class="hint">
+            AI が書く文章の調子を指定できます（「講談調で」「TRPG のルールブック風に」など）。
+            効くのは<strong>要約・本文・使用例と、関係の一言だけ</strong>です ——
+            用語名・カテゴリ・関係の相手は、崩すと保存できなくなるので変わりません。
+            空にして保存すると指定なしに戻ります。
+          </p>
+          <div class="setting-row setting-row-plain">
+            <label class="field-inline" for="gp-ai-style-scope">この指定を</label>
+            <select id="gp-ai-style-scope" class="auto-width" data-ref="aiStyleScope">
+              <option value="global">全体に（どのフォルダでも）</option>
+              <option value="local">📁 いま開いているものだけに</option>
+            </select>
+          </div>
+          <div class="setting-row setting-row-plain">
+            <textarea data-ref="aiStyle" rows="3"
+                      placeholder="例: 講談・軍記物のような語り口で。歯切れよく、体言止めを混ぜる。"
+                      aria-label="文体（口調）の指定"></textarea>
+          </div>
+          <div class="chips" data-ref="aiStylePresets"></div>
+          <p class="hint" data-ref="aiStyleNote"></p>
+          <p class="hint" data-ref="aiStyleWhere"></p>
+          <div class="setting-row setting-row-plain">
+            <button type="button" data-ref="aiStyleSave">文体を保存</button>
+            <span class="status" data-ref="aiStyleStatus"></span>
           </div>
         </section>
       </div>
@@ -372,17 +401,91 @@ function paintAI(info) {
   refs.aiKey.value = "";
   refs.aiKeyClear.disabled = !info.gemini_key_set || info.gemini_key_source === "env";
 
+  paintStyle(info);
+
   const notes = [
     lockIfEnv(refs.aiProvider, info.provider_source, "使う AI"),
     lockIfEnv(refs.aiModel, info.model_source, "モデル"),
     lockIfEnv(refs.aiEffort, info.effort_source, "思考の深さ"),
+    lockIfEnv(refs.aiStyle, info.style_source, "文体"),
   ].filter(Boolean);
   refs.aiLocked.hidden = !notes.length;
   refs.aiLocked.textContent = notes.join(" ");
+  // 環境変数で固定されているなら、押しても書き込めない（押せると嘘になる）
+  for (const chip of refs.aiStylePresets.children) chip.disabled = refs.aiStyle.disabled;
+  refs.aiStyleScope.disabled = refs.aiStyle.disabled;
+  refs.aiStyleSave.disabled = refs.aiStyle.disabled;
 
   // 選んだ AI が使えないことは、タブを開かなくても分かるようにする
   refs.aiMark.hidden = info.available;
   refs.aiMark.title = info.reason;
+}
+
+/** 打ちかけの文体。保存先を切り替えても捨てないために、両方ぶん持つ。 */
+let styleDraft = { global: "", local: "" };
+let styleScope = "global";
+let styleScopePicked = false;
+
+const STYLE_WHERE = { env: "環境変数", folder: "📁 このフォルダ", settings: "全体" };
+
+/**
+ * 文体（口調）を描く。
+ *
+ * **どちらが効いているかを必ず書く。** 全体とフォルダの両方に置ける以上、
+ * 片方だけ見せると「全体に書いたのに効かない」になる。**祖先のフォルダに
+ * 置かれているときは場所も出す** —— 黙って遠いフォルダの口調が効くと驚く。
+ */
+function paintStyle(info) {
+  styleDraft = { global: info.style_global || "", local: info.style_folder || "" };
+  const canLocal = Boolean(info.style_folder_path);
+  refs.aiStyleScope.querySelector("option[value='local']").disabled = !canLocal;
+  if (!styleScopePicked) {
+    // 効いているものを最初に見せる（探しに行かせない）
+    styleScope = info.style_source === "folder" ? "local" : "global";
+  }
+  if (!canLocal) styleScope = "global";
+  refs.aiStyleScope.value = styleScope;
+  refs.aiStyle.value = styleDraft[styleScope];
+
+  // 押せばそのまま入力欄に入る。**例文はサーバから来る**（画面と AI の 2 か所に
+  // 書き分けると、片方だけ直したときに例と実際の効き方がずれる）
+  refs.aiStylePresets.replaceChildren(
+    ...(info.style_presets || []).map((p) =>
+      el("button", {
+        type: "button",
+        class: "chip",
+        text: p.label,
+        title: p.value,
+        onclick: () => {
+          refs.aiStyle.value = p.value;
+          refs.aiStyle.focus();
+        },
+      })
+    )
+  );
+
+  const note = [];
+  if (info.style) {
+    const where = STYLE_WHERE[info.style_source] || "全体";
+    note.push(`いま効いているのは「${where}」の指定です。`);
+    // 優先順を黙らない。押しのけられた側に書いた人がいちばん困る
+    if (info.style_source === "folder" && info.style_global) {
+      note.push("全体にも指定がありますが、こちらが優先されます。");
+    }
+  } else {
+    note.push("指定なし。いつもどおりの説明文で書きます。");
+  }
+  note.push(`${info.style_max} 字まで。`);
+  const over = (styleDraft[styleScope] || "").length - info.style_max;
+  if (over > 0) note.push(`いまの指定は上限を ${over} 字超えていて、超えた分は使いません。`);
+  refs.aiStyleNote.textContent = note.join(" ");
+
+  refs.aiStyleWhere.textContent = canLocal
+    ? `📁 の置き場所: ${info.style_folder_path}`
+      + (info.style_folder_is_ancestor
+        ? `（親フォルダ「${info.style_folder_label}」のものを使っています）` : "")
+    : "いま読んでいるものには辞書がないので、📁 の指定は置けません"
+      + "（URL を読んでいて、その辞書をまだ作っていないときです）。";
 }
 
 /** 選べるモデルを datalist に入れる。取れなければ理由を出して手入力に任せる。 */
@@ -409,6 +512,7 @@ export async function openSettingsDialog() {
   build();
   refs.result.hidden = true;
   showTab("general");                     // 開き直したら必ず先頭のタブから
+  styleScopePicked = false;               // 効いているほうを毎回先に見せる
   refs.theme.value = currentTheme();      // ローカルの設定なので待たずに出せる
   setStatus(refs.status, "読み込み中", "busy");
   dialog.showModal();
@@ -778,6 +882,41 @@ export async function openSettingsDialog() {
     ev.preventDefault();
   };
 
+  /**
+   * 文体を保存する。**AI の選択とは別のボタン・別の口。**
+   *
+   * 📁 を選ぶとフォルダに ``.glosspop/style.md`` を作りうるので、モデルを
+   * 選び直したついでに書かれると「開いただけのフォルダを汚さない」が崩れる。
+   */
+  const onAIStyleSave = async () => {
+    refs.aiStyleSave.disabled = true;
+    setStatus(refs.aiStyleStatus, "保存中", "busy");
+    try {
+      const scope = refs.aiStyleScope.value;
+      const res = await api("/api/ai/style", {
+        method: "PUT",
+        body: { scope, style: refs.aiStyle.value.trim() },
+      });
+      paintAI(res);
+      // 保存はできたが効かない、を黙らない（押しのけられた側に書いた人が困る）
+      setStatus(refs.aiStyleStatus,
+        scope === "global" && res.style_source === "folder"
+          ? "保存しました（いまは 📁 の指定が優先されています）"
+          : "保存しました");
+    } catch (err) {
+      setStatus(refs.aiStyleStatus, err.message, "error");
+    }
+    refs.aiStyleSave.disabled = false;
+  };
+
+  /** 保存先を切り替える。**打ちかけは捨てない**（書き直させると使われなくなる）。 */
+  const onAIStyleScope = () => {
+    styleDraft[styleScope] = refs.aiStyle.value;
+    styleScope = refs.aiStyleScope.value;
+    styleScopePicked = true;
+    refs.aiStyle.value = styleDraft[styleScope] || "";
+  };
+
   const onAISaveClick = () => onAISave();
   const onAIKeyClear = () => onAISave({ gemini_api_key: "" });
   const onAIModelFetch = () => loadAIModels(refs.aiProvider.value);
@@ -854,6 +993,8 @@ export async function openSettingsDialog() {
   refs.aiProvider.addEventListener("change", onAIProvider);
   refs.aiKeyClear.addEventListener("click", onAIKeyClear);
   refs.aiModelFetch.addEventListener("click", onAIModelFetch);
+  refs.aiStyleSave.addEventListener("click", onAIStyleSave);
+  refs.aiStyleScope.addEventListener("change", onAIStyleScope);
   refs.cancel.addEventListener("click", finish);
   refs.close.addEventListener("click", finish);
   refs.form.addEventListener("submit", onSubmit);
@@ -929,6 +1070,8 @@ export async function openSettingsDialog() {
         refs.aiProvider.removeEventListener("change", onAIProvider);
         refs.aiKeyClear.removeEventListener("click", onAIKeyClear);
         refs.aiModelFetch.removeEventListener("click", onAIModelFetch);
+        refs.aiStyleSave.removeEventListener("click", onAIStyleSave);
+        refs.aiStyleScope.removeEventListener("change", onAIStyleScope);
         refs.cancel.removeEventListener("click", finish);
         refs.close.removeEventListener("click", finish);
         refs.form.removeEventListener("submit", onSubmit);

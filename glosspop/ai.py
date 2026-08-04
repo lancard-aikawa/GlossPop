@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from functools import partial
 
@@ -16,7 +17,7 @@ from anyio import to_thread
 
 from . import config, llm, relations, store
 from .linker import entry_url
-from .models import UNCATEGORIZED, Entry, EntryDraft, Relation
+from .models import GLOBAL_SCOPE, SCOPES, UNCATEGORIZED, Entry, EntryDraft, Relation
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
@@ -177,6 +178,178 @@ def build_scope_block(folder: str, kind: str = "") -> str:
     ])
 
 
+# --------------------------------------------------------------------------- #
+# 文体（口調）
+#
+# 「広川太一郎風」「司馬遼太郎風」「TRPG のルールブック風」のように、作品や卓に
+# 寄せた書き方をさせるための指定。**設定の解決も節の組み立てもここに置く** ——
+# 文体は「何を頼むか」であって「誰にどう頼むか」ではないので ``llm.py`` の仕事では
+# ない（提供元・モデル・思考の深さと同じ画面に出るだけ）。
+#
+# **口調は作品につく。** 全体に 1 つだけ持たせると、小説を読むフォルダと社内資料の
+# フォルダを行き来するたびに ⚙ を開き直すことになる。なので辞書と同じ置き場所
+# (``.glosspop/style.md``) にフォルダぶんを持てるようにし、無ければ全体に落とす。
+# --------------------------------------------------------------------------- #
+
+#: 指定を受け付ける長さ。長い指示は本文の枠を食ううえ、出力形式の指示より
+#: 目立つようになる（プロンプトの中で相対的に重くなる）
+STYLE_MAX_CHARS = 400
+
+STYLE_ENV = "GLOSSPOP_AI_STYLE"
+STYLE_SETTING = "ai_style"
+
+#: 画面に出す例。**値そのもの**なので、押せばそのまま入力欄に入る
+STYLE_PRESETS: list[dict[str, str]] = [
+    {"label": "講談調", "value": "講談・軍記物のような語り口で。歯切れよく、体言止めを混ぜる。"},
+    {"label": "司馬遼太郎風", "value": "司馬遼太郎のような史伝の筆致で。俯瞰した視点から、断定を避けずに淡々と書く。"},
+    {"label": "広川太一郎風", "value": "広川太一郎の吹き替えのような軽妙な口調で。"
+                                      "茶々を入れるような言い回しや語尾の遊びを少し混ぜる。"},
+    {"label": "怪盗の予告状風", "value": "怪盗の予告状のように、もったいぶった芝居がかった調子で。"},
+    {"label": "TRPG のルールブック風", "value": "TRPG のルールブックの記述のように、"
+                                                "卓上でそのまま読み上げられる調子で。世界観の語り口を保つ。"},
+    {"label": "です・ます", "value": "です・ます調の、落ち着いた説明文で。"},
+]
+
+
+def _global_style() -> str:
+    """全体（どのフォルダでも効く）の指定。設定ファイルに入る。"""
+    return str(config.load_settings().get(STYLE_SETTING) or "").strip()
+
+
+def _folder_style() -> str:
+    """いま読んでいるものに効く指定。``.glosspop/style.md` の中身がまるごと値。
+
+    **読むたびに開く。** 覚え込むと、外のエディタで書き換えたぶんを黙って無視する
+    ようになる（`store` のキャッシュを署名で作っているのと同じ理由）。AI を呼ぶ
+    経路でしか通らないうえ数百字のファイルなので、毎回読んで困らない。
+    """
+    path = config.local_style_file()
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""                      # 読めない指定で下書きごと止めない
+
+
+def _style_pick() -> tuple[str, str]:
+    """(文体, どこから来たか)。
+
+    **優先順は 環境変数 > 📁 このフォルダ > 全体 > 既定。** 環境変数を最上位に
+    するのは既存の規則どおり（テストと一時的な切り替えが、設定ファイルにも
+    フォルダにも引きずられないように）。
+    """
+    env = (os.environ.get(STYLE_ENV) or "").strip()
+    if env:
+        return env[:STYLE_MAX_CHARS], "env"
+    folder = _folder_style()
+    if folder:
+        return folder[:STYLE_MAX_CHARS], "folder"
+    saved = _global_style()
+    return (saved[:STYLE_MAX_CHARS], "settings") if saved else ("", "default")
+
+
+def style() -> str:
+    """いま効いている文体の指定。指定が無ければ空文字。
+
+    **基準は「いま読んでいるもの」で、エントリの保存先 (`scope`) ではない。**
+    保存先で切り替える形にすると、``scope: "auto"`` は語ごとに行き先が変わるので、
+    1 回の「まとめて登録」の中で口調が混ざる。
+    """
+    return _style_pick()[0]
+
+
+def describe_style() -> dict:
+    """UI に出す文体まわり一式。``/api/ai/settings`` が ``llm.describe()`` に足す。
+
+    **どちらが効いているかを画面に書けるだけの材料を返す。** 全体とフォルダの
+    両方に指定できる以上、片方だけ見せると「全体に書いたのに効かない」になる
+    （相関図の範囲を必ず画面に出しているのと同じ話）。**祖先の指定が効いている
+    ときは場所も出す** —— 黙って遠いフォルダの口調が効くと驚く。
+    """
+    value, source = _style_pick()
+    path = config.local_style_file()
+    root = config.local_root()
+    return {
+        "style": value,
+        "style_source": source,
+        "style_global": _global_style(),
+        "style_folder": _folder_style(),
+        "style_folder_path": str(path) if path is not None else "",
+        "style_folder_label": root.name if root is not None else "",
+        "style_folder_is_ancestor": (
+            root is not None and not config.reading_url() and root != config.content_dir()
+        ),
+        "style_presets": STYLE_PRESETS,
+        "style_max": STYLE_MAX_CHARS,
+    }
+
+
+def save_style(scope: str, text: str) -> None:
+    """文体を保存する。``scope`` は ``global`` / ``local``。
+
+    **空文字は「消す」。** フォルダ側はファイルごと消す（空のファイルを残すと、
+    次に開いた人が「何か指定されている」と読む）。``.glosspop`` は消さない ——
+    辞書が入っているかもしれない。
+
+    **保存を押したときだけディレクトリを作る。** 開いただけのフォルダを汚さない、
+    というカテゴリマスターと同じ約束。
+    """
+    if scope not in SCOPES:
+        raise AIError(f"不明な保存先です: {scope}")
+    text = (text or "").strip()
+    if len(text) > STYLE_MAX_CHARS:
+        raise AIError(f"文体の指定は {STYLE_MAX_CHARS} 字までです")
+
+    if scope == GLOBAL_SCOPE:
+        settings = config.load_settings()
+        if text:
+            settings[STYLE_SETTING] = text
+        else:
+            settings.pop(STYLE_SETTING, None)
+        config.save_settings(settings)
+        return
+
+    path = config.local_style_file()
+    if path is None:
+        raise AIError("いま読んでいるものに辞書がありません（フォルダを開いてください）")
+    if not text:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".md.tmp")
+    tmp.write_text(text + "\n", encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+
+
+def build_style_block(value: str, fields: str, keep: str) -> str:
+    """文体の指定をプロンプトの 1 節にする。**効く範囲を必ず一緒に書く。**
+
+    文体をそのまま渡すだけにすると、AI は**用語名や関係の相手まで**その口調に
+    崩す。ところが `term` は文書中の表記と一致しないと `filter_candidates()` が
+    落とし、`from` / `to` は一覧の表記と一致しないと `filter_relations()` が
+    落とす —— **頼んだ本人には「なぜか候補が全部消えた」としか見えない**。
+    カテゴリはディレクトリ名にもなる。だから範囲は毎回書き添える。
+
+    ``fields`` が文体の効く項目、``keep`` が崩してはいけない項目。
+    """
+    value = (value or "").strip()[:STYLE_MAX_CHARS]
+    if not value:
+        return ""
+    return "\n".join([
+        "## 文体（口調）",
+        "次の指定に沿った書き方にしてください。",
+        "",
+        value,
+        "",
+        f"**この指定が効くのは {fields} の中身だけです。**",
+        f"{keep} は文体に合わせて崩さないこと"
+        "（辞書の見出しや相手の指定としてそのまま照合されるので、変えると保存できません）。",
+        "JSON の構造・キー名も変えないこと。"
+        "**上の「ネタバレの禁止」と、下の「出力形式」の指示のほうが優先します。**",
+    ])
+
+
 def build_prompt(
     term: str,
     context: str = "",
@@ -239,6 +412,16 @@ def build_prompt(
         parts += ["", build_scope_block(scope_folder, kind)]
         # 保存先を選ばせるときだけスキーマに足す（使わないなら聞かない）
         schema = _SCHEMA_HINT.replace("{\n", "{\n" + _SCOPE_FIELD, 1)
+
+    # 読み手が読む散文だけに効かせる。見出し語・別名・カテゴリを崩されると、
+    # 本文でリンクにならない語や、ディレクトリ名に使えないカテゴリが返ってくる
+    style_block = build_style_block(
+        style(),
+        "`summary` `definition` `examples`",
+        "`term` `reading` `aliases` `category` `subcategory` `tags`",
+    )
+    if style_block:
+        parts += ["", style_block]
 
     parts += [
         "",
@@ -985,6 +1168,16 @@ def build_relations_prompt(
             "知らないものとして書いてください。**",
             "後で明かされる関係（正体、血縁、裏切りなど）には触れず、"
             "この時点で分かる関係だけを書くこと。",
+        ]
+    # 一言 (`label` / `back`) だけに効かせる。`from` / `to` は一覧の表記と
+    # 一致しないと `filter_relations()` が落とすので、崩されると 1 本も残らない
+    style_block = build_style_block(style(), "`label` `back`", "`from` `to` `rank` `reveal`")
+    if style_block:
+        parts += [
+            "",
+            style_block,
+            "一言の長さ（10 字程度）は文体を変えても守ること"
+            "（相関図の線の上に出るので、長いと畳まれて読めません）。",
         ]
     body = (text or "").strip()[:RELATION_TEXT_CHARS]
     parts += [

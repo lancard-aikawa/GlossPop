@@ -425,6 +425,120 @@ class TestRelationsPrompt:
         assert "ジョバンニ—カムパネルラ" in prompt
 
 
+class TestStyle:
+    """文体（口調）の指定。**効く範囲を毎回書き添えているか**を見張る。"""
+
+    def test_no_block_when_nothing_is_set(self):
+        assert ai.style() == ""
+        assert "文体（口調）" not in ai.build_prompt("冪等")
+
+    def test_the_setting_reaches_the_draft_prompt(self):
+        config.save_settings({"ai_style": "講談調で"})
+        prompt = ai.build_prompt("冪等")
+        assert "文体（口調）" in prompt and "講談調で" in prompt
+
+    def test_the_environment_wins_over_the_setting(self, monkeypatch):
+        config.save_settings({"ai_style": "設定ファイル側"})
+        monkeypatch.setenv(ai.STYLE_ENV, "環境変数側")
+        assert ai.style() == "環境変数側"
+        assert ai.describe_style()["style_source"] == "env"
+
+    def test_a_long_指定_is_cut(self, monkeypatch):
+        monkeypatch.setenv(ai.STYLE_ENV, "あ" * (ai.STYLE_MAX_CHARS + 50))
+        assert len(ai.style()) == ai.STYLE_MAX_CHARS
+
+    def test_the_draft_prompt_protects_the_headword(self):
+        """**用語名やカテゴリを崩されると候補が丸ごと消える**（照合で落ちる）。"""
+        config.save_settings({"ai_style": "講談調で"})
+        prompt = ai.build_prompt("冪等")
+        assert "`summary` `definition` `examples` の中身だけ" in prompt
+        assert "`term`" in prompt and "`category`" in prompt
+
+    def test_the_relations_prompt_protects_both_sides(self, cast):
+        """``from`` / ``to`` が崩れると `filter_relations()` が全部落とす。"""
+        from glosspop import store
+        config.save_settings({"ai_style": "予告状風に"})
+        prompt = ai.build_relations_prompt(store.load_all(), "本文")
+        assert "予告状風に" in prompt
+        assert "`label` `back` の中身だけ" in prompt
+        assert "`from` `to` `rank` `reveal`" in prompt
+
+    def test_extraction_is_left_alone(self):
+        """抽出が返すのは**本文の表記そのまま**なので、文体を混ぜない。"""
+        config.save_settings({"ai_style": "講談調で"})
+        assert "文体（口調）" not in ai.build_extract_prompt(TEXT, limit=5)
+
+
+class TestFolderStyle:
+    """フォルダごとの文体。**口調は作品につく**ので、辞書と同じ場所に置く。"""
+
+    @pytest.fixture
+    def folder(self, tmp_path):
+        config.set_content_dir(tmp_path)
+        yield tmp_path
+        config.set_content_dir(None)
+
+    def _write(self, root, text):
+        (root / ".glosspop").mkdir(parents=True, exist_ok=True)
+        (root / ".glosspop" / "style.md").write_text(text, encoding="utf-8")
+
+    def test_the_folder_wins_over_the_global_setting(self, folder):
+        config.save_settings({"ai_style": "全体の口調"})
+        self._write(folder, "この作品の口調")
+        assert ai.style() == "この作品の口調"
+        assert ai.describe_style()["style_source"] == "folder"
+
+    def test_it_falls_back_to_the_global_setting(self, folder):
+        config.save_settings({"ai_style": "全体の口調"})
+        assert ai.style() == "全体の口調"
+
+    def test_the_environment_still_wins(self, folder, monkeypatch):
+        self._write(folder, "この作品の口調")
+        monkeypatch.setenv(ai.STYLE_ENV, "環境変数側")
+        assert ai.style() == "環境変数側"
+
+    def test_an_ancestor_folder_is_used(self, folder):
+        """1 巻 2 巻を分けていても、作品フォルダに 1 つ置けば効く（辞書と同じ）。"""
+        self._write(folder, "作品の口調")
+        volume = folder / "第1巻"
+        volume.mkdir()
+        config.set_content_dir(volume)
+        assert ai.style() == "作品の口調"
+        info = ai.describe_style()
+        # **どこのものが効いているかを画面に出せること**（黙って遠い口調を効かせない）
+        assert info["style_folder_is_ancestor"] is True
+        assert info["style_folder_label"] == folder.name
+
+    def test_an_edit_outside_the_app_is_picked_up(self, folder):
+        """覚え込まない —— エディタで直接書き換えてよいのがこの辞書の売り。"""
+        self._write(folder, "はじめの口調")
+        assert ai.style() == "はじめの口調"
+        self._write(folder, "書き換えた口調")
+        assert ai.style() == "書き換えた口調"
+
+    def test_saving_creates_the_file_only_when_asked(self, folder):
+        ai.describe_style()                       # 読むだけでは作らない
+        assert not (folder / ".glosspop").exists()
+        ai.save_style("local", "講談調で")
+        assert (folder / ".glosspop" / "style.md").read_text(encoding="utf-8").strip() == "講談調で"
+
+    def test_saving_an_empty_style_removes_the_file(self, folder):
+        self._write(folder, "講談調で")
+        ai.save_style("local", "")
+        assert not (folder / ".glosspop" / "style.md").exists()
+        assert (folder / ".glosspop").is_dir()    # 辞書が入っているかもしれない
+
+    def test_a_hand_written_file_over_the_limit_is_cut(self, folder):
+        self._write(folder, "あ" * (ai.STYLE_MAX_CHARS + 50))
+        assert len(ai.style()) == ai.STYLE_MAX_CHARS
+        # 画面で「超えた分は使わない」と言えるよう、生の値も返す
+        assert len(ai.describe_style()["style_folder"]) == ai.STYLE_MAX_CHARS + 50
+
+    def test_it_reaches_the_prompt(self, folder):
+        self._write(folder, "怪盗の予告状のように")
+        assert "怪盗の予告状のように" in ai.build_prompt("冪等")
+
+
 class TestFilterRelations:
     def _filter(self, raw, **kwargs):
         from glosspop import store

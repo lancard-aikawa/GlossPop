@@ -189,6 +189,18 @@ class AISettingsRequest(BaseModel):
     gemini_api_key: str | None = None
 
 
+class AIStyleRequest(BaseModel):
+    """文体（口調）の指定。**空文字を渡すと「指定なし」に戻す。**
+
+    AI の選択 (``AISettingsRequest``) と別の口にしてあるのは、**保存先を選ぶ操作**
+    だから。``local`` はフォルダに ``.glosspop/style.md`` を作りうるので、
+    モデルを選び直したついでに書かれると「開いただけのフォルダを汚さない」が崩れる。
+    """
+
+    scope: str = GLOBAL_SCOPE
+    style: str = ""
+
+
 class AliasItem(BaseModel):
     ref: str
     alias: str
@@ -1507,8 +1519,12 @@ async def fetch_url(req: FetchRequest) -> dict:
 
 @app.get("/api/ai/settings")
 def ai_settings() -> dict:
-    """いまどの AI・モデル・思考の深さで動くか。**キーそのものは返さない。**"""
-    return llm.describe()
+    """いまどの AI・モデル・思考の深さで動くか。**キーそのものは返さない。**
+
+    文体 (`style`) だけは ``ai`` の側が持つ。「何を頼むか」なので ``llm`` の
+    仕事ではなく、同じ画面に出るというだけの理由でここが繋いでいる。
+    """
+    return {**llm.describe(), **ai.describe_style()}
 
 
 @app.put("/api/ai/settings")
@@ -1539,7 +1555,21 @@ def put_ai_settings(req: AISettingsRequest) -> dict:
         else:
             settings.pop("gemini_api_key", None)     # 空文字は「消す」
     config.save_settings(settings)
-    return llm.describe()
+    return {**llm.describe(), **ai.describe_style()}
+
+
+@app.put("/api/ai/style")
+def put_ai_style(req: AIStyleRequest) -> dict:
+    """文体（口調）を保存する。``scope`` が ``local`` ならフォルダの側に書く。
+
+    **書いた場所は返す値に出る**（`style_folder_path`）—— 祖先のフォルダに
+    書かれることがあるので、黙って書かない。
+    """
+    try:
+        ai.save_style(req.scope, req.style)
+    except ai.AIError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {**llm.describe(), **ai.describe_style()}
 
 
 @app.get("/api/ai/models")

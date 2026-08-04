@@ -1681,6 +1681,73 @@ def test_the_settings_dialog_moves_the_data_root(page, server, isolated_dirs, tm
     assert (cfg.GLOSSARY_DIR / "プログラミング" / "冪等.md").exists()
 
 
+def _wait_for_status(page, ref, text, timeout=15000):
+    status = page.locator(f"dialog.sheet[open] [data-ref={ref}]")
+    for _ in range(timeout // 100):
+        if text in status.inner_text():
+            return status.inner_text()
+        page.wait_for_timeout(100)
+    raise AssertionError(f"{ref} に「{text}」が出ない: {status.inner_text()!r}")
+
+
+def test_the_settings_dialog_sets_the_writing_style(page, server, isolated_dirs):
+    """文体の指定は AI タブにある。**例を押せばそのまま入り、保存すれば次から効く。**
+
+    AI を呼ぶ経路そのものは手で確かめるしかないが、「押しても入らない」
+    「保存したのに残らない」は HTML が正しくても起きるのでここで見張る。
+    """
+    from glosspop import ai
+
+    page.goto(f"{server}/glossary")
+    page.locator("#settings").wait_for(timeout=15000)
+    page.click("#settings")
+    page.click("dialog.sheet[open] [data-tab='ai']")
+
+    presets = page.locator("dialog.sheet[open] [data-ref=aiStylePresets] .chip")
+    presets.first.wait_for(timeout=15000)
+    presets.first.click()
+    typed = page.input_value("dialog.sheet[open] [data-ref=aiStyle]")
+    assert typed                            # 例を押したら入力欄に入ること
+
+    page.click("dialog.sheet[open] [data-ref=aiStyleSave]")
+    _wait_for_status(page, "aiStyleStatus", "保存しました")
+    # **次の下書きからそのまま効く**（再起動を挟まない）
+    assert ai.style() == typed
+    assert typed in ai.build_prompt("冪等")
+
+
+def test_the_settings_dialog_keeps_a_style_per_folder(page, server, isolated_dirs):
+    """📁 とグローバルは**別々に持てて、どちらが効いているかが画面に出る。**
+
+    片方だけ見せると「全体に書いたのに効かない」になる（優先順は黙らない）。
+    """
+    from glosspop import ai, config
+
+    page.goto(f"{server}/glossary")
+    page.locator("#settings").wait_for(timeout=15000)
+    page.click("#settings")
+    page.click("dialog.sheet[open] [data-tab='ai']")
+    page.locator("dialog.sheet[open] [data-ref=aiStylePresets] .chip").first.wait_for(timeout=15000)
+
+    page.fill("dialog.sheet[open] [data-ref=aiStyle]", "全体の口調")
+    page.click("dialog.sheet[open] [data-ref=aiStyleSave]")
+    _wait_for_status(page, "aiStyleStatus", "保存しました")
+
+    # 📁 に切り替えると入力欄も入れ替わる（全体のぶんを引きずらない）
+    page.select_option("dialog.sheet[open] [data-ref=aiStyleScope]", "local")
+    assert page.input_value("dialog.sheet[open] [data-ref=aiStyle]") == ""
+    page.fill("dialog.sheet[open] [data-ref=aiStyle]", "この作品の口調")
+    page.click("dialog.sheet[open] [data-ref=aiStyleSave]")
+    _wait_for_status(page, "aiStyleStatus", "保存しました")
+
+    assert (config.content_dir() / ".glosspop" / "style.md").is_file()
+    assert ai.style() == "この作品の口調"
+    note = page.locator("dialog.sheet[open] [data-ref=aiStyleNote]").inner_text()
+    assert "📁 このフォルダ" in note and "全体にも指定があります" in note
+    # どこに置かれたかも出す（祖先のフォルダに書かれることがある）
+    assert ".glosspop" in page.locator("dialog.sheet[open] [data-ref=aiStyleWhere]").inner_text()
+
+
 def test_the_settings_entry_is_labelled_and_next_to_the_nav(page, server, isolated_dirs):
     """歯車だけを右端に置くと気づかれない。文字つきでナビの直後に出すこと。"""
     page.goto(f"{server}/glossary")

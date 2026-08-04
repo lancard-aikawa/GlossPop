@@ -1049,7 +1049,7 @@ class TestAISettings:
     @pytest.fixture(autouse=True)
     def _clean_env(self, monkeypatch):
         for name in ("GLOSSPOP_AI_PROVIDER", "GLOSSPOP_AI_MODEL", "GLOSSPOP_AI_EFFORT",
-                     "GLOSSPOP_GEMINI_KEY", "GEMINI_API_KEY"):
+                     "GLOSSPOP_AI_STYLE", "GLOSSPOP_GEMINI_KEY", "GEMINI_API_KEY"):
             monkeypatch.delenv(name, raising=False)
 
     def test_reports_the_current_choice(self, client):
@@ -1084,6 +1084,54 @@ class TestAISettings:
         client.put("/api/ai/settings", json={"effort": "low"})     # 鍵は触らない
         body = client.get("/api/ai/settings").json()
         assert body["gemini_key_set"] is True and body["effort"] == "low"
+
+    def test_the_style_round_trips_and_can_be_cleared(self, client):
+        from glosspop import ai
+        body = client.put("/api/ai/style", json={"style": "講談調で"}).json()
+        assert body["style"] == "講談調で" and body["style_source"] == "settings"
+        assert body["style_presets"]                   # 例は画面ではなくここが持つ
+        assert ai.style() == "講談調で"                 # 次の下書きからそのまま効く
+        cleared = client.put("/api/ai/style", json={"style": "  "}).json()
+        assert cleared["style"] == "" and cleared["style_source"] == "default"
+
+    def test_rejects_a_style_longer_than_the_limit(self, client):
+        from glosspop import ai
+        res = client.put("/api/ai/style", json={"style": "あ" * (ai.STYLE_MAX_CHARS + 1)})
+        assert res.status_code == 400
+
+    def test_the_style_is_not_written_by_the_other_ai_settings(self, client):
+        """**モデルを選び直したついでにフォルダを汚さない**（別の口にした理由）。"""
+        res = client.put("/api/ai/settings", json={"style": "講談調で", "effort": "low"})
+        assert res.status_code == 200
+        assert res.json()["style"] == "" and res.json()["effort"] == "low"
+
+    def test_the_folder_wins_over_the_global_setting(self, client, tmp_path):
+        from glosspop import ai, config
+        config.set_content_dir(tmp_path)
+        try:
+            client.put("/api/ai/style", json={"scope": "global", "style": "全体の口調"})
+            body = client.put("/api/ai/style", json={"scope": "local", "style": "この作品の口調"}).json()
+            assert body["style"] == "この作品の口調" and body["style_source"] == "folder"
+            # 全体の指定は消えていない（押しのけられているだけ）
+            assert body["style_global"] == "全体の口調"
+            assert (tmp_path / ".glosspop" / "style.md").is_file()
+            assert ai.style() == "この作品の口調"
+            # 空文字はファイルごと消す（空のファイルは「何か指定されている」に見える）
+            back = client.put("/api/ai/style", json={"scope": "local", "style": ""}).json()
+            assert back["style"] == "全体の口調" and back["style_source"] == "settings"
+            assert not (tmp_path / ".glosspop" / "style.md").exists()
+        finally:
+            config.set_content_dir(None)
+
+    def test_a_folder_style_is_not_created_until_it_is_saved(self, client, tmp_path):
+        """開いただけのフォルダを汚さない（カテゴリマスターと同じ約束）。"""
+        from glosspop import config
+        config.set_content_dir(tmp_path)
+        try:
+            client.get("/api/ai/settings")
+            assert not (tmp_path / ".glosspop").exists()
+        finally:
+            config.set_content_dir(None)
 
     def test_each_provider_keeps_its_own_model(self, client):
         client.put("/api/ai/settings", json={"provider": "claude", "model": "opus"})

@@ -259,6 +259,21 @@ def local_categories_file() -> Path | None:
     return None if root is None else root / LOCAL_DIR_NAME / "categories.yaml"
 
 
+def local_style_file() -> Path | None:
+    """いま読んでいるものに効く文体（口調）の指定。無ければ ``None``。
+
+    **辞書と同じ場所に置く**（``.glosspop/`` の直下）。フォルダごとコピーすれば
+    口調も一緒についていくし、作品フォルダに 1 つ置けば巻をまたいで効く
+    （``local_root()`` が祖先方向に探すので、辞書の効く範囲とずれない）。
+
+    設定ファイル側に「フォルダ → 文体」の対応表を持たせなかったのは、
+    **フォルダを移動・コピーした瞬間に切れる**ため。中身をそのまま値として使う
+    素のテキストにしてあるのは、引用符やエスケープを挟まずにエディタで書くため。
+    """
+    root = local_root()
+    return None if root is None else root / LOCAL_DIR_NAME / "style.md"
+
+
 def ensure_dirs() -> None:
     GLOSSARY_DIR.mkdir(parents=True, exist_ok=True)
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)
