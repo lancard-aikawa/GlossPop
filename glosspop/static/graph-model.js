@@ -110,3 +110,44 @@ export function seedOrder(nodes, edges) {
   return rank;
 }
 
+
+/**
+ * 「関係が書かれていない語」を、図の幅に合わせて折り返して並べる。
+ *
+ * 交差しない図と行列で同じものを使う（**片方だけ違う詰め方にしない**）。
+ * 幅は語ごとに違うので、いちばん長い語に合わせた等幅では詰められない ——
+ * 短い語ばかりの行がすかすかになり、そのぶん縦に伸びる。
+ *
+ * @param {function} widthOf 語 1 つが要る幅を返す
+ */
+export function wrapLonely(lonely, { width, top, pad, rowHeight, gap, widthOf }) {
+  if (!lonely.length) return { cells: [], bottom: top, ruleY: top };
+  const ruleY = top + gap - 12;
+  const limit = Math.max(width - pad * 2, 120);
+  const lines = [];
+  let line = null;
+  let used = 0;
+  for (const node of lonely) {
+    const w = widthOf(node);
+    if (!line || used + w > limit) {
+      line = [];
+      lines.push(line);
+      used = 0;
+    }
+    line.push({ node, w, at: used });
+    used += w;
+  }
+  const cells = [];
+  lines.forEach((row, r) => {
+    const span = row.reduce((a, b) => a + b.w, 0);
+    const left = pad + (limit - span) / 2;
+    for (const { node, w, at } of row) {
+      cells.push({ node, x: left + at + w / 2, y: ruleY + 24 + r * rowHeight });
+    }
+  });
+  return {
+    cells,
+    ruleY,
+    bottom: ruleY + 24 + (lines.length - 1) * rowHeight + rowHeight / 2,
+  };
+}

@@ -142,6 +142,53 @@ export function estTextWidth(text, size = 11) {
   return w;
 }
 
+//: 縦書きで**寝かせる**文字。長音符・括弧・ダッシュ・リーダは、立てたままだと
+//: 横倒しに見える（「パートナー」の「ー」が横棒のまま残る）。SVG の `rotate`
+//: 属性は 1 字ずつの回転なので、これだけを 90 度倒せる。
+//: **`⇄` は入れないこと** —— この辞書では「相互」の意味で、倒すと `⇅`（上下）に
+//: 見える。上下は `▲▼` と決めてあるので、別の意味に読めてしまう
+const LAID_DOWN = new Set([...'ー〜～（）()「」『』【】［］[]｛｝{}〈〉《》―—–‐-…‥']);
+
+/**
+ * 縦書きにしたときに実際に積まれる文字。**高さの計算と描画で同じものを使う。**
+ *
+ * 空白を落としてから切ること —— 「教師 ⇄ 生徒」の空白は横書きのための区切りで、
+ * 縦に積むと空の 1 行になるので落とす。落とす前に数えると、その 2 字ぶん早く
+ * 切れて、切る必要のない一言にまで「…」が付く（実際にそうなった）。
+ */
+export function verticalChars(text, max = 0) {
+  const chars = [...String(text || "")].filter((ch) => ch !== " ");
+  return max && chars.length > max ? [...chars.slice(0, max), "…"] : chars;
+}
+
+/**
+ * 一言を**縦書き**にする。文字を立てたまま 1 字ずつ積む。
+ *
+ * `writing-mode: vertical-rl` は SVG でも効くが、**`⇄` が `⇅` に回される**
+ * （Unicode がこの記号を「縦では回す」に分類しているため。`text-orientation:
+ * upright` を付けても Chrome では回った）。この辞書では `⇄` が「相互」、上下は
+ * `▲▼` と決めてあるので、回った矢印は**別の意味に読める**。1 字ずつ置けば
+ * 記号もそのままの向きで立つ。どのブラウザでも同じに出る、という利点もある。
+ *
+ * **下端を揃える**（上はぎざぎざ）。列の真上で終わるので、名前から目を落とした
+ * ときにどの列の話なのかが切れずに繋がる。
+ */
+export function svgVerticalText(text, x, bottom, { max = 0, lineHeight = 12.5, className = "" } = {}) {
+  const LINE_H = lineHeight;
+  const chars = verticalChars(text, max);
+  const top = bottom - (chars.length - 1) * LINE_H;
+  return svgEl(
+    "text",
+    { x, y: top, class: className, "text-anchor": "middle" },
+    chars.map((ch, i) => svgEl("tspan", {
+      x,
+      y: top + i * LINE_H,
+      rotate: LAID_DOWN.has(ch) ? 90 : null,
+      text: ch,
+    }))
+  );
+}
+
 //: http(s) の URL だけをリンクにする。javascript: などは href に載せない
 const HTTP_URL = /^https?:\/\/[^\s<>"]+$/i;
 

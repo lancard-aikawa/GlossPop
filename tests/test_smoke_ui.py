@@ -400,6 +400,58 @@ def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
     page.locator("svg.rel-graph:not(.rel-fabric)").wait_for(timeout=10000)
 
 
+def test_the_matrix_mode_shows_which_pairs_have_no_relation(page, server, seeded):
+    """行列は**書いていない組が見える**唯一の見せ方。
+
+    段の図も交差しない図も、書かれた関係しか描かない —— 「まだ書いていない組」は
+    絵に出ないので数えられない。行列は空きマスとして残る。ここが緩むと
+    （埋まったマスだけ置く実装に戻すと）、この見せ方を足した意味が消える。
+
+    **相互は対角の両側を埋める。** 関係はファイルには片側にしか書かれないが、
+    片側だけ埋めると一方的に見える —— 画面には「両側が埋まっていれば相互」と
+    書いてあるので、そちらに合わせる。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    zanelli = store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[
+                {"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"},   # 相互
+                {"to": zanelli.ref, "label": "同級生"},                          # 一方的
+            ],
+        ),
+        ref=a.ref,
+    )
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "matrix")
+    page.locator("svg.rel-matrix").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # 線は 1 本も引かない（交差という概念が無い）
+    assert page.locator("svg.rel-matrix .rel-edge").count() == 0
+    # 3 語ぶんの格子を**空きマスごと**描く（横と縦で (3+1) 本ずつ）
+    assert page.locator("svg.rel-matrix .mx-grid line").count() == 8
+    # 相互は 2 マス、一方的は 1 マス
+    assert sorted(page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-matrix .rel-edge-group')]"
+        ".map((g) => g.querySelectorAll('rect').length)"
+    )) == [1, 2]
+
+    # マスを押せば同じ編集ダイアログが開く（相互は 2 マスあり、外接矩形の中心は
+    # その間の空きに来るので、マスそのものを押す）
+    page.locator("svg.rel-matrix .rel-edge-group rect").first.click()
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+    page.keyboard.press("Escape")
+
+    # 語に乗せると、その語の行と列が十字に残る（塗るのは乗せた語だけ）
+    page.locator("svg.rel-matrix .rel-node a text", has_text="ジョバンニ").first.hover()
+    page.wait_for_timeout(200)
+    assert page.evaluate("() => document.querySelectorAll('.rel-node.here').length") == 1
+
+
 def test_the_crossing_free_mode_sets_its_words_vertically(page, server, seeded):
     """列の上の一言は**縦書き**（1 字ずつ立てて積む）。
 

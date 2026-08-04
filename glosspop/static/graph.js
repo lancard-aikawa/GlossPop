@@ -13,6 +13,7 @@
 import { api, el, estTextWidth, paintEntryCount, RANK_OPTIONS, setStatus, svgEl } from "./base.js";
 import { levelsOf, seedOrder, splitLonely } from "./graph-model.js";
 import { buildFabric } from "./fabric.js";
+import { buildMatrix } from "./matrix.js";
 import { encodePath } from "./editor.js";
 
 //: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
@@ -29,6 +30,7 @@ const TEMPLATE = `
   <select id="mode" class="auto-width" aria-label="見せ方">
     <option value="layered">段の図</option>
     <option value="fabric">交差しない図</option>
+    <option value="matrix">行列</option>
   </select>
   <select id="category" class="auto-width" aria-label="カテゴリ"></select>
   <label class="check">
@@ -102,7 +104,7 @@ let modeSelect;
 //: 見せ方。layered = 段の図（既定） / fabric = 交差しない図。
 //: **覚えておく** —— 覆いは何度でも開き直されるので、毎回選び直させない
 const MODE_KEY = "glosspop.graphMode";
-const MODES = ["layered", "fabric"];
+const MODES = ["layered", "fabric", "matrix"];
 let mode = "layered";
 
 //: 2 つの ref をつないで組の鍵にするための区切り。カテゴリ名も slug も
@@ -1051,8 +1053,9 @@ function draw(graph) {
     return { lonely: 0 };
   }
 
-  const drawn = mode === "fabric"
-    ? buildFabric(graph, { onEdge: openEdgeEditor })
+  const build = { fabric: buildFabric, matrix: buildMatrix }[mode];
+  const drawn = build
+    ? build(graph, { onEdge: openEdgeEditor })
     : buildLayered(nodes, edges);
   canvas.classList.remove("is-empty");
   canvas.replaceChildren(drawn.root);
@@ -1351,16 +1354,23 @@ function paintGraph(graph) {
   setStatus(statusNode, `${graph.nodes.length} 語 / ${graph.edges.length} 本の関係`);
   const common =
     "→ は一方的、⇄ は相互。破線の枠はまだ登録されていない語で、押すと辞書で探せます。"
-    + "線を押すとその関係を直せます。"
+    + (mode === "matrix" ? "マスを押すとその関係を直せます。" : "線を押すとその関係を直せます。")
     + "図はドラッグで動かし、ホイールで拡大縮小できます（右下のボタンと、"
     + "図を選んでからの ← ↑ ↓ → ＋ − 0 でも）。"
     + "語に乗せると、その語の関係だけが濃く出ます。";
   // **見せ方が違えば読み方の説明も違う。** 同じ文言を出すと、交差しない図でも
   // 「上下は段」を探すことになる（どちらも上下は保っているが、形が違う）
-  const shape = mode === "fabric"
-    ? "用語が横線、関係が縦線です。関係ごとに列が分かれているので線どうしは交差しません。"
-      + "上下の関係は行の並びで表しています（上にあるものが上位）。"
-    : "▲▼ の代わりに上下の関係は段で表しています。";
+  const shape = {
+    fabric:
+      "用語が横線、関係が縦線です。関係ごとに列が分かれているので線どうしは交差しません。"
+      + "上下の関係は行の並びで表しています（上にあるものが上位）。",
+    // **「無い」が見えるのがこの見せ方の役目。** そう書かないと、ただの
+    // まばらな格子に見える
+    matrix:
+      "行が「から」、列が「へ」です。線を引かないので交差しません。"
+      + "**空きマスはまだ関係を書いていない組**で、対角を挟んで両側が埋まっていれば相互です。"
+      + "太い線はカテゴリの切れ目。上下の関係は行の並びで表しています（上にあるものが上位）。",
+  }[mode] || "▲▼ の代わりに上下の関係は段で表しています。";
   legend.textContent =
     shape + common
     // **畳んだことは書く。** 黙って出さないと「一言が書かれていない関係」と

@@ -1114,6 +1114,27 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 /* 一言は列の上に縦書き。22px の列幅に横書きは入らない */
 .rel-fabric .rel-edge-label { stroke-width: 2px; }
 
+/* 行列の見せ方（行が「から」、列が「へ」）。**空きマスも描く** —— 「まだ関係を
+   書いていない組」を読ませるのがこの見せ方の役目なので、格子を消さないこと */
+/* 飾りは当たり判定を持たない。持つとマスと帯を覆って押せなくなる */
+.rel-matrix .mx-grid, .rel-matrix .mx-split, .rel-matrix .mx-diagonal { pointer-events: none; }
+.rel-matrix .mx-grid line { stroke: var(--border); stroke-width: 0.5; }
+.rel-matrix .mx-split line { stroke: var(--border-strong); stroke-width: 1.5; }
+.rel-matrix .mx-diagonal rect { fill: var(--panel-2); }
+/* 行と列そのものを掴むための透明な帯（見出しの上だけでは狭すぎる） */
+.rel-matrix .mx-band { fill: transparent; }
+.rel-matrix .mx-cell rect { fill: var(--fg-dim); }
+.rel-matrix .mx-cell.missing rect { fill: var(--danger); }
+.rel-matrix .mx-cell.reveal rect { fill: var(--warn); }
+.rel-matrix .rel-edge-group:hover rect,
+.rel-matrix .rel-edge-group:focus-visible rect,
+.rel-matrix .rel-edge-group.lit rect { fill: var(--accent); }
+.rel-matrix .rel-node text { font: 600 12px var(--sans); }
+.rel-matrix .rel-node.lit text { fill: var(--accent); }
+/* 乗せた語の行と列を十字に残す。行列は目で横へたどるのが難しい。
+   **塗るのは乗せた語だけ**（相手まで塗ると盤面の半分が色で埋まる） */
+.rel-matrix .rel-node.here .mx-band { fill: var(--accent-soft); }
+
 /* 関係の無い語をまとめた帯。**段ではない**と見て分かるように区切る */
 .rel-lonely-rule line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; }
 .rel-lonely-caption { fill: var(--fg-dim); font: 11px var(--sans); }
