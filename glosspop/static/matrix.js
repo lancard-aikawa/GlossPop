@@ -8,7 +8,7 @@
 // カテゴリの切れ目に線を入れる（NodeTrix の「かたまりごとの行列」に当たる）。
 // 対角を挟んで左右対称なら相互、片側だけなら一方的。
 import {
-  estTextWidth, svgEl as svg, svgVerticalText, verticalChars,
+  describeNode, describeRelation, estTextWidth, svgEl as svg, svgVerticalText, verticalChars,
 } from "./base.js";
 import { levelsOf, seedOrder, splitLonely, wrapLonely } from "./graph-model.js";
 
@@ -27,14 +27,6 @@ const LINE_H = 12.5;
 //: 両方にありうる（`/` も `<>` もカテゴリ名では弾かれるので衝突しない）
 const groupKey = (node) => `${node.scope || ""}<>${node.category || ""}`;
 
-function edgeTitle(edge, fromTerm, toTerm) {
-  const bits = [`${fromTerm} → ${toTerm}`, edge.mutual ? "相互" : "一方的"];
-  if (edge.label) bits.push(edge.label);
-  if (edge.back && edge.back !== edge.label) bits.push(`逆: ${edge.back}`);
-  if (edge.rank) bits.push(`相手が${edge.rank}`);
-  if (edge.reveal) bits.push(`判明: ${edge.reveal}`);
-  return bits.join(" / ");
-}
 
 /**
  * 行と列の並び。**カテゴリでまとめ、その中は段（上下）が主。**
@@ -132,7 +124,9 @@ export function buildMatrix(graph, { onEdge } = {}) {
     const i = at.get(edge.from);
     const j = at.get(edge.to);
     if (i === undefined || j === undefined || i === j) continue;
-    const term = (ref) => order[at.get(ref)].term;
+    const detail = describeRelation(edge, {
+      from: order[i].term, to: order[j].term,
+    });
     const cls = ["mx-cell", edge.missing ? "missing" : "", edge.reveal ? "reveal" : ""]
       .filter(Boolean).join(" ");
     // **相互なら対角の両側を埋める。** 関係はファイルには片側にしか書かれないが、
@@ -144,13 +138,12 @@ export function buildMatrix(graph, { onEdge } = {}) {
       class: `rel-edge-group ${cls}`,
       tabindex: "0",
       role: "button",
-      "aria-label": `関係を直す: ${edgeTitle(edge, term(edge.from), term(edge.to))}`,
+      "aria-label": `関係を直す: ${detail}`,
+      "data-detail": detail,
     }, spots.map(([r, c]) => svg("rect", {
       x: cellX(c) + 3, y: cellY(r) + 3, width: CELL - 6, height: CELL - 6, rx: 3,
     })));
-    group.append(svg("title", {
-      text: `${edgeTitle(edge, term(edge.from), term(edge.to))}（押すと直せます）`,
-    }));
+    group.append(svg("title", { text: `${detail}（押すと直せます）` }));
     const open = () => onEdge?.(edge);
     group.addEventListener("click", open);
     group.addEventListener("keydown", (ev) => {
@@ -168,7 +161,10 @@ export function buildMatrix(graph, { onEdge } = {}) {
   // **マスより先に置く**（透明な帯が上に乗ると、マスが押せなくなる）
   const nodeGroups = new Map();
   order.forEach((node, i) => {
-    const group = svg("g", { class: node.missing ? "rel-node missing" : "rel-node" }, [
+    const group = svg("g", {
+      class: node.missing ? "rel-node missing" : "rel-node",
+      "data-detail": describeNode(node),
+    }, [
       svg("rect", {
         class: "mx-band",
         x: PAD, y: cellY(i), width: x0 + gridW - PAD, height: CELL,
@@ -210,7 +206,7 @@ export function buildMatrix(graph, { onEdge } = {}) {
       }),
     ]));
     for (const { node, x, y } of strip.cells) {
-      root.append(svg("g", { class: "rel-node" }, [
+      root.append(svg("g", { class: "rel-node", "data-detail": describeNode(node) }, [
         svg("a", { href: node.url }, [
           svg("text", {
             x, y, "text-anchor": "middle", "dominant-baseline": "central", text: node.term,

@@ -7,7 +7,10 @@
 //
 // **上下の意味は捨てていない。** 行の並びは段（`levelsOf`）が主で、上の段が上。
 // 「関係が書かれていない語」を段の外にまとめるのも段の図と同じ（`splitLonely`）。
-import { estTextWidth, svgEl as svg, svgVerticalText, verticalChars } from "./base.js";
+import {
+  describeNode, describeRelation, estTextWidth, relationWords,
+  svgEl as svg, svgVerticalText, verticalChars,
+} from "./base.js";
 import { levelsOf, seedOrder, splitLonely, wrapLonely } from "./graph-model.js";
 
 const ROW_H = 26;            // 用語 1 語ぶんの高さ
@@ -23,15 +26,6 @@ const LONELY_GAP = 34;
 const WORDS_MAX = 12;
 //: 縦書きの字送り。base.js の既定と同じ値（高さの計算に要る）
 const VERTICAL_LINE_H = 12.5;
-function edgeTitle(edge) {
-  const bits = [edge.mutual ? "相互" : "一方的"];
-  // **一言は切って出す**ので、全文はここ（線に乗せたときの吹き出し）で読ませる。
-  // `<text>` の中に `<title>` を入れると、描かれないまま文字の内容に数えられる
-  if (wordsOf(edge)) bits.push(wordsOf(edge));
-  if (edge.rank) bits.push(`相手が${edge.rank}`);
-  if (edge.reveal) bits.push(`判明: ${edge.reveal}`);
-  return bits.join(" / ");
-}
 
 function marker(id, className) {
   return svg("marker", {
@@ -115,7 +109,7 @@ export function buildFabric(graph, { onEdge } = {}) {
 
   const labelW = Math.max(60, ...rows.map((n) => estTextWidth(n.term, NODE_FONT)), 0);
   // 一言は縦書き。高さは**字数**で決まる（幅ではない）
-  const headH = Math.max(...edges.map((e) => verticalChars(wordsOf(e), WORDS_MAX).length), 2)
+  const headH = Math.max(...edges.map((e) => verticalChars(relationWords(e), WORDS_MAX).length), 2)
     * VERTICAL_LINE_H + 12;
   const x0 = PAD + labelW + LABEL_GAP;
   const colX = (edgeIndex) => x0 + colOf.get(edgeIndex) * COL_W + COL_W / 2;
@@ -161,11 +155,16 @@ export function buildFabric(graph, { onEdge } = {}) {
       // 相互なら両端に矢印。一方的なら向いている側だけ（段の図と同じ約束）
       "marker-start": edge.mutual ? "url(#fab-arrow)" : null,
     });
+    const detail = describeRelation(edge, {
+      from: rows[rowOf.get(edge.from)]?.term, to: rows[rowOf.get(edge.to)]?.term,
+    });
     const group = svg("g", {
       class: "rel-edge-group",
       tabindex: "0",
       role: "button",
-      "aria-label": `関係を直す: ${edgeTitle(edge)}`,
+      "aria-label": `関係を直す: ${detail}`,
+      // 図の下の枠に出す文。**縦書きは 12 字で切るので、全文はここでしか読めない**
+      "data-detail": detail,
     }, [
       // 縦線は細くて押せない。透明な太い線を重ねて当たり判定にする（段の図と同じ）
       svg("line", { x1: x, y1: ya, x2: x, y2: yb, class: "rel-edge-hit" }),
@@ -173,14 +172,16 @@ export function buildFabric(graph, { onEdge } = {}) {
       svg("circle", { cx: x, cy: ya, r: 3, class: "fab-end" }),
       svg("circle", { cx: x, cy: yb, r: 3, class: "fab-end" }),
     ]);
-    group.append(svg("title", { text: `${edgeTitle(edge)}（押すと直せます）` }));
+    group.append(svg("title", { text: `${detail}（押すと直せます）` }));
 
-    const words = wordsOf(edge);
+    const words = relationWords(edge);
     // 一言は列の上に縦書き。横に書くと 22px の列幅に収まらない
     const text = words
       ? svgVerticalText(words, x, headH + PAD - 14,
         { max: WORDS_MAX, className: "rel-edge-label" })
       : null;
+    // 一言に乗せたときも下の枠に出す（切れている全文はそこでしか読めない）
+    text?.setAttribute("data-detail", detail);
     lines.append(group);
     if (text) labels.append(text);
 
@@ -217,7 +218,7 @@ export function buildFabric(graph, { onEdge } = {}) {
     const right = spots.length ? Math.max(...spots.map((s) => s.x)) : x0;
     const cls = ["rel-node", node.missing ? "missing" : "", node.outside ? "outside" : ""]
       .filter(Boolean).join(" ");
-    const group = svg("g", { class: cls }, [
+    const group = svg("g", { class: cls, "data-detail": describeNode(node) }, [
       svg("line", { x1: x0 - STUB, y1: y, x2: right, y2: y, class: "fab-line" }),
     ]);
     const link = svg("a", { href: node.url }, [
@@ -253,7 +254,7 @@ export function buildFabric(graph, { onEdge } = {}) {
       }),
     ]));
     for (const { node, x, y } of strip.cells) {
-      root.append(svg("g", { class: "rel-node" }, [
+      root.append(svg("g", { class: "rel-node", "data-detail": describeNode(node) }, [
         svg("a", { href: node.url }, [
           svg("text", {
             x, y, "text-anchor": "middle", "dominant-baseline": "central", text: node.term,
@@ -272,12 +273,6 @@ export function buildFabric(graph, { onEdge } = {}) {
     box: { x: 0, y: 0, w: width, h: height },
     lonely: lonely.length,
   };
-}
-
-function wordsOf(edge) {
-  return edge.mutual && edge.back && edge.back !== edge.label
-    ? `${edge.label} ⇄ ${edge.back}`
-    : edge.label || "";
 }
 
 /** 1 つの語に乗せている間、その語の関係だけを濃く出す（段の図と同じ作法）。 */

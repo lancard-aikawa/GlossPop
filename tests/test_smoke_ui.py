@@ -400,6 +400,58 @@ def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
     page.locator("svg.rel-graph:not(.rel-fabric)").wait_for(timeout=10000)
 
 
+def test_the_graph_explains_what_you_point_at_in_a_fixed_box(page, server, seeded):
+    """図の下の枠。**高さは常に同じ**で、乗せたもの／焦点が当たったものを説明する。
+
+    ブラウザの吹き出し（`title`）は**キーボードの焦点では出ない**うえ、遅れて
+    出て消える。図の中では一言を切ったり畳んだりしているので、**全文が読める
+    場所がここしかない**。3 つの見せ方すべてで効くこと。
+
+    高さが変わると下の凡例まで動いて読みにくい ——「常に空けておく」が肝。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[{"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"}],
+        ),
+        ref=a.ref,
+    )
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+
+    detail = page.locator("#detail")
+    hint = detail.text_content()
+    assert "乗せる" in (hint or ""), "空のときの案内が無い"
+    empty_height = detail.bounding_box()["height"]
+
+    over = (
+        "(sel) => { const n = document.querySelector(sel);"
+        " n.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));"
+        " return document.getElementById('detail').textContent; }"
+    )
+    for mode in ["layered", "fabric", "matrix"]:
+        page.select_option("#mode", mode)
+        page.wait_for_timeout(200)
+        said = page.evaluate(over, "svg .rel-edge-group")
+        assert "ジョバンニ" in said and "親友" in said and "相互" in said, f"{mode}: {said}"
+        assert "カムパネルラ" in page.evaluate(over, "svg .rel-node")
+        # **高さは変わらない**（下の凡例ごと動かさない）
+        assert abs(detail.bounding_box()["height"] - empty_height) < 1, mode
+
+    # **キーボードの焦点でも出る**（ブラウザの吹き出しはここが出ない）
+    page.select_option("#mode", "layered")
+    page.wait_for_timeout(200)
+    page.locator("svg .rel-edge-group").first.focus()
+    page.wait_for_timeout(150)
+    assert "親友" in (detail.text_content() or "")
+    # 焦点が外れたら案内文に戻る
+    page.locator("#mode").focus()
+    page.wait_for_timeout(150)
+    assert detail.text_content() == hint
+
+
 def test_the_matrix_mode_shows_which_pairs_have_no_relation(page, server, seeded):
     """行列は**書いていない組が見える**唯一の見せ方。
 

@@ -91,6 +91,41 @@ export const RANK_OPTIONS = [
 ];
 export const RANK_MARK = { 上: "▲ 相手が上", 下: "▼ 相手が下", 対等: "＝ 対等" };
 
+/**
+ * 関係の一言。相互で逆向きの言葉があれば「A ⇄ B」にする。
+ *
+ * 相関図の 3 つの見せ方が同じ形で出すので、**正はここ 1 つ**。
+ */
+export function relationWords(edge) {
+  return edge.mutual && edge.back && edge.back !== edge.label
+    ? `${edge.label} ⇄ ${edge.back}`
+    : edge.label || "";
+}
+
+/**
+ * 関係 1 本を 1 行で説明する。吹き出しと、図の下の枠に出す文。
+ *
+ * **一言は切らずに全部入れる。** 図の中では場所が無くて切ったり畳んだりして
+ * いるので（縦書きの 12 字、置き場所の無い一言）、**全文が読める場所がここ
+ * しかない**。3 つの見せ方で同じ文にするために正をここへ置く。
+ */
+export function describeRelation(edge, { from = "", to = "" } = {}) {
+  const bits = [];
+  if (from && to) bits.push(`${from} ${edge.mutual ? "⇄" : "→"} ${to}`);
+  const words = relationWords(edge);
+  if (words) bits.push(words);
+  bits.push(edge.mutual ? "相互" : "一方的");
+  if (edge.rank) bits.push(RANK_MARK[edge.rank] || `相手が${edge.rank}`);
+  if (edge.reveal) bits.push(`判明: ${edge.reveal}`);
+  return bits.join(" / ");
+}
+
+/** 用語 1 つを 1 行で説明する（図の下の枠に出す文）。 */
+export function describeNode(node) {
+  if (node.missing) return `${node.term} — まだ登録されていません（押すと辞書で探せます）`;
+  return [node.term, node.path_label, node.summary].filter(Boolean).join(" — ");
+}
+
 export function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]

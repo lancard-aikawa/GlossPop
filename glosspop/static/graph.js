@@ -10,7 +10,10 @@
 //
 // **入れ物は外から渡される**（`mount()`）。`/graph` を直接開いたときは
 // そのページの器に、ビューアの上に重ねるときは覆いの器に、同じものを描く。
-import { api, el, estTextWidth, paintEntryCount, RANK_OPTIONS, setStatus, svgEl } from "./base.js";
+import {
+  api, describeNode, describeRelation, el, estTextWidth, paintEntryCount,
+  RANK_OPTIONS, relationWords, setStatus, svgEl,
+} from "./base.js";
 import { levelsOf, seedOrder, splitLonely } from "./graph-model.js";
 import { buildFabric } from "./fabric.js";
 import { buildMatrix } from "./matrix.js";
@@ -59,6 +62,14 @@ const TEMPLATE = `
     <button type="button" id="zoomIn" title="拡大 (＋)" aria-label="拡大">＋</button>
   </div>
 </div>
+<!-- **常に場所を空けておく。** 出たり消えたりで高さが変わると、下の凡例ごと
+     動いて読みにくい（空のときは案内文を出す）。ここに出すのは、乗せたもの／
+     焦点が当たったものの説明 —— **図の中では切ったり畳んだりしている一言が、
+     全文で読める唯一の場所**。ブラウザの吹き出しは**キーボードの焦点では
+     出ない**ので、それだけに頼らない。
+     （この TEMPLATE は JS のテンプレート文字列。**バッククォートを書かないこと**
+     —— そこで文字列が切れて、続きが式として読まれる。実際に踏んだ） -->
+<p class="graph-detail" id="detail"></p>
 <p class="hint" id="legend"></p>
 
 <!-- 辺を押すと開く。点検ページと同じで、直すためにページを渡り歩かせない -->
@@ -99,6 +110,7 @@ const TEMPLATE = `
 `;
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
+let detailNode;
 let modeSelect;
 
 //: 見せ方。layered = 段の図（既定） / fabric = 交差しない図。
@@ -749,9 +761,7 @@ function edgeGeometry(edge, pos, parallel = 0, side = -1) {
     d: ctrl
       ? `M ${start.x} ${start.y} Q ${ctrl.x} ${ctrl.y} ${end.x} ${end.y}`
       : `M ${start.x} ${start.y} L ${end.x} ${end.y}`,
-    words: edge.mutual && edge.back && edge.back !== edge.label
-      ? `${edge.label} ⇄ ${edge.back}`
-      : edge.label,
+    words: relationWords(edge),
     length: Math.hypot(end.x - start.x, end.y - start.y),
   };
 }
@@ -857,14 +867,19 @@ function drawEdge(geom, spot) {
     // 相互なら両端に矢印。一方的なら向いている側だけ
     "marker-start": edge.mutual ? "url(#arrow)" : null,
   });
-  path.append(svg("title", { text: `${edgeTitle(edge)}（押すと直せます）` }));
+  const detail = describeRelation(edge, {
+    from: termByRef.get(edge.from), to: termByRef.get(edge.to),
+  });
+  path.append(svg("title", { text: `${detail}（押すと直せます）` }));
 
   // **線そのものは細すぎて押せない。** 透明な太い線を下に重ねて当たり判定にする
   const group = svg("g", {
     class: "rel-edge-group",
     tabindex: "0",
     role: "button",
-    "aria-label": `関係を直す: ${edgeTitle(edge)}`,
+    "aria-label": `関係を直す: ${detail}`,
+    // 図の下の枠に出す文。**一言を切っている見せ方でも全文がここで読める**
+    "data-detail": detail,
   }, [hitBand(geom), svg("path", { d, class: "rel-edge-hit" }), path]);
 
   const text = words && spot
@@ -874,6 +889,7 @@ function drawEdge(geom, spot) {
         // 置き場所が無かったものは畳んでおく（線かその語に乗せると出る）
         class: spot.tucked ? "rel-edge-label tucked" : "rel-edge-label",
         "text-anchor": "middle",
+        "data-detail": detail,
         text: words,
       })
     : null;
@@ -918,7 +934,7 @@ function drawNode(node, pos) {
   const cls = ["rel-node", node.missing ? "missing" : "", node.outside ? "outside" : ""]
     .filter(Boolean)
     .join(" ");
-  const group = svg("g", { class: cls });
+  const group = svg("g", { class: cls, "data-detail": describeNode(node) });
   const link = svg("a", { href: node.url });
   link.append(
     svg("rect", {
@@ -1333,6 +1349,34 @@ function paintNotes(graph) {
   notes.textContent = lines.join(" / ");
 }
 
+//: 何にも乗せていないときに枠へ出す案内。**空にしない** —— 空の帯が 1 本
+//: 残っているだけだと、それが何の場所なのか分からない
+const DETAIL_HINT = "線・マス・語に乗せる（またはキーボードで焦点を当てる）と、ここに詳しい内容が出ます。";
+
+/** 図の下の枠に出す文を差し替える。空なら案内文に戻す（高さは変えない）。 */
+function showDetail(text) {
+  if (!detailNode) return;
+  detailNode.textContent = text || DETAIL_HINT;
+  detailNode.classList.toggle("is-hint", !text);
+}
+
+/**
+ * 図の中のものに乗せたら、その説明を下の枠へ出す。
+ *
+ * **見せ方ごとに書かない。** 入れ物 1 つに仕掛けて `data-detail` を拾うだけに
+ * してあるので、見せ方を足しても勝手に効く（属性を付け忘れたときは案内文に
+ * 戻るだけで、壊れはしない）。
+ */
+function installDetail() {
+  const pick = (ev) => showDetail(ev.target.closest?.("[data-detail]")?.dataset.detail);
+  canvas.addEventListener("pointerover", pick);
+  canvas.addEventListener("pointerleave", () => showDetail(""));
+  // **キーボードも同じ。** ブラウザの吹き出しは焦点では出ないので、
+  // ここが無いとキーボードだけの人には一言が最後まで読めない
+  canvas.addEventListener("focusin", pick);
+  canvas.addEventListener("focusout", () => showDetail(""));
+}
+
 /** 覚えている見せ方。読めない値なら段の図へ落ちる（起動できなくならないこと）。 */
 function rememberedMode() {
   try {
@@ -1349,6 +1393,7 @@ let lastGraph = null;
 /** 受け取ったグラフを描いて、凡例と注意書きを添える。 */
 function paintGraph(graph) {
   lastGraph = graph;
+  showDetail("");
   const drawn = draw(graph);
   paintNotes(graph);
   setStatus(statusNode, `${graph.nodes.length} 語 / ${graph.edges.length} 本の関係`);
@@ -1416,6 +1461,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   canvas = host.querySelector("#canvas");
   zoomBar = host.querySelector("#zoom");
   modeSelect = host.querySelector("#mode");
+  detailNode = host.querySelector("#detail");
   notes = host.querySelector("#notes");
   legend = host.querySelector("#legend");
   statusNode = host.querySelector("#status");
@@ -1447,6 +1493,8 @@ export async function mount(host, { search = "", embed = false } = {}) {
   categorySelect.addEventListener("change", refresh);
   spoilerCheck.addEventListener("change", refresh);
   installViewControls();
+  installDetail();
+  showDetail("");
   dlg("rank").replaceChildren(
     ...RANK_OPTIONS.map(([value, text]) => el("option", { value, text }))
   );
