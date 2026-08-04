@@ -1122,6 +1122,23 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   /* 光った文字が線に埋もれないよう、縁取りも強くする */
   stroke-width: 4px;
 }
+/* 置き場所が無かった一言は畳む。重ねて出すと、重なった 2 つとも読めなくなる
+   うえ下の線まで隠す。**消してはいない** —— 本数は凡例に出るし、線かその語に
+   乗せれば出る */
+.rel-edge-label.tucked { display: none; }
+.rel-edge-label.tucked.hot,
+.rel-edge-label.tucked.lit { display: block; }
+
+/* 1 つの語に乗せている間は、その語の関係だけを濃く出す。交差はどう並べても
+   消せないので、密なところは「一度に全部を読ませない」のが唯一きく手
+   （→ docs/design-notes.md） */
+.rel-graph.focusing .rel-node,
+.rel-graph.focusing .rel-edge-group,
+.rel-graph.focusing .rel-edge-label { opacity: 0.12; }
+.rel-graph.focusing .rel-node.lit,
+.rel-graph.focusing .rel-edge-group.lit,
+.rel-graph.focusing .rel-edge-label.lit { opacity: 1; }
+.rel-node, .rel-edge-group, .rel-edge-label { transition: opacity 0.12s ease-out; }
 
 /* ---------------------------------------------------------------- 点検 */
 .issue-badge {

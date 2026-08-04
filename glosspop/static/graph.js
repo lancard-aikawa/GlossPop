@@ -758,17 +758,55 @@ function sameRowLift(from, to, parallel) {
 }
 
 /**
+ * 同じ段を結ぶ弧を、段の上下どちらへ出すか決める（辺の番号 → +1 下 / -1 上）。
+ *
+ * **片側へ寄せない。** 「対等」の関係が多いと一群がまるごと 1 つの段に集まり、
+ * その段の中の関係が全部その段の上へ弧で載る（実例では 11 語の段に 15 本）。
+ * そこは段をまたぐ線も通る帯なので、線もラベルも折り重なって読めなくなる ——
+ * 一方で反対側はほとんど空いている。
+ *
+ * いちばん外側の段だけは外へ逃がす（そちらは何も通らない）。挟まれた段は
+ * **長い弧から順に交互**に振り分ける —— 大きく張り出すものを同じ側に集めない。
+ */
+function arcSides(edges, pos) {
+  const ys = [...new Set([...pos.values()].map((p) => p.y))].sort((a, b) => a - b);
+  const top = ys[0];
+  const floor = ys[ys.length - 1];
+  const sides = new Map();
+  const middle = new Map();                 // 段の y -> [辺の番号]
+  edges.forEach((edge, i) => {
+    const a = pos.get(edge.from);
+    const b = pos.get(edge.to);
+    if (!a || !b || Math.abs(a.y - b.y) >= 1) return;
+    if (Math.abs(a.y - floor) < 1) sides.set(i, 1);          // 下は空いている
+    else if (Math.abs(a.y - top) < 1) sides.set(i, -1);      // 上は空いている
+    else {
+      if (!middle.has(a.y)) middle.set(a.y, []);
+      middle.get(a.y).push(i);
+    }
+  });
+  for (const group of middle.values()) {
+    const span = (i) => Math.abs(pos.get(edges[i].to).x - pos.get(edges[i].from).x);
+    // 同点は辺の番号順（並びが揺れないように）
+    group.sort((a, b) => span(b) - span(a) || a - b);
+    group.forEach((i, n) => sides.set(i, n % 2 ? -1 : 1));
+  }
+  return sides;
+}
+
+/**
  * 辺の形。**線・ラベル・枠の計算はすべてここから採る** —— 別々に組み立てると、
  * ラベルだけ線から外れたり、枠が弧を切ったりする（実際にどちらも踏んだ）。
  *
  * @param {number} parallel 同じ 2 ノードを結ぶ何本目か。0 なら 1 本目。
  *   同じ組を複数の関係が結ぶことがある（「親友」と「実は〜」など）。ずらさないと
  *   線もラベルも完全に重なって、2 本あることすら分からなくなる
- * @param {number} floorY 最下段の y。**そこの弧だけは下へ逃がす。** 上へ出すと、
- *   段をまたぐ線が通っているまさにその帯へ重なる（「対等」の多い一群が最下段に
- *   来るので、実例ではここに 8 本ぶんの線とラベルが折り重なっていた）
+ * @param {number} side 同じ段を結ぶ弧をどちら側へ出すか（+1 で下、-1 で上）。
+ *   決めるのは `arcSides()`。全部を上へ出すと、段をまたぐ線が通っているまさに
+ *   その帯へ重なる（「対等」の多い一群が 1 つの段に集まるので、実例ではそこに
+ *   15 本ぶんの線とラベルが折り重なり、段の下は空いたままだった）
  */
-function edgeGeometry(edge, pos, parallel = 0, floorY = null) {
+function edgeGeometry(edge, pos, parallel = 0, side = -1) {
   const a = pos.get(edge.from);
   const b = pos.get(edge.to);
   if (!a || !b) return null;
@@ -780,7 +818,7 @@ function edgeGeometry(edge, pos, parallel = 0, floorY = null) {
   let down = false;
   if (Math.abs(a.y - b.y) < 1) {
     const lift = sameRowLift(start, end, parallel);
-    down = floorY !== null && Math.abs(a.y - floorY) < 1;
+    down = side > 0;
     ctrl = { x: (start.x + end.x) / 2, y: start.y + (down ? lift : -lift) };
   } else if (parallel) {
     // 段をまたぐ 2 本目以降は、線に直交する向きへ膨らませる
@@ -823,10 +861,16 @@ function textWidth(text) {
   return w;
 }
 
-/** ラベルが占める箱（`x` `y` は中央寄せしたときの基準点）。 */
+/**
+ * ラベルが占める箱（`x` `y` は中央寄せしたときの基準点）。
+ *
+ * **実測より少し大きく取る。** 見積もりが実物より小さいと、置いたあとで
+ * 重なる（1.5px 足りないだけで、14px 差で並んだ 2 行が実際には触れていた）。
+ * 幅は全角 11.5 / 半角 6.2 で、実測より 1〜2 割広めに出る。
+ */
 function labelBox(text, x, y) {
   const w = textWidth(text);
-  return { x: x - w / 2 - 2, y: y - 10, w: w + 4, h: 13 };
+  return { x: x - w / 2 - 2, y: y - 12, w: w + 4, h: 16 };
 }
 
 const boxesOverlap = (a, b) =>
@@ -862,7 +906,12 @@ function placeLabels(geoms, pos) {
       }
       if (spot && !spot.clash) break;
     }
-    taken.push(spot.box);
+    // **どこも空いていなければ畳む。** 重ねて出すと、重なった 2 つとも読めなく
+    // なるうえ、下にある線まで隠す（実例では 28 本ぶんの一言が帯状に潰れていた）。
+    // 消しはしない —— 数を画面に出し、線かその語に乗せれば出る。
+    // **畳んだものは場所を取らせない**（後続の一言に空きを残す）
+    spot.tucked = spot.clash > 0;
+    if (!spot.tucked) taken.push(spot.box);
     spots.set(i, spot);
   }
   return spots;
@@ -924,7 +973,8 @@ function drawEdge(geom, spot) {
     ? svg("text", {
         x: spot.x,
         y: spot.y,
-        class: "rel-edge-label",
+        // 置き場所が無かったものは畳んでおく（線かその語に乗せると出る）
+        class: spot.tucked ? "rel-edge-label tucked" : "rel-edge-label",
         "text-anchor": "middle",
         text: words,
       })
@@ -997,6 +1047,38 @@ function drawNode(node, pos) {
   );
   group.append(link);
   return group;
+}
+
+/**
+ * 1 つの語に乗せている間、**その語の関係だけを濃く出す**。
+ *
+ * 交差はどう並べても消せない（→ docs/design-notes.md）。密なところは一度に
+ * 全部を読ませようとせず、見たい 1 語のまわりだけ残すのが唯一きく手。
+ * 畳んだ一言もここで出す —— 「この語が誰とどうなのか」がまとめて読める。
+ *
+ * listener は入れ物ではなくノードに付ける（描き直しで一緒に捨てられる）。
+ */
+function installFocus(root, nodeGroups, touching) {
+  const light = (ref, on) => {
+    root.classList.toggle("focusing", on);
+    if (!on) {
+      for (const el of root.querySelectorAll(".lit")) el.classList.remove("lit");
+      return;
+    }
+    nodeGroups.get(ref)?.classList.add("lit");
+    for (const { group, text, other } of touching.get(ref) || []) {
+      group.classList.add("lit");
+      text?.classList.add("lit");
+      nodeGroups.get(other)?.classList.add("lit");
+    }
+  };
+  for (const [ref, group] of nodeGroups) {
+    group.addEventListener("pointerenter", () => light(ref, true));
+    group.addEventListener("pointerleave", () => light(ref, false));
+    // キーボードでも同じ（ノードの中の <a> に焦点が入る）
+    group.addEventListener("focusin", () => light(ref, true));
+    group.addEventListener("focusout", () => light(ref, false));
+  }
 }
 
 /**
@@ -1078,20 +1160,21 @@ function draw(graph) {
   // 関係の無い語は段に混ぜない（混ぜると繋がっている語どうしを押し広げるだけ）
   const { linked, lonely } = splitLonely(nodes, edges);
   let layout = { pos: new Map(), width: 0, height: 0 };
-  let floorY = null;
+  let sides = new Map();
   if (linked.length) {
     const level = levelsOf(linked, edges);
     layout = Math.max(0, ...level.values()) > 0
       ? layeredLayout(linked, edges, level)
       : circleLayout(linked, edges);
-    floorY = Math.max(...[...layout.pos.values()].map((p) => p.y));
+    sides = arcSides(edges, layout.pos);
     // 最下段の弧は下へ出る。**帯を足す前に**そのぶんの高さを確保する
     // （あとから足すと、区切り線の下に置いた語の上に弧が乗る）
+    const floorY = Math.max(...[...layout.pos.values()].map((p) => p.y));
     let room = 0;
     edges.forEach((edge, i) => {
       const a = layout.pos.get(edge.from);
       const b = layout.pos.get(edge.to);
-      if (!a || !b || Math.abs(a.y - b.y) >= 1 || Math.abs(a.y - floorY) >= 1) return;
+      if (!a || !b || sides.get(i) !== 1 || Math.abs(a.y - floorY) >= 1) return;
       room = Math.max(room, sameRowLift(a, b, parallels[i]) / 2 - NODE_H / 2 + 26);
     });
     if (room > 0) layout = { ...layout, height: layout.height + room };
@@ -1099,7 +1182,9 @@ function draw(graph) {
   layout = appendLonely(layout, lonely);
   const { pos, width, height, lonelyTop } = layout;
 
-  const geoms = edges.map((edge, i) => edgeGeometry(edge, pos, parallels[i], floorY));
+  const geoms = edges.map(
+    (edge, i) => edgeGeometry(edge, pos, parallels[i], sides.get(i) ?? -1)
+  );
   const spots = placeLabels(geoms, pos);
   const rule = lonely.length && linked.length
     ? lonelyRule(lonelyTop, width, lonely.length)
@@ -1124,21 +1209,34 @@ function draw(graph) {
   // ノードをいちばん上にするのは、逃がしきれなかった一言が箱の名前を覆わないため
   const lines = svg("g", { class: "rel-edge-lines" });
   const labels = svg("g", { class: "rel-edge-labels" });
+  const touching = new Map(nodes.map((n) => [n.ref, []]));
+  let tucked = 0;
   geoms.forEach((g, i) => {
     if (!g) return;
-    const { group, text } = drawEdge(g, spots.get(i));
+    const spot = spots.get(i);
+    const { group, text } = drawEdge(g, spot);
     lines.append(group);
     if (text) labels.append(text);
+    if (spot?.tucked && g.words) tucked++;
+    touching.get(g.edge.from)?.push({ group, text, other: g.edge.to });
+    touching.get(g.edge.to)?.push({ group, text, other: g.edge.from });
   });
   root.append(lines, labels);
-  for (const node of nodes) root.append(drawNode(node, pos));
+  const nodeGroups = new Map();
+  for (const node of nodes) {
+    const group = drawNode(node, pos);
+    if (!group) continue;
+    root.append(group);
+    nodeGroups.set(node.ref, group);
+  }
+  installFocus(root, nodeGroups, touching);
   canvas.classList.remove("is-empty");
   canvas.replaceChildren(root);
   svgRoot = root;
   contentBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
   zoomBar.hidden = false;
   fitView();
-  return { lonely: lonely.length, linked: linked.length };
+  return { lonely: lonely.length, linked: linked.length, tucked };
 }
 
 // --------------------------------------------------------------------------- //
@@ -1336,6 +1434,12 @@ async function refresh() {
       "線を押すとその関係を直せます。" +
       "図はドラッグで動かし、ホイールで拡大縮小できます（右下のボタンと、" +
       "図を選んでからの ← ↑ ↓ → ＋ − 0 でも）。" +
+      "語に乗せると、その語の関係だけが濃く出ます。" +
+      // **畳んだことは書く。** 黙って出さないと「一言が書かれていない関係」と
+      // 見分けが付かない（隠した本数を必ず返すのと同じ約束）
+      (drawn.tucked
+        ? `重なって置けない一言 ${drawn.tucked} 本は畳んでいます（線かその語に乗せると出ます）。`
+        : "") +
       // **段の外に出したことは書く。** 黙って別のところへ置くと、上下の段を
       // 読んでいる人には「下にあるから下位」に見える。区切り線が出るのは
       // 上に段があるときだけなので、文もそこで分ける

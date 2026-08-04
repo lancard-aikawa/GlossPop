@@ -348,6 +348,50 @@ def test_the_graph_lights_a_relation_and_its_words_together(page, server, seeded
     assert page.locator("svg.rel-graph .rel-edge-label").text_content() == "親友"
 
 
+def test_the_graph_dims_everything_but_the_word_you_point_at(page, server, seeded):
+    """1 つの語に乗せると、その語の関係だけが濃く出る。
+
+    交差はどう並べても消せない（→ docs/design-notes.md）。密なところは
+    「一度に全部を読ませない」のが唯一きく手なので、ここが効かなくなると
+    語が増えたときに読む手立てが無くなる。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[{"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"}],
+        ),
+        ref=a.ref,
+    )
+    # 関係の無い語。乗せていない間は同じ濃さで、乗せると薄くなる側
+    store.save(EntryDraft(term="ザネリ", category="登場人物", definition="関係は書かない。"))
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-graph .rel-node').length === 3",
+        timeout=15000,
+    )
+    lit = "() => document.querySelectorAll('svg.rel-graph .lit').length"
+    assert page.evaluate(lit) == 0
+
+    page.locator("svg.rel-graph .rel-node", has_text="ジョバンニ").first.hover()
+    page.wait_for_timeout(200)
+    assert page.evaluate(
+        "() => document.querySelector('svg.rel-graph').classList.contains('focusing')"
+    )
+    # 自分・相手・その 1 本（線と一言）が濃く、関係の無い語は濃くならない
+    assert set(page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-graph .rel-node.lit text')]"
+        ".map((t) => t.textContent)"
+    )) == {"ジョバンニ", "カムパネルラ"}
+    assert page.evaluate("() => document.querySelectorAll('.rel-edge-group.lit').length") == 1
+
+    page.mouse.move(0, 0)
+    page.wait_for_timeout(200)
+    assert page.evaluate(lit) == 0, "離れても濃いまま"
+
+
 def test_the_graph_can_be_panned_and_zoomed(page, server, seeded):
     """図はドラッグで動かし、ホイールで拡大縮小できる。
 
