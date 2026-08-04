@@ -1153,6 +1153,30 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
    **塗るのは乗せた語だけ**（相手まで塗ると盤面の半分が色で埋まる） */
 .rel-matrix .rel-node.here .mx-band { fill: var(--accent-soft); }
 
+/* 1 語を中心にした見せ方。線の色・太さ・当たり判定・強調は段の図と同じクラスを
+   使い回す。ここに足すのは形だけ */
+/* 環の目印は飾り。**当たり判定を持たせない**（線とノードの上に乗ると押せなくなる） */
+.rel-ego .ego-guides { pointer-events: none; }
+.rel-ego .ego-guides circle {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+}
+/* 中心の語は一回り大きく、色でも示す（どれが中心かを形で分かるように） */
+.rel-ego .ego-center rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.rel-ego .ego-center text { font: 700 14px var(--sans); }
+/* まわりの語は押すと中心が移る（link ではなくボタン） */
+.rel-ego .ego-ring1, .rel-ego .ego-ring2 { cursor: pointer; }
+.rel-ego .ego-ring1:hover rect,
+.rel-ego .ego-ring1:focus-visible rect,
+.rel-ego .ego-ring2:hover rect,
+.rel-ego .ego-ring2:focus-visible rect { stroke: var(--accent); fill: var(--accent-soft); }
+.rel-ego .ego-ring1:focus-visible, .rel-ego .ego-ring2:focus-visible { outline: none; }
+/* 2 つ先は薄く。**中心からの遠さ**を色でも出す（環の目印だけだと読み落とす） */
+.rel-ego .ego-ring2 rect { fill: var(--panel); }
+.rel-ego .ego-ring2 text { fill: var(--fg-dim); }
+
 /* 時系列の見せ方（上から順に、関係が読めるようになる順）。線の色・太さ・
    当たり判定・強調はすべて段の図と同じクラスを使い回す。ここに足すのは形だけ */
 /* 軸と見出しは飾り。**当たり判定を持たせない**（行の上に乗ると押せなくなる） */

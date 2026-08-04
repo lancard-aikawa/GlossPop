@@ -310,6 +310,14 @@ function relationsSection(entry) {
           (entry.scope === "local" ? "&scope=local" : ""),
         text: "相関図で見る →",
       }),
+      // **カテゴリで絞らない。** 中心の図が出すのは「この語の近所」なので、
+      // 絞ると別のカテゴリに居る相手が落ちて近所が欠ける
+      el("a", {
+        class: "btn",
+        href: `/graph?ref=${encodeURIComponent(entry.ref)}`,
+        title: "この語を真ん中に置いて、2 つ先までの関係を見る",
+        text: "この語を中心に →",
+      }),
       // **1 語ぶんの下書き。** 全体まとめての下書きはビューアにあるが、
       // 「この語だけ関係が空のまま」を埋める道がここに無かった
       el("button", {

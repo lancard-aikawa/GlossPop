@@ -18,6 +18,7 @@ import { levelsOf, seedOrder, splitLonely } from "./graph-model.js";
 import { buildFabric } from "./fabric.js";
 import { buildMatrix } from "./matrix.js";
 import { buildTimeline } from "./timeline.js";
+import { buildEgo } from "./ego.js";
 import { encodePath } from "./editor.js";
 
 //: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
@@ -35,6 +36,8 @@ const TEMPLATE = `
     <option value="layered">段の図</option>
     <option value="fabric">交差しない図</option>
     <option value="matrix">行列</option>
+    <!-- 1 語を中心にした図。**規模に依らない**唯一の見せ方（→ ego.js） -->
+    <option value="ego">中心の図（1 語）</option>
     <!-- 時系列は「読むもの」が決まっていないと定義できないので、辞書全体の図では
          選べない（文書を絞っているときだけ。→ timeline.js） -->
     <option value="timeline">時系列（文書を開いているとき）</option>
@@ -117,11 +120,11 @@ let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, 
 let detailNode;
 let modeSelect;
 
-//: 見せ方。layered = 段の図（既定） / fabric = 交差しない図 /
-//: matrix = 行列 / timeline = 時系列（文書を開いているときだけ）。
+//: 見せ方。layered = 段の図（既定） / fabric = 交差しない図 / matrix = 行列 /
+//: ego = 1 語を中心にした図 / timeline = 時系列（文書を開いているときだけ）。
 //: **覚えておく** —— 覆いは何度でも開き直されるので、毎回選び直させない
 const MODE_KEY = "glosspop.graphMode";
-const MODES = ["layered", "fabric", "matrix", "timeline"];
+const MODES = ["layered", "fabric", "matrix", "ego", "timeline"];
 //: 読むものが決まっているときしか出せない見せ方。時系列は「その文書のどこで
 //: 読めるようになるか」を軸にするので、辞書全体では定義できない（`?doc=` と同じ話）
 const DOC_ONLY_MODES = ["timeline"];
@@ -1077,17 +1080,29 @@ function draw(graph) {
     return { lonely: 0 };
   }
 
-  const build = { fabric: buildFabric, matrix: buildMatrix, timeline: buildTimeline }[mode];
+  const build = {
+    fabric: buildFabric, matrix: buildMatrix, timeline: buildTimeline, ego: buildEgo,
+  }[mode];
   const drawn = build
-    ? build(graph, { onEdge: openEdgeEditor })
+    ? build(graph, { onEdge: openEdgeEditor, center: egoCenter, onCenter: moveCenter })
     : buildLayered(nodes, edges);
+  // 中心は図が決めることもある（指した語が範囲の外なら、いちばん多く繋がっている
+  // 語に落ちる）。押した先が同じ語のままにならないよう、決まった値を控えておく
+  if (drawn.center) egoCenter = drawn.center;
   canvas.classList.remove("is-empty");
   canvas.replaceChildren(drawn.root);
   svgRoot = drawn.root;
   contentBox = drawn.box;
   zoomBar.hidden = false;
   fitView();
-  return { lonely: drawn.lonely, linked: nodes.length - drawn.lonely, tucked: drawn.tucked || 0 };
+  return {
+    lonely: drawn.lonely,
+    linked: nodes.length - drawn.lonely,
+    tucked: drawn.tucked || 0,
+    // 見せ方が「出していないもの」を数えていれば、そのまま凡例へ通す
+    // （**ここで落とすと黙って欠けた図になる**。実際に一度落とした）
+    note: drawn.note || "",
+  };
 }
 
 /** 段の図（既定）。上下を段で表し、関係は段のあいだ・段の上下に線で結ぶ。 */
@@ -1357,6 +1372,13 @@ function paintNotes(graph) {
       "（時系列ではいちばん下にまとめています）。"
     );
   }
+  if (centeredByUrl && mode === "ego") {
+    // 覚えている見せ方を押しのけたことは書く（次にふつうに開けば元に戻る）
+    lines.push(
+      "語が名指しされているので、中心の図で開いています"
+      + "（見せ方は上で戻せます。覚えているほうは変えていません）。"
+    );
+  }
   if (modeFellBack) {
     // 覚えていた見せ方を黙って別のものに差し替えない
     lines.push(
@@ -1413,6 +1435,10 @@ function rememberedMode() {
 //: **黙って別の図を出さない**（何が起きたのかは注意書きに出す）
 let modeFellBack = false;
 
+//: URL で語を名指しされたので、覚えている見せ方を押しのけて中心の図で開いたか。
+//: これも黙ってやらない（同じ理由）
+let centeredByUrl = false;
+
 /**
  * いまの範囲で選べる見せ方に揃える。
  *
@@ -1432,6 +1458,18 @@ function syncModeOptions() {
 
 //: 直前に描いたグラフ。見せ方を変えるだけならサーバへ行き直さない
 let lastGraph = null;
+
+//: 中心の図で真ん中に置く語。`?ref=` が初期値で、まわりの語を押すと移る。
+//: **URL は書き換えない** —— 覆いとして重ねているとき、`location` は覆いが
+//: 出しているものを指すとは限らない（`mount()` の引数で受けるのと同じ理由）
+let egoCenter = "";
+
+/** 中心を移して描き直す。**サーバへは行き直さない**（同じデータの描き替え）。 */
+function moveCenter(ref) {
+  if (!ref || ref === egoCenter) return;
+  egoCenter = ref;
+  if (lastGraph) paintGraph(lastGraph);
+}
 
 /** 受け取ったグラフを描いて、凡例と注意書きを添える。 */
 function paintGraph(graph) {
@@ -1459,6 +1497,13 @@ function paintGraph(graph) {
       "行が「から」、列が「へ」です。線を引かないので交差しません。"
       + "空きマスは、まだ関係を書いていない組です。対角を挟んで両側が埋まっていれば相互。"
       + "太い線はカテゴリの切れ目。上下の関係は行の並びで表しています（上にあるものが上位）。",
+    // 規模に依らないのがこの見せ方の役目。何語の辞書から切り出した近所なのかは
+    // `drawn.note` が出す（この図だけを見て「関係はこれで全部」と読ませない）
+    ego:
+      "真ん中の語から 2 つ先までを環に並べています。"
+      + "内側の環が 1 つ先、外側が 2 つ先。まわりの語を押すとそこが中心に移り、"
+      + "真ん中の語を押すと辞書ページが開きます。"
+      + "上下の関係は置き場所で表しています（上にあるものが上位、対等は左右）。",
     // 「いつ」が見えるのがこの見せ方の役目。位置は毎回その場で計算していて
     // 保存はしていない、と書いておかないと「編集したらずれる」と読まれる
     timeline:
@@ -1469,6 +1514,9 @@ function paintGraph(graph) {
   }[mode] || "▲▼ の代わりに上下の関係は段で表しています。";
   legend.textContent =
     shape + common
+    // **出していないものを見せ方が数えていれば、それも書く**（何を切り出した
+    // 図なのかが分からないと、「関係はこれで全部」と読まれる）
+    + (drawn.note || "")
     // **畳んだことは書く。** 黙って出さないと「一言が書かれていない関係」と
     // 見分けが付かない（隠した本数を必ず返すのと同じ約束）
     + (drawn.tucked
@@ -1523,6 +1571,8 @@ export async function mount(host, { search = "", embed = false } = {}) {
   params = new URLSearchParams(search);
   currentScope = params.get("scope") || "";
   currentDoc = params.get("doc") || "";
+  // 中心の図の初期値。用語ページの「この語を中心に」からはこれが付いてくる
+  egoCenter = params.get("ref") || "";
   embedded = embed;
   termByRef = new Map();
   lastGraph = null;
@@ -1530,11 +1580,17 @@ export async function mount(host, { search = "", embed = false } = {}) {
   // **listener は最初の await より前に付ける。** あとに回すと、その間の操作が
   // 黙って無視される（設定ダイアログと extract.js で 2 回踏んだ）
   mode = rememberedMode();
+  // **語を名指しで開かれたら中心の図で出す。** そうしないと、覚えている見せ方が
+  // 段の図の人には「この語を中心に」を押しても何も起きない。**覚えているほうは
+  // 書き換えない**（この 1 回だけの上書き）ので、次にふつうに開けば元に戻る
+  centeredByUrl = Boolean(egoCenter) && mode !== "ego";
+  if (egoCenter) mode = "ego";
   syncModeOptions();
   modeSelect.addEventListener("change", () => {
     mode = MODES.includes(modeSelect.value) ? modeSelect.value : "layered";
-    // 自分で選び直したなら、落としたときの断り書きはもう要らない
+    // 自分で選び直したなら、落とした / 押しのけたときの断り書きはもう要らない
     modeFellBack = false;
+    centeredByUrl = false;
     try {
       localStorage.setItem(MODE_KEY, mode);
     } catch {

@@ -504,6 +504,89 @@ def test_the_matrix_mode_shows_which_pairs_have_no_relation(page, server, seeded
     assert page.evaluate("() => document.querySelectorAll('.rel-node.here').length") == 1
 
 
+def _neighbourhood():
+    """3 つ先まで繋がった鎖を作る（2 つ先で切れることを見るため）。"""
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    zanelli = store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+    teacher = store.save(EntryDraft(term="先生", category="登場人物", definition="教師。"))
+    far = store.save(EntryDraft(term="遠い人", category="登場人物", definition="ザネリの知り合い。"))
+    edge = store.save(EntryDraft(term="果ての人", category="登場人物", definition="さらに先。"))
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[
+                {"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"},
+                {"to": zanelli.ref, "label": "同級生", "rank": "対等"},
+                {"to": teacher.ref, "label": "教わる相手", "rank": "上"},
+            ],
+        ),
+        ref=a.ref,
+    )
+    store.save(
+        EntryDraft(
+            term=zanelli.term, category=zanelli.category, definition=zanelli.definition,
+            relations=[{"to": far.ref, "label": "知り合い", "rank": "対等"}],
+        ),
+        ref=zanelli.ref,
+    )
+    store.save(
+        EntryDraft(
+            term=far.term, category=far.category, definition=far.definition,
+            relations=[{"to": edge.ref, "label": "知り合い", "rank": "対等"}],
+        ),
+        ref=far.ref,
+    )
+    return a
+
+
+def test_the_ego_mode_shows_two_steps_around_one_word(page, server, seeded):
+    """1 語を中心にした図。**規模に依らない**唯一の見せ方。
+
+    他の見せ方はどれも辞書（またはその文書）を一度に出すので、語が増えれば必ず
+    苦しくなる。中心を決めれば絵の大きさはその語の近所の広さで決まる。
+    **出していないものは必ず数える** —— この図だけを見て「関係はこれで全部」と
+    読まれないように。
+    """
+    _neighbourhood()
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "ego")
+    page.locator("svg.rel-ego").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # 中心は指されていなければ「いちばん多く繋がっている語」
+    assert page.locator("svg.rel-ego .ego-center text").first.text_content() == "ジョバンニ"
+    drawn = page.locator("svg.rel-ego").text_content() or ""
+    assert "遠い人" in drawn                       # 2 つ先までは出す
+    assert "果ての人" not in drawn                 # 3 つ先は出さない
+    # 黙って欠けさせない（出していない語は数えて凡例に出す）
+    assert "ほか 1 語" in (page.text_content("#legend") or "")
+
+    # **まわりの語を押すと中心が移る**（サーバへは行き直さない）
+    page.locator("svg.rel-ego .ego-ring1", has_text="ザネリ").first.click()
+    page.wait_for_function(
+        "() => document.querySelector('svg.rel-ego .ego-center text')?.textContent === 'ザネリ'",
+        timeout=10000,
+    )
+    # 中心が移れば、さっき遠すぎた語が近所に入る
+    assert "果ての人" in (page.locator("svg.rel-ego").text_content() or "")
+
+    # 線を押せば同じ編集ダイアログが開く（見せ方が変わっても直し方は 1 つ）
+    page.locator("svg.rel-ego .rel-edge-group").first.click()
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+    page.keyboard.press("Escape")
+
+
+def test_the_ego_mode_takes_its_center_from_the_url(page, server, seeded):
+    """用語ページの「相関図で見る」は `?ref=` を付けてくる（その語が真ん中に来る）。"""
+    _neighbourhood()
+    zanelli = store.find_by_surface("ザネリ")[0]
+    page.goto(f"{server}/graph?ref={zanelli.ref}")
+    page.locator("svg.rel-ego").wait_for(timeout=15000)
+    assert page.locator("svg.rel-ego .ego-center text").first.text_content() == "ザネリ"
+
+
 def test_the_timeline_orders_relations_by_where_they_become_readable(page, server, seeded):
     """時系列は**関係が読めるようになる順**に並べる。
 
