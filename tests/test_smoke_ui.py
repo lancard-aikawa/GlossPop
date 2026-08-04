@@ -1541,6 +1541,51 @@ def test_the_settings_dialog_can_export_one_category(page, server, isolated_dirs
     assert "行き先の無くなる関係が 1 本" in said and "冪等 → ソース" in said
 
 
+def test_the_settings_dialog_restores_one_entry_from_a_backup(page, server, isolated_dirs):
+    """控えの中を見て、**1 件だけ**戻せる。
+
+    併合の衝突は「取り込む側が勝つ」なので、**上書きされた語は控えにしか残らない**。
+    zip を手で開かせるのでは、その約束が半分しか果たせていない。
+    """
+    from glosspop import archive
+
+    store.save(EntryDraft(term="冪等", category="プログラミング", definition="本文。"))
+    store.save(EntryDraft(term="ソース", category="料理", definition="本文。"))
+    archive.write_backup()
+    store.delete(store.find_by_surface("ソース")[0].ref)
+    assert {e.term for e in store.load_all()} == {"冪等"}
+
+    page.goto(f"{server}/glossary")
+    page.locator("#settings").wait_for(timeout=15000)
+    page.click("#settings")
+    # 件数は畳んだままでも見える（開かないと分からない、では溜まりに気付けない）
+    count = page.locator("dialog.sheet[open] [data-ref=backupCount]")
+    count.wait_for(timeout=10000)
+    page.wait_for_function(
+        "() => (document.querySelector('dialog.sheet[open] [data-ref=backupCount]')"
+        "?.textContent || '').includes('1 件')",
+        timeout=10000,
+    )
+    page.click("dialog.sheet[open] [data-ref=backupBox] summary")
+    page.locator("dialog.sheet[open] [data-ref=backupList] .backup-row").first.wait_for(
+        timeout=10000
+    )
+
+    # 控えを開くと中身が出る（戻すと上書きになるかどうかも出る）
+    page.locator("dialog.sheet[open] .backup-head button").first.click()
+    row = page.locator("dialog.sheet[open] .backup-entry", has_text="料理/ソース")
+    row.wait_for(timeout=10000)
+    assert row.locator("button").inner_text() == "戻す"        # 手元に無いので上書きではない
+
+    row.locator("button").click()
+    page.wait_for_function(
+        "() => [...document.querySelectorAll('dialog.sheet[open] .backup-entry')]"
+        ".some((n) => n.textContent.includes('戻しました'))",
+        timeout=10000,
+    )
+    assert {e.term for e in store.load_all()} == {"冪等", "ソース"}
+
+
 def test_the_settings_dialog_can_merge_instead_of_replacing(page, server, isolated_dirs, tmp_path):
     """併合を選ぶと、**手元にしか無い語が消えないこと**。
 

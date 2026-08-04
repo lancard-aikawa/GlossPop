@@ -578,6 +578,48 @@ def export_glossary_plan(category: list[str] = Query(default=[])) -> dict:
     return archive.export_plan([name for name in category if name.strip()])
 
 
+@app.get("/api/backups")
+def list_backups() -> dict:
+    """取り込み前に自動で取った控えの一覧（新しい順）。
+
+    併合の衝突は「取り込む側が勝つ」なので、**上書きされた語は控えにしか残らない**。
+    zip を手で開かせるのでは約束が半分しか果たせないので、画面から中を見られる
+    ようにしてある。**古いものを自動で消す口は作らない**（合計の大きさだけ出す）。
+    """
+    return archive.list_backups()
+
+
+@app.get("/api/backups/{name}")
+def read_backup(name: str) -> dict:
+    """控え 1 つの中身。**いま手元にあるか**も返す（戻すと上書きになるかが分かる）。"""
+    try:
+        return archive.backup_contents(name)
+    except archive.ArchiveError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+class RestoreRequest(BaseModel):
+    ref: str
+
+
+@app.post("/api/backups/{name}/restore")
+def restore_from_backup(name: str, req: RestoreRequest) -> dict:
+    """控えから**1 件だけ**書き戻す。控えの中身をそのまま書く（保存し直さない）。"""
+    try:
+        return archive.restore_entry(name, req.ref)
+    except archive.ArchiveError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.delete("/api/backups/{name}", status_code=204)
+def delete_backup(name: str) -> None:
+    """控えを 1 つ捨てる。溜まったぶんの片付けは人が決める。"""
+    try:
+        archive.delete_backup(name)
+    except archive.ArchiveError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 async def _archive_body(request: Request) -> bytes:
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > archive.MAX_ARCHIVE_BYTES:

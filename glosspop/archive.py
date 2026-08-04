@@ -194,6 +194,148 @@ def write_backup() -> Path:
 
 
 # --------------------------------------------------------------------------- #
+# 控えを見る / 1 件だけ戻す / 片付ける
+#
+# 併合の衝突は「取り込む側が勝つ」の 1 行に決めてあり、上書きされた語は**控えに
+# しか残らない**。戻すのに zip を手で開かせるのでは、その約束が半分しか果たせて
+# いない（→ docs/open-questions.md にあった宿題）。
+#
+# **自動では消さない。** 溜まるのは事実だが、控えは「消える前の唯一の写し」なので
+# 古いものを勝手に捨てると約束のほうが壊れる。合計の大きさを出して、消すかどうかは
+# 人に決めさせる。
+# --------------------------------------------------------------------------- #
+
+def _backup_path(name: str) -> Path:
+    """控えの名前からパスを作る。**外へ出る名前は通さない。**
+
+    名前は画面から来るので、`..` や絶対パスをそのまま繋がない（外から来た書庫を
+    ライブラリ任せにしないのと同じ規則）。組み立てた結果が控えの置き場所の中に
+    あることを最後に必ず確かめる。
+    """
+    directory = backup_dir()
+    if not name or "/" in name or "\\" in name or not name.lower().endswith(".zip"):
+        raise ArchiveError(f"控えの名前が不正です: {name}")
+    path = (directory / name).resolve()
+    if path.parent != directory.resolve():
+        raise ArchiveError(f"控えの名前が不正です: {name}")
+    if not path.exists():
+        raise ArchiveError(f"その控えはありません: {name}")
+    return path
+
+
+def _backup_order(name: str) -> tuple[str, str, int]:
+    """新しい順に並べるための鍵。``backup-<日付>-<時刻>[-<連番>].zip`` を読む。
+
+    **名前をそのまま並べ替えない。** 同じ秒に 2 回取ると ``-2`` が付き、文字列
+    順では `-`（0x2D）が `.`（0x2E）より小さいので**古いほうが先に来る**。
+    ファイルの時刻で並べるのも駄目 —— Windows の時計は 15ms ほどの粒度なので、
+    続けて取った 2 つが同じ時刻になりうる（そこで競走するテストは書かない）。
+    """
+    stem = name[len("backup-"):-len(".zip")] if name.startswith("backup-") else name
+    parts = stem.split("-")
+    try:
+        n = int(parts[2]) if len(parts) > 2 else 1
+    except ValueError:
+        n = 1
+    return (parts[0] if parts else "", parts[1] if len(parts) > 1 else "", n)
+
+
+def _count_entries(path: Path) -> int:
+    """控えに入っている用語の数。**中身は展開しない**（名前だけ数える）。"""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return len(_entry_members(zf, zf.infolist()))
+    except (zipfile.BadZipFile, OSError):
+        return 0
+
+
+def list_backups() -> dict:
+    """控えの一覧（新しい順）。``{dir, total_bytes, items}``。
+
+    **合計の大きさも返す。** 自動で消さない代わりに、溜まっていることが分かる
+    ようにしておく（消すかどうかは人が決める）。
+    """
+    directory = backup_dir()
+    items: list[dict] = []
+    total = 0
+    if directory.exists():
+        for path in sorted(
+            directory.glob("backup-*.zip"), key=lambda p: _backup_order(p.name), reverse=True
+        ):
+            stat = path.stat()
+            total += stat.st_size
+            items.append({
+                "name": path.name,
+                "size": stat.st_size,
+                "created_at": datetime.fromtimestamp(stat.st_mtime).astimezone()
+                .isoformat(timespec="seconds"),
+                "entries": _count_entries(path),
+            })
+    return {"dir": str(directory), "total_bytes": total, "items": items}
+
+
+def backup_contents(name: str) -> dict:
+    """控え 1 つの中身。``ref`` と、**いま手元にあるかどうか**を返す。
+
+    手元にあるかを添えるのは、戻すときに**上書きになるのかどうか**を押す前に
+    見せるため（1 件ずつ消す経路と同じで、控えは取らない代わりに先に見せる）。
+    """
+    path = _backup_path(name)
+    root = config.GLOSSARY_DIR
+    try:
+        with zipfile.ZipFile(path) as zf:
+            refs = sorted(_ref_of(m.filename) for m in _entry_members(zf, zf.infolist()))
+    except zipfile.BadZipFile as exc:
+        raise ArchiveError(f"控えを読めません: {name}") from exc
+    return {
+        "name": name,
+        "count": len(refs),
+        "entries": [
+            {"ref": ref, "here": (root / f"{ref}.md").exists()}
+            for ref in refs[:MAX_REPORTED]
+        ],
+        "truncated": len(refs) > MAX_REPORTED,
+    }
+
+
+def restore_entry(name: str, ref: str) -> dict:
+    """控えから**1 件だけ**辞書へ書き戻す。
+
+    ファイルの中身をそのまま書く（`store.save()` を通さない）。控えは「消える前の
+    写し」なので、**書いてあったとおりに戻る**のが筋 —— 保存し直すと本文の整形や
+    `updated_at` が変わる。カテゴリはディレクトリが正なので、マスターには
+    次の `load()` が拾わせる。
+    """
+    path = _backup_path(name)
+    with zipfile.ZipFile(path) as zf:
+        members = {
+            _ref_of(m.filename): m
+            for m in _entry_members(zf, safe_members(zf, config.GLOSSARY_DIR.parent))
+        }
+        member = members.get(ref)
+        if member is None:
+            raise ArchiveError(f"その控えに入っていません: {ref}")
+        data = zf.read(member)
+
+    target = config.GLOSSARY_DIR / f"{ref}.md"
+    # 控えの中は `<カテゴリ>/<slug>.md` の 2 段と確かめてあるが、組み立てた先が
+    # 辞書の外に出ていないことは最後にもう一度見る
+    if target.resolve().parent.parent != config.GLOSSARY_DIR.resolve():
+        raise ArchiveError(f"戻し先が不正です: {ref}")
+    overwritten = target.exists()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    store.invalidate()
+    categories.invalidate()
+    return {"ref": ref, "overwritten": overwritten}
+
+
+def delete_backup(name: str) -> None:
+    """控えを 1 つ捨てる。**古いものを自動で消す口は作らない**（人が決める）。"""
+    _backup_path(name).unlink()
+
+
+# --------------------------------------------------------------------------- #
 # 取り込み（置き換え）
 # --------------------------------------------------------------------------- #
 

@@ -410,3 +410,77 @@ def test_a_broken_master_does_not_undo_the_import(add_entry):
         archive.MANIFEST_NAME: "{}",
     }), "merge")
     assert _terms() == {"冪等", "銀河"}
+
+
+# --------------------------------------------------------------------------- #
+# 控えを見る / 1 件だけ戻す / 片付ける
+#
+# 併合の衝突は「取り込む側が勝つ」なので、**上書きされた語は控えにしか残らない**。
+# zip を手で開かせるのでは、その約束が半分しか果たせていない。
+# --------------------------------------------------------------------------- #
+
+class TestBackups:
+    def test_lists_them_newest_first_with_their_size(self, add_entry):
+        add_entry("冪等", category="プログラミング")
+        first = archive.write_backup()
+        add_entry("ソース", category="料理")
+        second = archive.write_backup()
+
+        listed = archive.list_backups()
+        assert [item["name"] for item in listed["items"]] == [second.name, first.name]
+        assert listed["items"][0]["entries"] == 2 and listed["items"][1]["entries"] == 1
+        # 自動では消さない代わりに、溜まっていることが分かるようにする
+        assert listed["total_bytes"] > 0
+
+    def test_shows_what_is_inside_and_whether_it_is_still_here(self, add_entry):
+        entry = add_entry("冪等", category="プログラミング")
+        backup = archive.write_backup()
+        store.delete(entry.ref)
+
+        inside = archive.backup_contents(backup.name)
+        assert inside["count"] == 1
+        assert inside["entries"][0]["ref"] == "プログラミング/冪等"
+        # 手元にもうそれが無いなら、戻しても上書きにはならない
+        assert inside["entries"][0]["here"] is False
+
+    def test_restores_one_entry_exactly_as_it_was(self, add_entry):
+        """控えは「消える前の写し」なので、**書いてあったとおりに戻る**。"""
+        entry = add_entry("冪等", category="プログラミング", definition="元の本文。")
+        backup = archive.write_backup()
+        store.delete(entry.ref)
+
+        result = archive.restore_entry(backup.name, entry.ref)
+        assert result == {"ref": entry.ref, "overwritten": False}
+        assert "元の本文" in store.get(entry.ref).definition
+
+    def test_says_when_restoring_would_overwrite(self, add_entry):
+        entry = add_entry("冪等", category="プログラミング", definition="元の本文。")
+        backup = archive.write_backup()
+        store.save(
+            EntryDraft(term="冪等", category="プログラミング", definition="書き替えた。"),
+            ref=entry.ref,
+        )
+
+        assert archive.backup_contents(backup.name)["entries"][0]["here"] is True
+        assert archive.restore_entry(backup.name, entry.ref)["overwritten"] is True
+        assert "元の本文" in store.get(entry.ref).definition
+
+    def test_refuses_a_name_that_points_outside(self, add_entry):
+        add_entry("冪等", category="プログラミング")
+        archive.write_backup()
+        for name in ["../secret.zip", "backup.txt", "", "sub/backup.zip"]:
+            with pytest.raises(archive.ArchiveError):
+                archive.backup_contents(name)
+
+    def test_refuses_an_entry_that_is_not_in_that_backup(self, add_entry):
+        add_entry("冪等", category="プログラミング")
+        backup = archive.write_backup()
+        with pytest.raises(archive.ArchiveError):
+            archive.restore_entry(backup.name, "料理/ソース")
+
+    def test_deletes_one_when_asked(self, add_entry):
+        add_entry("冪等", category="プログラミング")
+        backup = archive.write_backup()
+        archive.delete_backup(backup.name)
+        assert not backup.exists()
+        assert archive.list_backups()["items"] == []

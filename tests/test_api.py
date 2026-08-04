@@ -306,6 +306,45 @@ def test_import_can_merge_instead_of_replacing(client):
     assert Path(res.json()["backup"]).exists()
 
 
+def test_backups_can_be_read_and_restored_one_at_a_time(client):
+    """**上書きされた語は控えにしか残らない。** 画面から中を見て 1 件だけ戻せること。"""
+    client.post("/api/entries", json={**ENTRY, "definition": "元の本文。"})
+    exported = client.get("/api/export").content
+    # 取り込みの前に控えが取られる（このときの中身が「元の本文」）
+    client.post("/api/entries", json={"term": "ソース", "category": "料理"})
+    client.post("/api/import-glossary?mode=replace", content=exported,
+                headers={"Content-Type": "application/zip"})
+
+    listed = client.get("/api/backups").json()
+    assert len(listed["items"]) == 1 and listed["total_bytes"] > 0
+    name = listed["items"][0]["name"]
+
+    inside = client.get(f"/api/backups/{name}").json()
+    refs = {e["ref"]: e for e in inside["entries"]}
+    assert "料理/ソース" in refs and refs["料理/ソース"]["here"] is False
+
+    res = client.post(f"/api/backups/{name}/restore", json={"ref": "料理/ソース"})
+    assert res.status_code == 200 and res.json()["overwritten"] is False
+    assert {e["term"] for e in client.get("/api/entries").json()} == {"冪等", "ソース"}
+
+
+def test_backups_refuse_a_name_that_points_outside(client):
+    assert client.get("/api/backups/..%2Fsecret.zip").status_code in (404, 400)
+    assert client.get("/api/backups/backup-9999.zip").status_code == 404
+
+
+def test_a_backup_can_be_thrown_away(client):
+    """溜まったぶんの片付けは人が決める（**自動では消さない**）。"""
+    client.post("/api/entries", json=ENTRY)
+    exported = client.get("/api/export").content
+    client.post("/api/import-glossary", content=exported,
+                headers={"Content-Type": "application/zip"})
+
+    name = client.get("/api/backups").json()["items"][0]["name"]
+    assert client.delete(f"/api/backups/{name}").status_code == 204
+    assert client.get("/api/backups").json()["items"] == []
+
+
 def test_the_import_plan_changes_nothing(client):
     """**押す前に見せる。** 下見は数えるだけで、控えも取らない。"""
     client.post("/api/entries", json=ENTRY)

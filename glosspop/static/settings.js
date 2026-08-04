@@ -109,6 +109,18 @@ function build() {
             </select>
             <input type="file" accept=".zip,application/zip" data-ref="importFile" hidden>
           </div>
+          <!-- **控えの中を見る口。** 併合の衝突は「取り込む側が勝つ」なので、
+               上書きされた語は控えにしか残らない。zip を手で開かせるのでは
+               約束が半分しか果たせない（→ docs/design-notes.md） -->
+          <details data-ref="backupBox">
+            <summary>取り込み前の控え <span data-ref="backupCount"></span></summary>
+            <p class="hint">
+              取り込みの前に自動で取ったものです。中を見て<strong>1 件だけ戻す</strong>
+              こともできます。<strong>古いものを自動で消すことはしません</strong>ので、
+              溜まったらここで捨ててください。
+            </p>
+            <div class="filelist" data-ref="backupList"></div>
+          </details>
           <p class="notice">
             <strong>置き換え</strong>は、いまの辞書が zip の中身に入れ替わり、zip に無い
             用語が消えます。<strong>併合</strong>は zip にしか無い用語を足し、
@@ -531,9 +543,135 @@ export async function openSettingsDialog() {
       setStatus(refs.status, "取り込みました");
       // 保存先は変わらないので再起動は要らない。topbar の語数だけ合わせる
       await paintEntryCount(document.getElementById("count"));
+      await paintBackups();               // いま取った控えを一覧に出す
     } catch (err) {
       setStatus(refs.status, err.message, "error");
     }
+  };
+
+  /**
+   * 取り込み前の控え。**中を見て 1 件だけ戻せるようにする。**
+   *
+   * 併合の衝突は「取り込む側が勝つ」なので、上書きされた語は控えにしか残らない。
+   * zip を手で開かせるのでは、その約束が半分しか果たせていない。
+   * **古いものを自動では消さない** —— 控えは「消える前の唯一の写し」なので、
+   * 勝手に捨てると約束のほうが壊れる。合計の大きさを出して人に決めさせる。
+   */
+  const paintBackups = async () => {
+    try {
+      const data = await api("/api/backups");
+      refs.backupCount.textContent = data.items.length
+        ? `（${data.items.length} 件 / ${fileSize(data.total_bytes)}）`
+        : "（まだありません）";
+      refs.backupList.replaceChildren(
+        ...(data.items.length
+          ? data.items.map(backupRow)
+          : [el("p", {
+            class: "hint",
+            text: "取り込みの前に自動で取ります。まだ 1 つもありません。",
+          })])
+      );
+    } catch (err) {
+      refs.backupList.replaceChildren(el("p", { class: "status error", text: err.message }));
+    }
+  };
+
+  const fileSize = (bytes) => (bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+  const when = (iso) => {
+    const at = new Date(iso);
+    return Number.isNaN(at.getTime()) ? iso : at.toLocaleString();
+  };
+
+  const backupRow = (item) => {
+    const inside = el("div", { class: "backup-inside", hidden: true });
+    const open = el("button", {
+      type: "button",
+      title: item.name,
+      text: `${when(item.created_at)} — ${item.entries} 語 / ${fileSize(item.size)}`,
+      onclick: () => openBackup(item, open, inside),
+    });
+    const drop = el("button", {
+      type: "button",
+      class: "ghost",
+      title: "この控えを捨てる",
+      "aria-label": `${item.name} を捨てる`,
+      text: "🗑",
+      onclick: async () => {
+        if (!confirm(`控え「${item.name}」を捨てます。元には戻せません。よろしいですか？`)) return;
+        try {
+          await api(`/api/backups/${encodeURIComponent(item.name)}`, { method: "DELETE" });
+          await paintBackups();
+        } catch (err) {
+          setStatus(refs.status, err.message, "error");
+        }
+      },
+    });
+    return el("div", { class: "backup-row" }, [
+      el("div", { class: "backup-head" }, [open, drop]),
+      inside,
+    ]);
+  };
+
+  /** 控えの中身を出す。もう一度押せば畳む（一覧が縦に伸びっぱなしにならない）。 */
+  const openBackup = async (item, button, box) => {
+    if (!box.hidden) {
+      box.hidden = true;
+      button.setAttribute("aria-expanded", "false");
+      return;
+    }
+    box.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    box.replaceChildren(el("p", { class: "hint", text: "読み込み中…" }));
+    try {
+      const data = await api(`/api/backups/${encodeURIComponent(item.name)}`);
+      const rows = data.entries.map((entry) => restoreRow(item, entry));
+      // **切ったことは言う**（「これで全部」と読ませない）
+      if (data.truncated) {
+        rows.push(el("p", {
+          class: "hint",
+          text: `${data.count} 語のうち先頭 ${data.entries.length} 件だけ出しています。`,
+        }));
+      }
+      box.replaceChildren(...(rows.length
+        ? rows
+        : [el("p", { class: "hint", text: "この控えには用語が入っていません。" })]));
+    } catch (err) {
+      box.replaceChildren(el("p", { class: "status error", text: err.message }));
+    }
+  };
+
+  const restoreRow = (item, entry) => {
+    const status = el("span", { class: "hint" });
+    const button = el("button", {
+      type: "button",
+      // **上書きになるかどうかを押す前に出す**（控えは取らないので、代わりに先に見せる）
+      text: entry.here ? "戻す（上書き）" : "戻す",
+      onclick: async () => {
+        if (entry.here && !confirm(`「${entry.ref}」を控えの内容で上書きします。よろしいですか？`)) {
+          return;
+        }
+        button.disabled = true;
+        try {
+          const res = await api(`/api/backups/${encodeURIComponent(item.name)}/restore`, {
+            method: "POST",
+            body: { ref: entry.ref },
+          });
+          status.textContent = res.overwritten ? "上書きしました" : "戻しました";
+          await paintEntryCount(document.getElementById("count"));
+        } catch (err) {
+          status.textContent = err.message;
+          button.disabled = false;
+        }
+      },
+    });
+    return el("div", { class: "backup-entry" }, [
+      el("span", { class: "backup-ref", title: entry.ref, text: entry.ref }),
+      status,
+      button,
+    ]);
   };
 
   /** 新しい版を隣に展開する。**自分自身は置き換えない。** */
@@ -723,6 +861,7 @@ export async function openSettingsDialog() {
   // **開いた時点で持っているものを描き、届いたら足す。** 選択肢には「辞書全体」が
   // 最初から入っているので、読み込みが遅くても書き出し自体はできる
   onExportScope();
+  paintBackups();
   api("/api/categories")
     .then((tree) => {
       refs.exportScope.append(

@@ -337,6 +337,33 @@ body.dropping::after {
   font-weight: 600;
 }
 
+/* 取り込み前の控え。1 行に「開く」と「捨てる」が並ぶので、開くほうだけ伸ばす
+   （`.filelist button` は width: 100% なので、包む側で幅を持たせる） */
+.backup-row + .backup-row { margin-top: 2px; }
+.backup-head { display: flex; align-items: center; gap: 4px; }
+.backup-head > button:first-child { min-width: 0; flex: 1 1 auto; }
+/* **横に並ぶ小さいボタンは `width: auto` に戻す。** `.filelist button` は
+   `width: 100%` なので、そのままだと隣（開くボタン・用語名）を 0 幅まで潰す
+   （ボタンは縮まないので、潰れるのは必ず隣のほう。実際に潰れた） */
+.backup-head > button + button,
+.backup-entry button { width: auto; flex: 0 0 auto; }
+.backup-inside {
+  margin: 2px 0 6px 12px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+.backup-entry { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+/* 用語名は長くなりうる。ボタンは折り返さないので、切るのはこちら */
+.backup-ref {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.backup-entry .hint { font-size: 12px; }
+
 /* 本文の横断検索。抜粋は折り返して読ませる (ファイル名の 1 行とは別物) */
 .search-results { margin-bottom: 10px; }
 .search-file + .search-file { margin-top: 8px; }
