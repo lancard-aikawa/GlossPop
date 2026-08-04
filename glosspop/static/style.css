@@ -1020,6 +1020,8 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   border-radius: var(--radius);
   background: var(--panel-2);
 }
+/* ボタンは折り返さないので、狭いときは行のほうを折り返す */
+.rel-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .rel-form-line { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
 .rel-form-line input { flex: 1 1 180px; width: auto; }
 .rel-form-line input.narrow { flex: 0 1 160px; }
@@ -1027,16 +1029,45 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 
 /* ---------------------------------------------------------------- 相関図 */
 .graph-toolbar { margin-bottom: 10px; }
+.graph-stage { position: relative; }
 .graph-canvas {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
-  /* 図は横に伸びる。ページ本体を横スクロールさせない */
-  overflow: auto;
-  padding: 4px;
+  /* **入れ物の大きさは固定。** はみ出したぶんはスクロールではなく動かして見る
+     （どこを見ているのか分からなくなるのを避ける。→ graph.js の viewBox） */
+  height: clamp(320px, 64vh, 860px);
+  overflow: hidden;
+  /* 指で動かせるように、既定のスクロール操作を止める */
+  touch-action: none;
+  cursor: grab;
 }
-/* 図が箱より狭いときは中央に。広いときは margin が効かず、箱側が横スクロールする */
-.rel-graph { display: block; margin: 0 auto; }
+.graph-canvas.grabbing { cursor: grabbing; }
+/* 図が無いときは高さを取らない（案内文だけの箱を画面いっぱいにしない） */
+.graph-canvas.is-empty { height: auto; padding: 4px; cursor: default; }
+.graph-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rel-graph {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 掴んで動かすので、なぞった先の文字が選ばれないようにする */
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* 拡大縮小のボタンは図の上に重ねる（ツールバーの行を増やさない） */
+.graph-zoom {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 4px;
+}
+.graph-zoom button {
+  padding: 4px 10px;
+  background: var(--panel);
+  opacity: 0.9;
+}
+.graph-zoom button:hover { opacity: 1; }
 .rel-node rect {
   fill: var(--panel-2);
   stroke: var(--border-strong);
@@ -1052,13 +1083,29 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-edge.missing { stroke: var(--danger); stroke-dasharray: 4 3; }
 .rel-edge.reveal { stroke: var(--warn); stroke-dasharray: 6 3; }
 .rel-arrowhead { fill: var(--border-strong); }
-/* 線そのものは細すぎて押せない。透明な太い線を下に重ねて当たり判定にする */
-.rel-edge-hit { fill: none; stroke: transparent; stroke-width: 14; }
+/* 線そのものは細すぎて押せない。透明な太い線を下に重ねて当たり判定にする。
+   **当たり判定だけは縮めない**（non-scaling-stroke）—— 縮小すると 14px が
+   数 px になり、見えている線が押せなくなる */
+.rel-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  vector-effect: non-scaling-stroke;
+}
+/* 押せる帯の大きさを外形として持たせるためだけの四角。描かないし、押しても
+   拾わない（拾うと辺の外接矩形が丸ごと当たり判定になり、隣の辺を覆う） */
+.rel-edge-band { fill: none; stroke: none; pointer-events: none; }
 .rel-edge-group { cursor: pointer; }
+/* 線と一言は別の層に居る（線が文字を横切らないため）ので、両方に付ける印は
+   JS が回す。**片方だけ光らせないこと** —— 一言は空いているところへ逃がすので
+   線の真上とは限らず、線だけ色が変わってもどの関係なのか分からない */
 .rel-edge-group:hover .rel-edge,
-.rel-edge-group:focus-visible .rel-edge { stroke: var(--accent); stroke-width: 2.5; }
+.rel-edge-group:focus-visible .rel-edge,
+.rel-edge-group.hot .rel-edge { stroke: var(--accent); stroke-width: 2.5; }
 .rel-edge-group:focus-visible { outline: none; }
-.rel-edge-group:focus-visible .rel-edge-label { fill: var(--accent); }
+/* 関係の無い語をまとめた帯。**段ではない**と見て分かるように区切る */
+.rel-lonely-rule line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; }
+.rel-lonely-caption { fill: var(--fg-dim); font: 11px var(--sans); }
 /* 線の上に載るので、背景色で縁取りして読めるようにする */
 .rel-edge-label {
   fill: var(--fg-dim);
@@ -1067,6 +1114,13 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   stroke: var(--panel);
   stroke-width: 3px;
   stroke-linejoin: round;
+  cursor: pointer;
+}
+.rel-edge-label.hot {
+  fill: var(--accent);
+  font-weight: 700;
+  /* 光った文字が線に埋もれないよう、縁取りも強くする */
+  stroke-width: 4px;
 }
 
 /* ---------------------------------------------------------------- 点検 */

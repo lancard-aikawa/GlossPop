@@ -141,6 +141,10 @@ class RelationsDraftRequest(BaseModel):
     #: 関係を探す範囲。空なら辞書全体
     category: str = ""
     scope: str = ""             # global | local
+    #: この語が**一方の端になる関係だけ**を探す（用語ページからの下書き）。
+    #: 相手は上の範囲から選ばれる —— 関係は 2 語が揃って初めて書けるので、
+    #: 「1 語だけ」を範囲にはできない
+    ref: str = ""
     limit: int = 20
     max_files: int = 40
     #: 読ませる本文。渡されればフォルダを読まずにこれを使う。
@@ -809,6 +813,15 @@ async def ai_relations(req: RelationsDraftRequest) -> dict:
         raise HTTPException(503, "claude CLI が見つかりません。関係は手で書けます。")
 
     target = _relation_scope(req.category, req.scope)
+    focus = None
+    if req.ref:
+        focus = store.get(req.ref)
+        if focus is None:
+            raise HTTPException(404, f"見つかりません: {req.ref}")
+        # **相手が要る。** 範囲の絞り込みで当の語が落ちていたら足し直す
+        # （落ちたまま探すと、その語を端にした関係は 1 本も作れない）
+        if all(e.ref != focus.ref for e in target):
+            target = [focus, *target]
     if len(target) < 2:
         raise HTTPException(400, "関係を探すには、その範囲に 2 語以上の登録が要ります")
 
@@ -834,6 +847,7 @@ async def ai_relations(req: RelationsDraftRequest) -> dict:
             scope=target,
             limit=max(1, min(req.limit, 40)),
             spoiler=spoiler,
+            focus=focus,
         )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc

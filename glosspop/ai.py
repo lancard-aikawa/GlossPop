@@ -793,9 +793,17 @@ def _densest_window(text: str, entries: list[Entry], width: int) -> str:
 
 
 def first_scene_context(
-    docs: list[tuple[str, str]], entries: list[Entry], *, budget: int = RELATION_TEXT_CHARS
+    docs: list[tuple[str, str]],
+    entries: list[Entry],
+    *,
+    budget: int = RELATION_TEXT_CHARS,
+    focus: Entry | None = None,
 ) -> str:
     """各用語の初出の場面を、**全員ぶん入るように**切り詰めて繋ぐ。
+
+    ``focus`` を渡すと**その語の初出の場面だけ**を、予算を丸ごと使って返す
+    （1 語ぶんの下書きでは、他の語の初出を並べても相手が写らないので効かない）。
+    見る範囲はその語の初出窓の中だけなので、ネタバレの約束は変わらない。
 
     前は初出窓（1 語あたり最大 2,400 字）をそのまま連結し、頭から ``budget`` で
     切っていた。19 語なら 41,497 字になり、**52% が黙って落ちて、後ろに並んだ
@@ -805,7 +813,8 @@ def first_scene_context(
     取り分は等分し、その中では ``_densest_window`` が**相手の名前も写っている
     ところ**を残す。**初出窓の外は見ない**ので、ネタバレの約束は変わらない。
     """
-    scenes = [(e, _first_context(docs, e.surfaces)) for e in entries]
+    wanted = [focus] if focus is not None else entries
+    scenes = [(e, _first_context(docs, e.surfaces)) for e in wanted]
     scenes = [(e, text) for e, text in scenes if text.strip()]
     if not scenes:
         return ""
@@ -834,6 +843,7 @@ def cooccurrence_context(
     *,
     window: int = RELATION_WINDOW,
     limit: int = RELATION_WINDOWS,
+    focus: Entry | None = None,
 ) -> str:
     """登録済みの用語が**一緒に出てくる**ところだけを切り出して繋ぐ。
 
@@ -843,17 +853,31 @@ def cooccurrence_context(
 
     窓は**登場する語の種類が多い順**に採り、重なるものは捨てる。同じ場面を
     何度も渡しても新しい関係は出てこないため。
+
+    ``focus`` を渡すと**その語が写っている窓だけ**を採る。1 語ぶんの下書きで
+    他人どうしの場面を渡しても、出てくるのは頼んでいない関係になる。
+    その語が誰とも並ばないときだけ、1 語しか写っていない窓へ落とす
+    （何も渡さないより、その語の場面を見せたほうが読み取れる）。
     """
     spans: list[tuple[int, int, str, int]] = []      # (種類数, -位置, ラベル, 位置)
-    for order, (label, text) in enumerate(docs):
-        hits = _surface_hits(text, entries)
-        end = 0
-        for i, (start, _) in enumerate(hits):
-            while end < len(hits) and hits[end][0] - start <= window:
-                end += 1
-            names = {ref for _, ref in hits[i:end]}
-            if len(names) >= 2:
-                spans.append((len(names), -(order * 10**9 + start), label, start))
+    hits_by_doc = [(label, text, _surface_hits(text, entries)) for label, text in docs]
+
+    def collect(least: int) -> None:
+        spans.clear()
+        for order, (label, _, hits) in enumerate(hits_by_doc):
+            end = 0
+            for i, (start, _) in enumerate(hits):
+                while end < len(hits) and hits[end][0] - start <= window:
+                    end += 1
+                names = {ref for _, ref in hits[i:end]}
+                if focus is not None and focus.ref not in names:
+                    continue
+                if len(names) >= least:
+                    spans.append((len(names), -(order * 10**9 + start), label, start))
+
+    collect(2)
+    if not spans and focus is not None:
+        collect(1)
 
     picked: list[tuple[str, int]] = []
     for _, _, label, start in sorted(spans, reverse=True):
@@ -894,8 +918,15 @@ def build_relations_prompt(
     existing: list[tuple[str, str]] | None = None,
     limit: int = 20,
     spoiler: str = "full",
+    focus: Entry | None = None,
 ) -> str:
-    """登録済みの用語どうしの関係を挙げさせるプロンプト。"""
+    """登録済みの用語どうしの関係を挙げさせるプロンプト。
+
+    ``focus`` を渡すと**その語が必ず一方の端になる関係だけ**を頼む。
+    頼まずに出力側で落とすだけにすると、上限の大半を他人どうしの関係が食って
+    肝心の語の関係が数本しか残らない（`filter_relations` でも落とすが、
+    **落とす前に頼む**のが要る）。
+    """
     listed = "\n".join(
         f"- {e.term}"
         + (f"（本文での別の呼び方: {'、'.join(e.aliases)}）" if e.aliases else "")
@@ -911,6 +942,17 @@ def build_relations_prompt(
     parts = [
         "あなたは用語辞書の編集者です。次の文書を読み、"
         "**すでに登録されている用語どうしの関係**を挙げてください。",
+    ]
+    if focus is not None:
+        parts += [
+            "",
+            f"## かならず「{focus.term}」の関係にすること",
+            f"挙げてよいのは、**`from` か `to` のどちらかが「{focus.term}」である関係だけ**です。"
+            "それ以外の組（他の用語どうしの関係）は、本文に書いてあっても挙げないでください。",
+            f"向きはどちらでも構いません（「{focus.term}」から見た関係でも、"
+            f"相手から「{focus.term}」を見た関係でも、読み取れたほうで書いてください）。",
+        ]
+    parts += [
         "",
         "## 対象の用語",
         "**この一覧にあるものだけ**を `from` と `to` に使ってください。"
@@ -992,6 +1034,27 @@ def _pair_key(a: str, b: str) -> tuple[str, str]:
     return tuple(sorted((a.casefold(), b.casefold())))  # type: ignore[return-value]
 
 
+def _resolve_side(
+    name: str, entries: list[Entry], *, origin: Entry | None = None, focus: Entry | None = None
+) -> Entry | None:
+    """関係の片側 1 件を解決する。**曖昧さの吸収は `relations.resolve` 任せ。**
+
+    足しているのは 1 つだけ —— **``focus`` の表記なら、それは ``focus``**。
+    用語ページから頼んだときは、どのエントリの話かが画面で決まっている
+    （揺れを吸収する側には分からない情報なので、ここで渡す）。
+
+    これが無いと、**別のエントリが同じ表記を別名に持っているだけで下書きが
+    丸ごと落ちた** —— 「寒月」のページから頼んだのに、「水島」が別名として
+    「寒月」を持っているせいで `resolve` が決めきれず、その語の関係が 1 本も
+    残らなかった（実際に踏んだ。同じ人物が 2 エントリに割れている辞書では普通に起きる）。
+    """
+    if focus is not None:
+        key = (name or "").strip().casefold()
+        if key and any(s.casefold() == key for s in focus.surfaces):
+            return focus
+    return relations.resolve(name, entries, origin=origin).entry
+
+
 def filter_relations(
     raw: list[dict],
     entries: list[Entry],
@@ -999,6 +1062,7 @@ def filter_relations(
     scope: list[Entry],
     limit: int,
     allow_reveal: bool = True,
+    focus: Entry | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """AI が挙げた関係をそのまま信じずに整える。
 
@@ -1008,6 +1072,7 @@ def filter_relations(
     - 自分自身への関係（図に描けない）
     - すでに書かれている組（重複した辺になる）
     - 同じ組の 2 度目（向きを変えて 2 行書いてくることがある）
+    - ``focus`` を指定したのに、その語が端に居ない組（頼んだものと違う）
 
     落とした理由を付けて返すのは、「なぜこの関係が出てこないのか」を UI で
     説明できるようにするため。
@@ -1041,19 +1106,22 @@ def filter_relations(
             "why": str(item.get("why") or "").strip()[:400],
         }
 
-        from_hit = relations.resolve(src, entries)
-        if from_hit.entry is None:
+        from_entry = _resolve_side(src, entries, focus=focus)
+        if from_entry is None:
             dropped.append({**record, "reason": f"「{src}」は登録された用語ではありません"})
             continue
-        to_hit = relations.resolve(rel.to, entries, origin=from_hit.entry)
-        if to_hit.entry is None:
+        to_entry = _resolve_side(rel.to, entries, origin=from_entry, focus=focus)
+        if to_entry is None:
             dropped.append({**record, "reason": f"「{rel.to}」は登録された用語ではありません"})
             continue
-        if from_hit.entry.ref == to_hit.entry.ref:
+        if from_entry.ref == to_entry.ref:
             dropped.append({**record, "reason": "自分自身への関係"})
             continue
+        if focus is not None and focus.ref not in (from_entry.ref, to_entry.ref):
+            dropped.append({**record, "reason": f"「{focus.term}」の関係ではありません"})
+            continue
 
-        key = _pair_key(from_hit.entry.ref, to_hit.entry.ref)
+        key = _pair_key(from_entry.ref, to_entry.ref)
         if key in known:
             dropped.append({**record, "reason": "すでに関係が書かれています"})
             continue
@@ -1067,12 +1135,12 @@ def filter_relations(
         seen.add(key)
         # 解決済みの ref で持たせる。保存時に名前を引き直さずに済み、
         # 同名がカテゴリ違いで併存していても取り違えない
-        record["from_ref"] = from_hit.entry.ref
-        record["from_term"] = from_hit.entry.term
-        record["from_url"] = entry_url(from_hit.entry)
-        record["to_ref"] = to_hit.entry.ref
-        record["to_term"] = to_hit.entry.term
-        record["to_url"] = entry_url(to_hit.entry)
+        record["from_ref"] = from_entry.ref
+        record["from_term"] = from_entry.term
+        record["from_url"] = entry_url(from_entry)
+        record["to_ref"] = to_entry.ref
+        record["to_term"] = to_entry.term
+        record["to_url"] = entry_url(to_entry)
         kept.append(record)
 
     return kept, dropped
@@ -1085,10 +1153,14 @@ async def draft_relations(
     scope: list[Entry] | None = None,
     limit: int = 20,
     spoiler: str = "full",
+    focus: Entry | None = None,
 ) -> dict:
     """登録済みの用語どうしの関係を下書きする。保存はしない。
 
     ``entries`` は辞書全体（参照解決に使う）、``scope`` は関係を探す対象。
+    ``focus`` を渡すと**その語が一方の端になる関係だけ**を探す（相手は
+    ``scope`` の中から選ばれる —— 関係は 2 語が揃って初めて書けるので、
+    「1 語だけ」を範囲にはできない）。
     """
     scope = scope if scope is not None else entries
     if len(scope) < 2:
@@ -1098,17 +1170,22 @@ async def draft_relations(
         # 各用語の初出の場面だけを渡す。全文を渡すと、後で明かされる関係
         # （正体・血縁）が図に出てしまう。**全員ぶんが入るように配分する** ——
         # 頭から切っていたころは中心人物が丸ごと落ちて、関係が出ようが無かった
-        text = first_scene_context(docs, scope)
+        text = first_scene_context(docs, scope, focus=focus)
     else:
         # **登録済みの語が一緒に出てくる場面**を探して渡す。関係が書いてあるのは
         # そこであって、文書の冒頭ではない。頭から一定量を渡していたころは、
         # 長編で関係の場面が一度も届かず「見つかりませんでした」で終わっていた
-        text = cooccurrence_context(docs, scope)
-        if not text.strip():
+        text = cooccurrence_context(docs, scope, focus=focus)
+        # **1 語ぶんのときは頭出しに落とさない。** その語が写っていない冒頭を
+        # 渡しても、頼んだ関係は絶対に出てこない（他人どうしの話が返るだけ）
+        if not text.strip() and focus is None:
             text, _, _ = combine_documents(docs)
 
     if not text.strip():
-        raise AIError("読める本文がありません")
+        raise AIError(
+            f"「{focus.term}」が本文に見つかりません" if focus is not None
+            else "読める本文がありません"
+        )
 
     prompt = build_relations_prompt(
         scope,
@@ -1116,6 +1193,7 @@ async def draft_relations(
         existing=existing_pairs(entries, scope),
         limit=limit,
         spoiler=spoiler,
+        focus=focus,
     )
     # **本数に応じた持ち時間で呼ぶ。** 既定の 180 秒だと 11 本あたりで必ず溢れる
     ask = partial(_generate, timeout=relations_timeout(limit))
@@ -1126,6 +1204,7 @@ async def draft_relations(
         scope=scope,
         limit=limit,
         allow_reveal=spoiler != "first",
+        focus=focus,
     )
     return {"relations": kept, "dropped": dropped}
 

@@ -499,6 +499,41 @@ class TestFilterRelations:
         ], limit=1)
         assert len(kept) == 1 and "上限" in dropped[0]["reason"]
 
+    def test_keeps_only_the_focused_entry(self, cast, add_entry):
+        """用語ページからの下書きは、その語が端に居る関係だけを通す。"""
+        giovanni, _ = cast
+        add_entry("ザネリ", category="登場人物")
+        kept, dropped = self._filter(
+            [
+                {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友"},
+                {"from": "カムパネルラ", "to": "ザネリ", "label": "級友"},
+            ],
+            focus=giovanni,
+        )
+        assert [k["to_term"] for k in kept] == ["カムパネルラ"]
+        assert "ジョバンニ" in dropped[0]["reason"]
+
+    def test_the_focused_name_beats_someone_elses_alias(self, add_entry):
+        """**焦点の表記は焦点**。他のエントリが同じ別名を持っていても落とさない。
+
+        「寒月」のページから頼んだのに、別エントリ「水島」が別名として「寒月」を
+        持っているせいで `resolve` が決めきれず、**その語の関係が 1 本も残らなかった**
+        （同じ人物が 2 エントリに割れている辞書では普通に起きる）。どのエントリの
+        話かは画面で決まっているので、そこだけはこちらが知っている。
+        """
+        kangetsu = add_entry("寒月", category="登場人物")
+        add_entry("水島", category="登場人物", aliases=["寒月"])
+        add_entry("主人", category="登場人物")
+        kept, dropped = self._filter(
+            [{"from": "寒月", "to": "主人", "label": "門下生", "back": "師"}],
+            focus=kangetsu,
+        )
+        assert [k["from_ref"] for k in kept] == [kangetsu.ref], dropped
+        # 焦点を渡さないときは今までどおり「決まりません」で落ちる（勝手に寄せない）
+        assert not self._filter(
+            [{"from": "寒月", "to": "主人", "label": "門下生"}]
+        )[0]
+
 
 class TestDraftRelations:
     @pytest.mark.anyio

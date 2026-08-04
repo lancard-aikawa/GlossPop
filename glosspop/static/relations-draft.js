@@ -89,10 +89,14 @@ function makeRow(rel) {
  * @param {string} [o.text]     読ませる本文。渡すとフォルダではなくこれを読む
  *   （URL を読んでいるときはフォルダに本文が無いので、これが唯一の経路）
  * @param {string} [o.source]   本文の出典（ファイル名や URL）
+ * @param {string} [o.ref]      **この語が一方の端になる関係だけ**を探す（用語ページから）。
+ *   相手は上の範囲から選ばれる —— 関係は 2 語が揃って初めて書けるので、
+ *   「1 語だけ」を範囲にはできない
+ * @param {string} [o.term]     ``ref`` の用語名。案内文に出すだけ
  * @returns {Promise<number>} 書き込んだ関係の本数
  */
 export async function openRelationsDialog({
-  category = "", scope = "", text = "", source = "",
+  category = "", scope = "", text = "", source = "", ref = "", term = "",
 } = {}) {
   build();
   refs.list.replaceChildren();
@@ -100,10 +104,16 @@ export async function openRelationsDialog({
   refs.stop.hidden = refs.toggle.hidden = refs.more.hidden = true;
   const where = category ? `「${category}」` : "辞書全体";
   const from = text ? (source ? `「${source}」` : "表示中の文書") : "開いているフォルダの本文";
-  refs.lead.textContent =
-    `${where}に登録済みの用語どうしの関係を、${from}から探します。` +
-    "用語は作りません（すでに登録されているものだけを結びます）。" +
-    "見つかった関係 1 本につき 20 秒ほどかかるので、急ぐときは本数を減らしてください。";
+  // **1 語ぶんのときは「何本ぶん探すか」の既定を下げる。** 1 語の関係が 20 本
+  // あることはまずなく、本数はそのまま待ち時間になる（1 本あたり 20 秒ほど）
+  refs.limit.value = ref ? "10" : "20";
+  refs.lead.textContent = ref
+    ? `「${term || ref}」の関係を、${from}から探します。` +
+      `相手は${where}に登録済みの用語から選ばれます（用語は作りません）。` +
+      "見つかった関係 1 本につき 20 秒ほどかかります。"
+    : `${where}に登録済みの用語どうしの関係を、${from}から探します。` +
+      "用語は作りません（すでに登録されているものだけを結びます）。" +
+      "見つかった関係 1 本につき 20 秒ほどかかるので、急ぐときは本数を減らしてください。";
   // 既定は初出の場面だけ。相関図は本文より先を一望させるので、伏せる側に倒す
   const remembered = await defaultSpoiler();
   refs.spoiler.value = remembered === "full" ? "full" : "first";
@@ -152,7 +162,7 @@ export async function openRelationsDialog({
       const res = await api("/api/ai/relations", {
         method: "POST",
         body: {
-          category, scope, text, source,
+          category, scope, text, source, ref,
           spoiler: refs.spoiler.value,
           limit: Number(refs.limit.value),
         },
@@ -164,7 +174,9 @@ export async function openRelationsDialog({
         // 初出モードでは各用語の初出の場面しか読ませないので、そもそも 2 人が
         // 同じ場面に居合わせないことが多い。行き止まりに見せない
         refs.lead.textContent =
-          "本文から読み取れる新しい関係は見つかりませんでした。" +
+          (ref
+            ? `「${term || ref}」について、本文から読み取れる新しい関係は見つかりませんでした。`
+            : "本文から読み取れる新しい関係は見つかりませんでした。") +
           (res.spoiler === "first"
             ? "いまは各用語の初出の場面だけを読んでいます。「全文を読む」に切り替えると見つかることがあります。"
             : "");

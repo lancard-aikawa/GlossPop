@@ -4,6 +4,10 @@
 // すでにあるうえ、`rank`（上下）で層が決まるので、決定的に置けば足りる。
 // 乱数も収束待ちも無いぶん、同じ辞書なら毎回同じ絵になる。
 //
+// 段の**中**の並びだけは、隣接ノードの平均位置へ寄せる緩和を決まった回数まわして
+// 選ぶ（`orderRows`）。回数で必ず止め、いちばん読みやすかった並びを `badness` で
+// 選ぶだけなので、収束を待つ力学モデルとは別物（同じ辞書なら毎回同じ絵になる）。
+//
 // **入れ物は外から渡される**（`mount()`）。`/graph` を直接開いたときは
 // そのページの器に、ビューアの上に重ねるときは覆いの器に、同じものを描く。
 import { api, el, paintEntryCount, RANK_OPTIONS, setStatus } from "./base.js";
@@ -32,8 +36,18 @@ const TEMPLATE = `
   <span class="status" id="status"></span>
 </div>
 <p class="notice" id="notes" hidden></p>
-<div class="graph-canvas" id="canvas">
-  <p class="empty">読み込み中…</p>
+<!-- 拡大縮小のボタンは**図の上に重ねる**。ツールバーへ足すと、狭い画面で
+     すでに折り返している行がもう 1 段増える -->
+<div class="graph-stage">
+  <div class="graph-canvas" id="canvas" tabindex="0"
+       aria-label="相関図。ドラッグで動かし、ホイールで拡大縮小します">
+    <p class="empty">読み込み中…</p>
+  </div>
+  <div class="graph-zoom" id="zoom" hidden>
+    <button type="button" id="zoomOut" title="縮小 (−)" aria-label="縮小">−</button>
+    <button type="button" id="zoomFit" title="全体を出す (0)">全体</button>
+    <button type="button" id="zoomIn" title="拡大 (＋)" aria-label="拡大">＋</button>
+  </div>
 </div>
 <p class="hint" id="legend"></p>
 
@@ -74,7 +88,7 @@ const TEMPLATE = `
 </dialog>
 `;
 
-let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck;
+let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
 
 //: 2 つの ref をつないで組の鍵にするための区切り。カテゴリ名も slug も
 //: "<" ">" を弾いているので、ref の中身と衝突しない
@@ -90,6 +104,19 @@ const NODE_MAX_W = 220;
 const GAP_X = 34;
 const GAP_Y = 110;
 const PAD = 40;
+
+//: 関係の無い語をまとめる帯。段の外なので上下の意味を持たない
+const LONELY_GAP = 56;
+const LONELY_LINE_GAP = 18;
+
+//: 段の中の並べ替えを何回まわすか。**回数で必ず止める**（収束は待たない）
+const RELAX_PASSES = 12;
+
+//: 読みにくさの重み。効くのは 交差 > 箱の貫通 > 線の長さ の順。
+//: 追えなくなる原因は交差がいちばん大きく、長さは同点のときの決め手にしか使わない
+const W_CROSS = 24;
+const W_THROUGH = 30;
+const W_LENGTH = 0.02;
 
 function svg(tag, attrs = {}, children = []) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -159,28 +186,178 @@ function levelsOf(nodes, edges) {
   return new Map(nodes.map((n) => [n.ref, level.get(find(n.ref)) || 0]));
 }
 
-/** 隣接ノードの平均位置で並べ替える（線の交差をひととおり減らす）。 */
-function orderRow(row, placed, neighbors) {
+/**
+ * 関係が 1 本も書かれていない語を段から外す。
+ *
+ * 段に混ぜると、**繋がっている語どうしを横へ押し広げるだけ**になり、そのぶん
+ * 線が図の端から端まで飛ぶ。18 語のうち 6 語が孤立していた実例では、いちばん
+ * 多く繋がっている語が最上段の右端に追いやられて図が読めなくなっていた。
+ * 消しはしない（その文書に出てくる語ではある）ので、下に帯で並べる。
+ */
+function splitLonely(nodes, edges) {
+  const linked = new Set();
+  for (const e of edges) {
+    linked.add(e.from);
+    linked.add(e.to);
+  }
+  return {
+    linked: nodes.filter((n) => linked.has(n.ref)),
+    lonely: nodes.filter((n) => !linked.has(n.ref)),
+  };
+}
+
+/** 線分どうしが交わるか。端点を共有するものは呼ぶ側で除く。 */
+function crosses(p1, p2, p3, p4) {
+  const side = (a, b, c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const d1 = side(p3, p4, p1);
+  const d2 = side(p3, p4, p2);
+  const d3 = side(p1, p2, p3);
+  const d4 = side(p1, p2, p4);
+  return d1 > 0 !== d2 > 0 && d3 > 0 !== d4 > 0;
+}
+
+/** 線分が箱を通り抜けるか。両端のノードは呼ぶ側で除く（端点は箱の外にある前提）。 */
+function throughBox(a, b, box) {
+  const l = box.x - box.w / 2;
+  const r = box.x + box.w / 2;
+  const t = box.y - box.h / 2;
+  const u = box.y + box.h / 2;
+  const corners = [{ x: l, y: t }, { x: r, y: t }, { x: r, y: u }, { x: l, y: u }];
+  for (let i = 0; i < 4; i++) {
+    if (crosses(a, b, corners[i], corners[(i + 1) % 4])) return true;
+  }
+  return false;
+}
+
+/**
+ * 並びの読みにくさ。小さいほうを採る。
+ *
+ * 中心から中心への直線で数える（描画は弧になることがあるが、弧にするのは
+ * 同じ段のときだけで、そのときも「間の箱をまたぐほど遠い」ことは変わらない）。
+ */
+function badness(pos, edges) {
+  const segs = [];
+  for (const e of edges) {
+    const a = pos.get(e.from);
+    const b = pos.get(e.to);
+    if (a && b) segs.push({ e, a, b });
+  }
+  let cross = 0;
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      const x = segs[i];
+      const y = segs[j];
+      // 端を共有する 2 本は交わって見えない（同じノードから出ているだけ）
+      if (x.e.from === y.e.from || x.e.from === y.e.to
+        || x.e.to === y.e.from || x.e.to === y.e.to) continue;
+      if (crosses(x.a, x.b, y.a, y.b)) cross++;
+    }
+  }
+  let through = 0;
+  let length = 0;
+  for (const s of segs) {
+    length += Math.hypot(s.b.x - s.a.x, s.b.y - s.a.y);
+    for (const [ref, box] of pos) {
+      if (ref === s.e.from || ref === s.e.to) continue;
+      if (throughBox(s.a, s.b, box)) through++;
+    }
+  }
+  return cross * W_CROSS + through * W_THROUGH + length * W_LENGTH;
+}
+
+/**
+ * 段の並びから座標を作る。**行は中央で揃える。**
+ *
+ * 左端で揃えると、語数の少ない段が左に寄ったまま残り、そこへ繋がる線が全部
+ * 斜めに走る（孤立した語を外したあとは段ごとの語数の差が大きくなるので、
+ * ここを直さないと外した効きが半分になる）。
+ */
+function placeRows(rows, byRef) {
+  const widths = rows.map((row) => row.map((ref) => nodeWidth(byRef.get(ref).term)));
+  const spans = widths.map(
+    (ws) => ws.reduce((a, b) => a + b, 0) + GAP_X * Math.max(0, ws.length - 1)
+  );
+  const span = Math.max(0, ...spans);
+  const width = span + PAD * 2;
+  const pos = new Map();
+  rows.forEach((row, r) => {
+    let x = PAD + (span - spans[r]) / 2;
+    row.forEach((ref, i) => {
+      const w = widths[r][i];
+      pos.set(ref, { x: x + w / 2, y: PAD + NODE_H / 2 + r * GAP_Y, w, h: NODE_H });
+      x += w + GAP_X;
+    });
+  });
+  return { pos, width, height: PAD * 2 + NODE_H + (rows.length - 1) * GAP_Y };
+}
+
+/** 隣接ノードの平均位置へ寄せた並び。同点は今の並びを保つ（結果が揺れないため）。 */
+function relaxRow(row, pos, neighbors) {
   return row
     .map((ref, i) => {
       const near = (neighbors.get(ref) || [])
-        .map((other) => placed.get(other))
+        .map((other) => pos.get(other)?.x)
         .filter((x) => x !== undefined);
-      const key = near.length ? near.reduce((a, b) => a + b, 0) / near.length : i;
-      return { ref, key, i };
+      const here = pos.get(ref)?.x ?? i;
+      const key = near.length ? near.reduce((a, b) => a + b, 0) / near.length : here;
+      return { ref, key, here };
     })
-    .sort((a, b) => a.key - b.key || a.i - b.i)
+    .sort((a, b) => a.key - b.key || a.here - b.here)
     .map((x) => x.ref);
 }
 
+/**
+ * 繋がっているものを隣どうしにした初期の並び（ref → 通し番号）。
+ *
+ * **最初の段には「前の段」が無い。** 平均位置へ寄せる緩和だけでは、最初の段は
+ * 入力順のまま残り、いちばん多く繋がっている語がたまたま端に居るとそこから
+ * 全部の線が伸びる（実例がまさにそれだった）。多く繋がっているものから
+ * 幅優先でたどって、componentごとにまとめた並びを緩和の出発点にする。
+ */
+function seedOrder(nodes, edges) {
+  const adj = new Map(nodes.map((n) => [n.ref, []]));
+  for (const e of edges) {
+    adj.get(e.from)?.push(e.to);
+    adj.get(e.to)?.push(e.from);
+  }
+  const degree = (ref) => (adj.get(ref) || []).length;
+  // 同点は入力順（サーバが返した順）で決める。乱数も時刻も混ぜない
+  const index = new Map(nodes.map((n, i) => [n.ref, i]));
+  const by = (a, b) => degree(b) - degree(a) || index.get(a) - index.get(b);
+  const rank = new Map();
+  const seen = new Set();
+  for (const root of [...adj.keys()].sort(by)) {
+    if (seen.has(root)) continue;
+    seen.add(root);
+    const queue = [root];
+    while (queue.length) {
+      const ref = queue.shift();
+      rank.set(ref, rank.size);
+      for (const next of [...(adj.get(ref) || [])].sort(by)) {
+        if (seen.has(next)) continue;
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return rank;
+}
+
 /** 層が 1 枚しかないときの円配置。横一列に並べると辺が全部重なる。 */
-function circleLayout(nodes) {
+function circleLayout(nodes, edges) {
   const n = nodes.length;
-  const radius = Math.max(140, (n * (NODE_MIN_W + GAP_X)) / (2 * Math.PI));
-  const cx = radius + NODE_MAX_W / 2 + PAD;
-  const cy = radius + NODE_H + PAD;
+  // 半径は**箱が円周に並ぶのに要る長さ**から決める。決め打ちの余白を足すと、
+  // 数語のときに図の何倍もの空白が残る（`NODE_MAX_W` を当て込んでいた）
+  const widths = nodes.map((node) => nodeWidth(node.term));
+  const need = widths.reduce((a, w) => a + w + GAP_X, 0) / (2 * Math.PI);
+  const radius = Math.max(96, need);
+  const cx = radius + Math.max(...widths) / 2 + PAD;
+  const cy = radius + NODE_H / 2 + PAD;
   const pos = new Map();
-  nodes.forEach((node, i) => {
+  // 円周上でも、繋がっているものを隣どうしに置く（弦が短いほど読める）
+  const rank = seedOrder(nodes, edges);
+  const ring = [...nodes].sort((a, b) => (rank.get(a.ref) ?? 0) - (rank.get(b.ref) ?? 0));
+  ring.forEach((node, i) => {
     // 上から時計回り。1 つだけのときは中央に置く
     const angle = n === 1 ? 0 : (i / n) * 2 * Math.PI - Math.PI / 2;
     pos.set(node.ref, {
@@ -193,39 +370,106 @@ function circleLayout(nodes) {
   return { pos, width: cx * 2, height: cy * 2 };
 }
 
-function layeredLayout(nodes, edges, level) {
-  const rows = new Map();
-  for (const node of nodes) {
-    const l = level.get(node.ref) || 0;
-    if (!rows.has(l)) rows.set(l, []);
-    rows.get(l).push(node.ref);
+/**
+ * 段の中の並びを決める。
+ *
+ * 隣接ノードの平均位置へ寄せる緩和を `RELAX_PASSES` 回まわし、**その途中で
+ * いちばん読みやすかったものを採る**（`badness`）。回数で必ず止めるので、
+ * 上下に矛盾があっても終わらなくならない。乱数も時刻も使わないので、
+ * 同じ辞書なら毎回同じ絵になる。
+ */
+function orderRows(base, byRef, edges, neighbors, rank) {
+  const seeds = [
+    base.map((row) => [...row]),
+    base.map((row) => [...row].sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0))),
+  ];
+  let best = null;
+  for (const seed of seeds) {
+    let rows = seed;
+    for (let pass = 0; pass <= RELAX_PASSES; pass++) {
+      const placed = placeRows(rows, byRef);
+      const score = badness(placed.pos, edges);
+      if (!best || score < best.score) best = { ...placed, score };
+      const next = rows.map((row) => relaxRow(row, placed.pos, neighbors));
+      if (next.every((row, i) => row.join(SEP) === rows[i].join(SEP))) break;
+      rows = next;
+    }
   }
+  return best;
+}
+
+function layeredLayout(nodes, edges, level) {
+  const byRef = new Map(nodes.map((n) => [n.ref, n]));
   const neighbors = new Map(nodes.map((n) => [n.ref, []]));
   for (const e of edges) {
     neighbors.get(e.from)?.push(e.to);
     neighbors.get(e.to)?.push(e.from);
   }
-  const byRef = new Map(nodes.map((n) => [n.ref, n]));
+  const buckets = new Map();
+  for (const node of nodes) {
+    const l = level.get(node.ref) || 0;
+    if (!buckets.has(l)) buckets.set(l, []);
+    buckets.get(l).push(node.ref);
+  }
+  const base = [...buckets.keys()].sort((a, b) => a - b).map((l) => buckets.get(l));
+  return orderRows(base, byRef, edges, neighbors, seedOrder(nodes, edges));
+}
 
-  const pos = new Map();
-  const placed = new Map();     // ref -> x (直前の層の位置を次の層の並べ替えに使う)
-  let width = 0;
-  const sorted = [...rows.keys()].sort((a, b) => a - b);
-  sorted.forEach((l, rowIndex) => {
-    const row = orderRow(rows.get(l), placed, neighbors);
-    const widths = row.map((ref) => nodeWidth(byRef.get(ref).term));
-    const total = widths.reduce((a, b) => a + b, 0) + GAP_X * (row.length - 1);
-    let x = PAD;
-    row.forEach((ref, i) => {
-      const w = widths[i];
-      const cx = x + w / 2;
-      pos.set(ref, { x: cx, y: PAD + NODE_H / 2 + rowIndex * GAP_Y, w, h: NODE_H });
-      placed.set(ref, cx);
-      x += w + GAP_X;
-    });
-    width = Math.max(width, total + PAD * 2);
+/**
+ * 関係の書かれていない語を図の下に帯で並べる。
+ *
+ * **段の外**なので上下の意味は持たない（`levelsOf` の段と混ぜない）。図の幅で
+ * 折り返す —— 一列に並べると、外したはずの語がまた図を横に伸ばす。
+ * 区切り線と見出しを描くのは呼ぶ側（`draw`）。
+ */
+function appendLonely(layout, lonely) {
+  if (!lonely.length) return layout;
+  const widths = lonely.map((n) => nodeWidth(n.term));
+  const limit = Math.max(layout.width, 640) - PAD * 2;
+  const lines = [];
+  let line = null;
+  let used = 0;
+  lonely.forEach((node, i) => {
+    const w = widths[i];
+    if (!line || used + GAP_X + w > limit) {
+      line = [];
+      lines.push(line);
+      used = 0;
+    }
+    line.push({ node, w });
+    used += (line.length > 1 ? GAP_X : 0) + w;
   });
-  return { pos, width, height: PAD * 2 + NODE_H + (sorted.length - 1) * GAP_Y };
+
+  const spans = lines.map(
+    (l) => l.reduce((a, b) => a + b.w, 0) + GAP_X * Math.max(0, l.length - 1)
+  );
+  const width = Math.max(layout.width, Math.max(...spans) + PAD * 2);
+  // 帯のほうが広いときは**段のほうも中央へ寄せる**。片方だけ中央だと、
+  // 図が左に寄ったまま下だけ真ん中、という揃っていない絵になる
+  const shift = (width - layout.width) / 2;
+  const pos = new Map(
+    [...layout.pos].map(([ref, p]) => [ref, shift ? { ...p, x: p.x + shift } : p])
+  );
+  const top = (layout.height ? layout.height - PAD + LONELY_GAP : PAD) + NODE_H / 2;
+  lines.forEach((l, r) => {
+    let x = (width - spans[r]) / 2;
+    for (const { node, w } of l) {
+      pos.set(node.ref, {
+        x: x + w / 2,
+        y: top + r * (NODE_H + LONELY_LINE_GAP),
+        w,
+        h: NODE_H,
+      });
+      x += w + GAP_X;
+    }
+  });
+  return {
+    pos,
+    width,
+    height: top + (lines.length - 1) * (NODE_H + LONELY_LINE_GAP) + NODE_H / 2 + PAD,
+    // 区切り線と見出しの高さ。図の本体と帯の境目
+    lonelyTop: top - NODE_H / 2 - 22,
+  };
 }
 
 /** 箱の中心から中心へ引いた線が、箱の縁と交わる点。 */
@@ -240,6 +484,247 @@ function edgePoint(from, to) {
     dy ? hh / Math.abs(dy) : Infinity
   );
   return { x: from.x + dx * scale, y: from.y + dy * scale };
+}
+
+// --------------------------------------------------------------------------- //
+// 拡大縮小と移動
+//
+// **動かすのは `viewBox`。** CSS の `transform` で拡大すると、線もラベルも画像を
+// 引き伸ばしたようににじむ（SVG の意味が無い）。`viewBox` なら文字は文字のまま
+// 描き直される。入れ物のほうは大きさを固定して、はみ出したぶんはスクロールでは
+// なく**動かして見る** —— 巨大な図をスクロールバーで追うのは、どこを見ているのか
+// 分からなくなる（元は入れ物ごと横に伸びていた）。
+// --------------------------------------------------------------------------- //
+
+//: 拡大率の上下限。下は「全体を出す」で足りるので、それより縮める必要は薄い
+const MIN_SCALE = 0.15;
+const MAX_SCALE = 4;
+
+/** いま描いてある svg と、その中身が収まる枠。「全体を出す」の基準 */
+let svgRoot = null;
+let contentBox = null;
+/** いま出している範囲（利用者座標）。null なら図が無い */
+let view = null;
+/** 入れ物の大きさが変わったときに追随するための番人。**開き直すたびに外す** */
+let viewWatch = null;
+/** 直前に見えていた入れ物の大きさ。変化のぶんだけ範囲を広げ縮めするのに使う */
+let viewport = { w: 0, h: 0 };
+/** 掴んで動かした直後のクリックを飲む（線を押して編集ダイアログが開くのを防ぐ） */
+let swallowClick = false;
+
+const viewScale = () => (view && canvas?.clientWidth ? canvas.clientWidth / view.w : 1);
+
+function applyView() {
+  if (!svgRoot || !view) return;
+  svgRoot.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+}
+
+/**
+ * 全体が入るところまで戻す。
+ *
+ * **拡大はしない**（`Math.min(…, 1)`）。1 語だけの図を入れ物いっぱいに引き伸ばすと、
+ * 箱だけが画面を覆って何も分からない絵になる。
+ */
+function fitView() {
+  if (!contentBox || !canvas) return;
+  const vw = canvas.clientWidth || contentBox.w;
+  const vh = canvas.clientHeight || contentBox.h;
+  const scale = Math.min(vw / contentBox.w, vh / contentBox.h, 1);
+  const w = vw / scale;
+  const h = vh / scale;
+  view = {
+    x: contentBox.x + contentBox.w / 2 - w / 2,
+    y: contentBox.y + contentBox.h / 2 - h / 2,
+    w,
+    h,
+  };
+  viewport = { w: canvas.clientWidth, h: canvas.clientHeight };
+  applyView();
+}
+
+/** ``client`` 座標の点を動かさずに拡大率を ``factor`` 倍する。 */
+function zoomAt(clientX, clientY, factor) {
+  if (!view || !canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const scale = rect.width / view.w;
+  const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * factor));
+  if (next === scale) return;
+  // 押さえた点の利用者座標。ここが動かないように左上を決め直す
+  const fx = (clientX - rect.left) / rect.width;
+  const fy = (clientY - rect.top) / rect.height;
+  const ux = view.x + fx * view.w;
+  const uy = view.y + fy * view.h;
+  view.w = rect.width / next;
+  view.h = rect.height / next;
+  view.x = ux - fx * view.w;
+  view.y = uy - fy * view.h;
+  applyView();
+}
+
+/** 入れ物の中心を軸に拡大縮小する（ボタンとキーボード用）。 */
+function zoomBy(factor) {
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
+}
+
+/** 画面上の px で動かす。 */
+function panBy(dx, dy) {
+  if (!view || !canvas?.clientWidth) return;
+  const scale = canvas.clientWidth / view.w;
+  view.x += dx / scale;
+  view.y += dy / scale;
+  applyView();
+}
+
+/**
+ * 見えていないものへ焦点が移ったら、そこまで動かす。
+ *
+ * **スクロールをやめたぶん、これが要る。** 入れ物が勝手に送ってくれなくなったので、
+ * Tab でノードや線をたどると**焦点だけが枠の外へ出て見失う**（キーボードで
+ * 図を歩けなくなる）。
+ */
+function bringIntoView(node) {
+  if (!view || !node) return;
+  let box;
+  try {
+    box = node.getBBox();
+  } catch {
+    return;                          // まだ描かれていない要素
+  }
+  const m = 24;
+  const before = { x: view.x, y: view.y };
+  if (box.x - m < view.x) view.x = box.x - m;
+  else if (box.x + box.width + m > view.x + view.w) {
+    view.x = box.x + box.width + m - view.w;
+  }
+  if (box.y - m < view.y) view.y = box.y - m;
+  else if (box.y + box.height + m > view.y + view.h) {
+    view.y = box.y + box.height + m - view.h;
+  }
+  if (view.x !== before.x || view.y !== before.y) applyView();
+}
+
+/**
+ * 入れ物と図に操作を仕掛ける。**`mount()` から 1 回だけ呼ぶ。**
+ *
+ * listener は入れ物そのものに付ける（中身は描き直しで入れ替わる）。
+ * `ResizeObserver` だけは DOM を捨てても残るので、開き直すたびに外している
+ * —— 覆いは何度でも開かれるので、ここを怠ると開いた回数だけ増える。
+ */
+function installViewControls() {
+  viewWatch?.disconnect();
+  viewWatch = null;
+
+  // ホイールは拡大縮小に使う。図は入れ物の中で完結していて、ここで送るものが
+  // 他に無い（ページ側は `preventDefault` で止める）
+  canvas.addEventListener("wheel", (ev) => {
+    if (!view) return;
+    ev.preventDefault();
+    const step = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY;
+    zoomAt(ev.clientX, ev.clientY, Math.exp(-step * 0.0016));
+  }, { passive: false });
+
+  let drag = null;
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || !view) return;
+    swallowClick = false;
+    drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, moved: false };
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    if (!drag || ev.pointerId !== drag.id) return;
+    const dx = ev.clientX - drag.x;
+    const dy = ev.clientY - drag.y;
+    // **少し動いたくらいでは掴んだことにしない。** 押しただけで動いた扱いにすると、
+    // 線やノードを押したつもりが「動かした」になってダイアログが開かない
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    if (!drag.moved) {
+      // **掴みは動き出してから捕まえる。** `pointerdown` で捕まえると、以後の
+      // ポインタ事象（互換の mouseup を含む）が入れ物へ付け替えられ、
+      // **中のノードや線を押しても click がそこへ届かない**（線を押しても
+      // 編集ダイアログが開かなくなった）
+      canvas.setPointerCapture(ev.pointerId);
+      canvas.classList.add("grabbing");
+    }
+    drag.moved = true;
+    swallowClick = true;
+    drag.x = ev.clientX;
+    drag.y = ev.clientY;
+    panBy(-dx, -dy);
+  });
+  const endDrag = (ev) => {
+    if (!drag || ev.pointerId !== drag.id) return;
+    if (drag.moved) canvas.releasePointerCapture?.(drag.id);
+    drag = null;
+    canvas.classList.remove("grabbing");
+  };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+  // 掴んで動かしたあとのクリックは飲む。**必ず戻す**ので、動かさなかった次の
+  // クリックまで飲み続けることはない
+  canvas.addEventListener("click", (ev) => {
+    if (!swallowClick) return;
+    swallowClick = false;
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, true);
+  // ノードは <a> なので、掴むと既定ではリンクを引きずってしまう
+  canvas.addEventListener("dragstart", (ev) => ev.preventDefault());
+
+  canvas.addEventListener("keydown", (ev) => {
+    if (!view || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const step = ev.shiftKey ? 120 : 40;
+    const moves = {
+      ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+      ArrowUp: [0, -step], ArrowDown: [0, step],
+    };
+    if (moves[ev.key]) {
+      ev.preventDefault();
+      panBy(...moves[ev.key]);
+    } else if (ev.key === "+" || ev.key === "=") {
+      ev.preventDefault();
+      zoomBy(1.25);
+    } else if (ev.key === "-") {
+      ev.preventDefault();
+      zoomBy(1 / 1.25);
+    } else if (ev.key === "0") {
+      ev.preventDefault();
+      fitView();
+    }
+  });
+  canvas.addEventListener("focusin", (ev) => {
+    const node = ev.target.closest?.(".rel-node, .rel-edge-group");
+    if (node) bringIntoView(node);
+  });
+
+  zoomBar.querySelector("#zoomIn").addEventListener("click", () => zoomBy(1.25));
+  zoomBar.querySelector("#zoomOut").addEventListener("click", () => zoomBy(1 / 1.25));
+  zoomBar.querySelector("#zoomFit").addEventListener("click", fitView);
+
+  if (typeof ResizeObserver === "undefined") return;
+  viewWatch = new ResizeObserver(() => {
+    const vw = canvas.clientWidth;
+    const vh = canvas.clientHeight;
+    if (!view || !vw || !vh) return;
+    // **入れ物の大きさが分からないうちに描いていたら**、ここで初めて全体に合わせる
+    // （覆いの中など、描く時点で 0 のことがある）
+    if (!viewport.w) {
+      fitView();
+      return;
+    }
+    // 幅が変わっただけで**見え方までは変えない**（拡大率と中心を保つ）
+    const scale = viewport.w / view.w;
+    const cx = view.x + view.w / 2;
+    const cy = view.y + view.h / 2;
+    view.w = vw / scale;
+    view.h = vh / scale;
+    view.x = cx - view.w / 2;
+    view.y = cy - view.h / 2;
+    viewport = { w: vw, h: vh };
+    applyView();
+  });
+  viewWatch.observe(canvas);
 }
 
 // --------------------------------------------------------------------------- //
@@ -258,9 +743,14 @@ function marker(id, className) {
   }, [svg("path", { d: "M0,0 L10,5 L0,10 z", class: className })]);
 }
 
-//: ラベルを線上のどこに置くか。1 つのノードに何本も集まると中点が同じ帯に並んで
-//: 文字が重なるので、辺ごとにずらす（実際に読めなくなった）
-const LABEL_SPOTS = [0.5, 0.34, 0.66, 0.42, 0.58];
+//: ラベルを線上のどこに置くか。**線の上ならどこでもよい**ので、先に置いたものと
+//: 重ならない候補を順に試す。中点に固定すると、1 つのノードに何本も集まったとき
+//: 文字が重なって読めない（通し番号でずらすだけでは足りなかった）
+const LABEL_TS = [0.5, 0.4, 0.6, 0.3, 0.7, 0.22, 0.78];
+//: **弧が膨らんだ側から先に試す。** 上下どちらも同じ順で試すと、下へ逃がした弧の
+//: ラベルだけが段をまたぐ線の帯（＝逃がしたかった側）へ戻ってしまう
+const LABEL_DYS_UP = [-8, -22, 6, -36, 20, -50, 34, -64, 48];
+const LABEL_DYS_DOWN = [10, 24, -8, 38, -22, 52, 34, 66, -36];
 
 /** 同じ段のノードを結ぶ弧の高さ。**描画と余白の計算で同じ値を使う。** */
 function sameRowLift(from, to, parallel) {
@@ -268,12 +758,17 @@ function sameRowLift(from, to, parallel) {
 }
 
 /**
- * @param {number} index    全体での通し番号。ラベルを線上でずらすのに使う
+ * 辺の形。**線・ラベル・枠の計算はすべてここから採る** —— 別々に組み立てると、
+ * ラベルだけ線から外れたり、枠が弧を切ったりする（実際にどちらも踏んだ）。
+ *
  * @param {number} parallel 同じ 2 ノードを結ぶ何本目か。0 なら 1 本目。
  *   同じ組を複数の関係が結ぶことがある（「親友」と「実は〜」など）。ずらさないと
  *   線もラベルも完全に重なって、2 本あることすら分からなくなる
+ * @param {number} floorY 最下段の y。**そこの弧だけは下へ逃がす。** 上へ出すと、
+ *   段をまたぐ線が通っているまさにその帯へ重なる（「対等」の多い一群が最下段に
+ *   来るので、実例ではここに 8 本ぶんの線とラベルが折り重なっていた）
  */
-function drawEdge(edge, pos, index = 0, parallel = 0) {
+function edgeGeometry(edge, pos, parallel = 0, floorY = null) {
   const a = pos.get(edge.from);
   const b = pos.get(edge.to);
   if (!a || !b) return null;
@@ -281,31 +776,130 @@ function drawEdge(edge, pos, index = 0, parallel = 0) {
   const end = edgePoint(b, a);
 
   // 同じ層のノード同士は、間にある箱を避けて弧で結ぶ
-  const sameRow = Math.abs(a.y - b.y) < 1;
-  const t = LABEL_SPOTS[index % LABEL_SPOTS.length];
-  const mid = {
-    x: start.x + (end.x - start.x) * t,
-    y: start.y + (end.y - start.y) * t,
-  };
-  let d = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
-  if (sameRow) {
+  let ctrl = null;
+  let down = false;
+  if (Math.abs(a.y - b.y) < 1) {
     const lift = sameRowLift(start, end, parallel);
-    mid.x = (start.x + end.x) / 2;
-    mid.y = start.y - lift * 0.78;
-    d = `M ${start.x} ${start.y} Q ${mid.x} ${start.y - lift} ${end.x} ${end.y}`;
+    down = floorY !== null && Math.abs(a.y - floorY) < 1;
+    ctrl = { x: (start.x + end.x) / 2, y: start.y + (down ? lift : -lift) };
   } else if (parallel) {
     // 段をまたぐ 2 本目以降は、線に直交する向きへ膨らませる
     const dx = end.x - start.x;
     const dy = end.y - start.y;
     const len = Math.hypot(dx, dy) || 1;
     const off = parallel * 26;
-    const cx = (start.x + end.x) / 2 - (dy / len) * off;
-    const cy = (start.y + end.y) / 2 + (dx / len) * off;
-    mid.x = (start.x + end.x) / 2 - (dy / len) * off * 0.75;
-    mid.y = (start.y + end.y) / 2 + (dx / len) * off * 0.75;
-    d = `M ${start.x} ${start.y} Q ${cx} ${cy} ${end.x} ${end.y}`;
+    ctrl = {
+      x: (start.x + end.x) / 2 - (dy / len) * off,
+      y: (start.y + end.y) / 2 + (dx / len) * off,
+    };
   }
+  const at = (t) => (ctrl
+    ? {
+        x: (1 - t) ** 2 * start.x + 2 * (1 - t) * t * ctrl.x + t * t * end.x,
+        y: (1 - t) ** 2 * start.y + 2 * (1 - t) * t * ctrl.y + t * t * end.y,
+      }
+    : { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t });
+  return {
+    edge,
+    start,
+    end,
+    ctrl,
+    down,
+    at,
+    d: ctrl
+      ? `M ${start.x} ${start.y} Q ${ctrl.x} ${ctrl.y} ${end.x} ${end.y}`
+      : `M ${start.x} ${start.y} L ${end.x} ${end.y}`,
+    words: edge.mutual && edge.back && edge.back !== edge.label
+      ? `${edge.label} ⇄ ${edge.back}`
+      : edge.label,
+    length: Math.hypot(end.x - start.x, end.y - start.y),
+  };
+}
 
+/** 11px の文字列の幅。全角は約 11.5、半角は約 6.2 で見積もる。 */
+function textWidth(text) {
+  let w = 0;
+  for (const ch of text) w += ch.codePointAt(0) > 0x2e7f ? 11.5 : 6.2;
+  return w;
+}
+
+/** ラベルが占める箱（`x` `y` は中央寄せしたときの基準点）。 */
+function labelBox(text, x, y) {
+  const w = textWidth(text);
+  return { x: x - w / 2 - 2, y: y - 10, w: w + 4, h: 13 };
+}
+
+const boxesOverlap = (a, b) =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+/**
+ * ラベルを置く場所を決める。
+ *
+ * ノードの箱と、先に置いたラベルを避ける。**短い線から先に選ばせる** ——
+ * 動かせる幅が狭いのはそちらで、長い線はどこへでも逃がせる。
+ * どこも空いていなければ、いちばん重なりの少ないところに置く（消しはしない。
+ * 黙って欠けたラベルは「関係に一言が書かれていない」と見分けが付かない）。
+ */
+function placeLabels(geoms, pos) {
+  const taken = [...pos.values()].map((p) => ({
+    x: p.x - p.w / 2, y: p.y - p.h / 2, w: p.w, h: p.h,
+  }));
+  const spots = new Map();
+  const order = geoms
+    .map((g, i) => ({ g, i }))
+    .filter((x) => x.g && x.g.words)
+    .sort((a, b) => a.g.length - b.g.length || a.i - b.i);
+  for (const { g, i } of order) {
+    let spot = null;
+    for (const dy of g.down ? LABEL_DYS_DOWN : LABEL_DYS_UP) {
+      for (const t of LABEL_TS) {
+        const p = g.at(t);
+        const box = labelBox(g.words, p.x, p.y + dy);
+        let clash = 0;
+        for (const b of taken) if (boxesOverlap(box, b)) clash++;
+        if (!spot || clash < spot.clash) spot = { x: p.x, y: p.y + dy, box, clash };
+        if (!clash) break;
+      }
+      if (spot && !spot.clash) break;
+    }
+    taken.push(spot.box);
+    spots.set(i, spot);
+  }
+  return spots;
+}
+
+/**
+ * 押せる帯の大きさを、部品の外形として持たせるための（塗らない）四角。
+ *
+ * **外形に線の太さは入らない。** 真横・真縦の辺はそれだけで幅か高さが 0 になり、
+ * 押せるのに「大きさの無い部品」として扱われる（焦点の枠も、外形で見る道具も
+ * 何も見つけられない）。押せる範囲そのものを外形にしておく。
+ */
+function hitBand(geom) {
+  const pts = [];
+  for (let i = 0; i <= 16; i++) pts.push(geom.at(i / 16));
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const pad = 7;                      // `.rel-edge-hit` の太さの半分
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return svg("rect", {
+    class: "rel-edge-band",
+    x: x - pad,
+    y: y - pad,
+    width: Math.max(...xs) - x + pad * 2,
+    height: Math.max(...ys) - y + pad * 2,
+  });
+}
+
+/**
+ * 1 本の辺。線と一言を**別々に返す** —— 一言は線より上の層へまとめて置く。
+ *
+ * 同じ層に混ぜると、**あとに描いた辺の線が前の辺の一言を横切る**（下になった
+ * 文字は縁取りごと消えて読めない）。線は線どうし、文字は文字どうしで重ねる。
+ */
+function drawEdge(geom, spot) {
+  const { edge, d, words } = geom;
   const cls = ["rel-edge", edge.missing ? "missing" : "", edge.reveal ? "reveal" : ""]
     .filter(Boolean)
     .join(" ");
@@ -318,33 +912,48 @@ function drawEdge(edge, pos, index = 0, parallel = 0) {
   });
   path.append(svg("title", { text: `${edgeTitle(edge)}（押すと直せます）` }));
 
-  const words = edge.mutual && edge.back && edge.back !== edge.label
-    ? `${edge.label} ⇄ ${edge.back}`
-    : edge.label;
-  const text = words
-    ? svg("text", {
-        x: mid.x,
-        y: mid.y - 6,
-        class: "rel-edge-label",
-        "text-anchor": "middle",
-        text: words,
-      })
-    : null;
-
   // **線そのものは細すぎて押せない。** 透明な太い線を下に重ねて当たり判定にする
   const group = svg("g", {
     class: "rel-edge-group",
     tabindex: "0",
     role: "button",
     "aria-label": `関係を直す: ${edgeTitle(edge)}`,
-  }, [svg("path", { d, class: "rel-edge-hit" }), path, text]);
-  group.addEventListener("click", () => openEdgeEditor(edge));
+  }, [hitBand(geom), svg("path", { d, class: "rel-edge-hit" }), path]);
+
+  const text = words && spot
+    ? svg("text", {
+        x: spot.x,
+        y: spot.y,
+        class: "rel-edge-label",
+        "text-anchor": "middle",
+        text: words,
+      })
+    : null;
+  // **一言に `<title>` は入れない。** `<text>` の中に置くと、描かれないまま
+  // 文字の内容として数えられ、「一言」を読む側（テストも含む）が別物を読む
+
+  // **線と一言は一緒に光らせる。** 線だけ色が変わっても、どの一言の関係なのかが
+  // 分からない（一言は空いているところへ逃がすので、線の真上とは限らない）。
+  // 層が分かれていて CSS の子孫セレクタが届かないので、両方に印を付けて回る
+  const light = (on) => {
+    group.classList.toggle("hot", on);
+    text?.classList.toggle("hot", on);
+  };
+  const open = () => openEdgeEditor(edge);
+  for (const el of [group, text]) {
+    if (!el) continue;
+    el.addEventListener("pointerenter", () => light(true));
+    el.addEventListener("pointerleave", () => light(false));
+    el.addEventListener("click", open);
+  }
+  group.addEventListener("focus", () => light(true));
+  group.addEventListener("blur", () => light(false));
   group.addEventListener("keydown", (ev) => {
     if (ev.key !== "Enter" && ev.key !== " ") return;
     ev.preventDefault();
-    openEdgeEditor(edge);
+    open();
   });
-  return group;
+  return { group, text };
 }
 
 function edgeTitle(edge) {
@@ -390,22 +999,74 @@ function drawNode(node, pos) {
   return group;
 }
 
+/**
+ * 関係の無い語をまとめた帯の区切り（線と見出し）。**段ではない**と分かるように。
+ *
+ * 上に段があるときだけ描く。全部が孤立しているときは区切るものが無く、
+ * 「下は段の外」という説明が指すものも無い。
+ */
+function lonelyRule(top, width, count) {
+  const caption = `関係が書かれていない語（${count}）`;
+  return {
+    node: svg("g", { class: "rel-lonely-rule" }, [
+      svg("line", { x1: PAD, y1: top, x2: Math.max(width - PAD, PAD + 40), y2: top }),
+      svg("text", { x: PAD, y: top - 6, class: "rel-lonely-caption", text: caption }),
+    ]),
+    // 見出しは左端から伸びるので、幅の計算に入れないと右で切れる（実際に切れた）
+    box: { x: PAD, y: top - 16, w: textWidth(caption), h: 13 },
+  };
+}
+
+/** 描いたものが収まる枠。**中身から決める**（段の高さだけで作ると弧とラベルが切れる） */
+function boundsOf(pos, geoms, spots, width, height, extras = []) {
+  let minX = 0;
+  let minY = 0;
+  let maxX = width;
+  let maxY = height;
+  const grow = (x, y) => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  };
+  for (const p of pos.values()) {
+    grow(p.x - p.w / 2, p.y - p.h / 2);
+    grow(p.x + p.w / 2, p.y + p.h / 2);
+  }
+  geoms.forEach((g, i) => {
+    if (!g) return;
+    // 制御点は曲線より外側にある。少し広く取るぶんには害が無い
+    if (g.ctrl) grow(g.ctrl.x, g.ctrl.y);
+    const spot = spots.get(i);
+    if (!spot) return;
+    grow(spot.box.x, spot.box.y);
+    grow(spot.box.x + spot.box.w, spot.box.y + spot.box.h);
+  });
+  for (const box of extras) {
+    grow(box.x, box.y);
+    grow(box.x + box.w, box.y + box.h);
+  }
+  return { minX: minX - 8, minY: minY - 8, maxX: maxX + 8, maxY: maxY + 8 };
+}
+
+/** 描く。戻り値は画面に添える数（帯にまわした語の数）。 */
 function draw(graph) {
   const { nodes, edges } = graph;
   termByRef = new Map(nodes.map((n) => [n.ref, n.term]));
+  svgRoot = null;
+  contentBox = null;
+  view = null;
+  viewport = { w: 0, h: 0 };
+  zoomBar.hidden = true;
+  canvas.classList.add("is-empty");
   if (!nodes.length) {
     canvas.replaceChildren(
       el("p", { class: "empty", text: "このカテゴリには関係が書かれたエントリがありません。" })
     );
-    return;
+    return { lonely: 0 };
   }
-  const level = levelsOf(nodes, edges);
-  const layered = Math.max(...level.values()) > 0;
-  const { pos, width, height } = layered
-    ? layeredLayout(nodes, edges, level)
-    : circleLayout(nodes);
 
-  // 同じ 2 ノードを結ぶ辺が何本目か。弧の高さもラベル位置もこれで決まる
+  // 同じ 2 ノードを結ぶ辺が何本目か。弧の高さはこれで決まる
   const pairs = new Map();
   const parallels = edges.map((edge) => {
     const key = [edge.from, edge.to].sort().join(SEP);
@@ -414,31 +1075,70 @@ function draw(graph) {
     return n;
   });
 
-  // **同じ段を結ぶ弧は最上段より上へ出る。** そのぶんを viewBox の上に足さないと、
-  // いちばん上の行の関係ラベルが枠外で切れる（実際にそうなった）
-  let overhead = 0;
-  edges.forEach((edge, i) => {
-    const a = pos.get(edge.from);
-    const b = pos.get(edge.to);
-    if (!a || !b || Math.abs(a.y - b.y) >= 1) return;
-    // 弧の頂点とラベルの高さが、箱の上端からどれだけ上に出るか
-    overhead = Math.max(overhead, sameRowLift(a, b, parallels[i]) + 16 - (a.y - a.h / 2));
-  });
-  overhead = Math.ceil(Math.max(0, overhead));
+  // 関係の無い語は段に混ぜない（混ぜると繋がっている語どうしを押し広げるだけ）
+  const { linked, lonely } = splitLonely(nodes, edges);
+  let layout = { pos: new Map(), width: 0, height: 0 };
+  let floorY = null;
+  if (linked.length) {
+    const level = levelsOf(linked, edges);
+    layout = Math.max(0, ...level.values()) > 0
+      ? layeredLayout(linked, edges, level)
+      : circleLayout(linked, edges);
+    floorY = Math.max(...[...layout.pos.values()].map((p) => p.y));
+    // 最下段の弧は下へ出る。**帯を足す前に**そのぶんの高さを確保する
+    // （あとから足すと、区切り線の下に置いた語の上に弧が乗る）
+    let room = 0;
+    edges.forEach((edge, i) => {
+      const a = layout.pos.get(edge.from);
+      const b = layout.pos.get(edge.to);
+      if (!a || !b || Math.abs(a.y - b.y) >= 1 || Math.abs(a.y - floorY) >= 1) return;
+      room = Math.max(room, sameRowLift(a, b, parallels[i]) / 2 - NODE_H / 2 + 26);
+    });
+    if (room > 0) layout = { ...layout, height: layout.height + room };
+  }
+  layout = appendLonely(layout, lonely);
+  const { pos, width, height, lonelyTop } = layout;
 
+  const geoms = edges.map((edge, i) => edgeGeometry(edge, pos, parallels[i], floorY));
+  const spots = placeLabels(geoms, pos);
+  const rule = lonely.length && linked.length
+    ? lonelyRule(lonelyTop, width, lonely.length)
+    : null;
+  const { minX, minY, maxX, maxY } =
+    boundsOf(pos, geoms, spots, width, height, rule ? [rule.box] : []);
+
+  // **大きさは入れ物に合わせ、どこを出すかは `viewBox` で決める**（→ `fitView`）。
+  // 中身の寸法を width / height に焼くと、図が伸びたぶん入れ物ごと横に広がる
   const root = svg("svg", {
     class: "rel-graph",
-    viewBox: `0 ${-overhead} ${Math.ceil(width)} ${Math.ceil(height) + overhead}`,
-    width: Math.ceil(width),
-    height: Math.ceil(height) + overhead,
+    width: "100%",
+    height: "100%",
+    viewBox: `${minX} ${minY} ${Math.ceil(maxX - minX)} ${Math.ceil(maxY - minY)}`,
     role: "img",
     "aria-label": "用語の相関図",
   });
   root.append(svg("defs", {}, [marker("arrow", "rel-arrowhead")]));
-  // 辺を先に置いてノードを上に重ねる (線がラベルを横切らないように)
-  edges.forEach((edge, i) => root.append(drawEdge(edge, pos, i, parallels[i])));
+  if (rule) root.append(rule.node);
+  // **層は 3 枚。下から 線 → 一言 → ノード。** 辺ごとに線と一言をまとめて置くと、
+  // あとの辺の線が前の辺の一言を横切って読めなくする（実際にそうなった）。
+  // ノードをいちばん上にするのは、逃がしきれなかった一言が箱の名前を覆わないため
+  const lines = svg("g", { class: "rel-edge-lines" });
+  const labels = svg("g", { class: "rel-edge-labels" });
+  geoms.forEach((g, i) => {
+    if (!g) return;
+    const { group, text } = drawEdge(g, spots.get(i));
+    lines.append(group);
+    if (text) labels.append(text);
+  });
+  root.append(lines, labels);
   for (const node of nodes) root.append(drawNode(node, pos));
+  canvas.classList.remove("is-empty");
   canvas.replaceChildren(root);
+  svgRoot = root;
+  contentBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  zoomBar.hidden = false;
+  fitView();
+  return { lonely: lonely.length, linked: linked.length };
 }
 
 // --------------------------------------------------------------------------- //
@@ -626,14 +1326,22 @@ async function refresh() {
   if (currentDoc) query.set("doc", currentDoc);
   try {
     const graph = await api(`/api/graph?${query}`);
-    draw(graph);
+    const drawn = draw(graph);
     paintNotes(graph);
     const shown = graph.edges.length;
     setStatus(statusNode, `${graph.nodes.length} 語 / ${shown} 本の関係`);
     legend.textContent =
       "→ は一方的、⇄ は相互。▲▼ の代わりに上下の関係は段で表しています。" +
       "破線の枠はまだ登録されていない語で、押すと辞書で探せます。" +
-      "線を押すとその関係を直せます。";
+      "線を押すとその関係を直せます。" +
+      "図はドラッグで動かし、ホイールで拡大縮小できます（右下のボタンと、" +
+      "図を選んでからの ← ↑ ↓ → ＋ − 0 でも）。" +
+      // **段の外に出したことは書く。** 黙って別のところへ置くと、上下の段を
+      // 読んでいる人には「下にあるから下位」に見える。区切り線が出るのは
+      // 上に段があるときだけなので、文もそこで分ける
+      (drawn.lonely && drawn.linked
+        ? `関係が 1 本も書かれていない ${drawn.lonely} 語は、段の外（区切り線の下）に並べています。`
+        : "");
   } catch (err) {
     setStatus(statusNode, err.message, "error");
     canvas.replaceChildren(el("p", { class: "status error", text: err.message }));
@@ -650,6 +1358,7 @@ async function refresh() {
 export async function mount(host, { search = "", embed = false } = {}) {
   host.innerHTML = TEMPLATE;
   canvas = host.querySelector("#canvas");
+  zoomBar = host.querySelector("#zoom");
   notes = host.querySelector("#notes");
   legend = host.querySelector("#legend");
   statusNode = host.querySelector("#status");
@@ -667,6 +1376,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   // 黙って無視される（設定ダイアログと extract.js で 2 回踏んだ）
   categorySelect.addEventListener("change", refresh);
   spoilerCheck.addEventListener("change", refresh);
+  installViewControls();
   dlg("rank").replaceChildren(
     ...RANK_OPTIONS.map(([value, text]) => el("option", { value, text }))
   );

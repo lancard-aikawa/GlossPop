@@ -1085,6 +1085,53 @@ def test_relations_draft_can_read_the_displayed_document(client, monkeypatch):
     assert "ジョバンニとカムパネルラは親友だった。" in seen["prompt"]
 
 
+def test_relations_draft_can_focus_on_one_entry(client, monkeypatch):
+    """用語ページからの下書き。**その語が端に居る関係だけ**を返す。
+
+    範囲を「1 語だけ」にはできない（関係は 2 語が揃って初めて書ける）ので、
+    相手は今までどおり範囲から選ばせて、**頼む側と落とす側の両方**で絞る。
+    """
+    import json as _json
+
+    from glosspop import ai
+
+    ref = _person(client, "ジョバンニ")
+    _person(client, "カムパネルラ")
+    _person(client, "ザネリ")
+    seen = {}
+
+    def fake(prompt, **_):
+        seen["prompt"] = prompt
+        return _json.dumps([
+            {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友", "back": "親友"},
+            # 頼んでいない組。プロンプトで禁じていても返ってくることがある
+            {"from": "カムパネルラ", "to": "ザネリ", "label": "級友"},
+        ])
+
+    monkeypatch.setattr(ai, "_generate", fake)
+    monkeypatch.setattr(ai, "available", lambda: True)
+    body = client.post("/api/ai/relations", json={
+        "ref": ref,
+        "spoiler": "full",
+        "text": "ジョバンニとカムパネルラは親友だった。カムパネルラはザネリと同級だ。",
+    }).json()
+
+    assert [(r["from_term"], r["to_term"]) for r in body["relations"]] == [
+        ("ジョバンニ", "カムパネルラ")
+    ]
+    assert any("ジョバンニ" in d["reason"] for d in body["dropped"]), body["dropped"]
+    # **落とすだけでなく頼む。** 頼まないと上限の大半を他人どうしの関係が食う
+    assert "かならず「ジョバンニ」の関係にすること" in seen["prompt"]
+
+
+def test_relations_draft_reports_an_unknown_focus(client, monkeypatch):
+    monkeypatch.setattr(ai, "available", lambda: True)
+    _person(client, "ジョバンニ")
+    _person(client, "カムパネルラ")
+    res = client.post("/api/ai/relations", json={"ref": "登場人物/居ない人"})
+    assert res.status_code == 404
+
+
 # --------------------------------------------------------------------------- #
 # 設定（データの保存先）
 # --------------------------------------------------------------------------- #

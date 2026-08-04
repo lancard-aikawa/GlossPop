@@ -217,6 +217,25 @@ def test_a_relation_can_be_added_and_shows_on_both_sides(page, server, seeded):
     assert "ジョバンニ" in page.locator(".rel-list").last.inner_text()
 
 
+def test_one_term_can_ask_for_its_own_relations(page, server, seeded):
+    """用語ページから**その語の**関係を下書きできる。
+
+    まとめての下書きはビューアにあるが、それは文書に出てくる語ぜんぶが対象。
+    「この語だけ関係が空のまま」を埋める道が用語ページに無かった。
+    AI は呼ばない（ここで見るのは、ボタンが正しい相手でダイアログを開くこと）。
+    """
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    page.locator("button:has-text('この語の関係を下書き')").wait_for(timeout=15000)
+    page.click("button:has-text('この語の関係を下書き')")
+
+    lead = page.locator("dialog.sheet[open] [data-ref=lead]")
+    lead.wait_for(timeout=10000)
+    assert "「ジョバンニ」の関係" in (lead.text_content() or "")
+    # 1 語ぶんは探す本数の既定を下げる（本数はそのまま待ち時間になる）
+    assert page.locator("dialog.sheet[open] [data-ref=limit]").input_value() == "10"
+    page.click("dialog.sheet[open] [data-ref=cancel]")
+
+
 def test_the_graph_draws_nodes_and_an_edge(page, server, seeded):
     a = store.find_by_surface("ジョバンニ")[0]
     b = store.find_by_surface("カムパネルラ")[0]
@@ -232,6 +251,156 @@ def test_the_graph_draws_nodes_and_an_edge(page, server, seeded):
     assert page.locator("svg.rel-graph .rel-node").count() == 2
     assert page.locator("svg.rel-graph .rel-edge").count() == 1
     assert "親友" in (page.locator("svg.rel-graph").text_content() or "")
+
+
+def test_the_graph_keeps_unrelated_terms_out_of_the_ranks(page, server, seeded):
+    """関係の無い語を段に混ぜない（混ぜると繋がっている語どうしを押し広げる）。
+
+    20 語に満たない辞書でも図が読めなくなった実例が、まさにこれだった ——
+    18 語のうち 6 語が孤立していて、いちばん多く繋がっている語が最上段の
+    右端へ追いやられ、そこから全部の線が図の端まで飛んでいた。
+
+    **消しはしない**（その文書に出てくる語ではある）ので、段の外の帯に並べる。
+    黙って別のところへ置くと「下にあるから下位」に見えるため、区切り線と
+    語数も一緒に見る。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[{"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"}],
+        ),
+        ref=a.ref,
+    )
+    for name in ["ザネリ", "カムパネルラの父", "鳥捕り", "灯台守", "牛乳屋"]:
+        store.save(EntryDraft(term=name, category="登場人物", definition="関係は書かない。"))
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-graph .rel-node').length === 7",
+        timeout=15000,
+    )
+    placed = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-graph .rel-node')].map((g) => ({"
+        " term: g.querySelector('text').textContent,"
+        " y: Number(g.querySelector('rect').getAttribute('y')) }))"
+    )
+    linked = [p["y"] for p in placed if p["term"] in ("ジョバンニ", "カムパネルラ")]
+    lonely = [p["y"] for p in placed if p["term"] not in ("ジョバンニ", "カムパネルラ")]
+    assert len(linked) == 2 and len(lonely) == 5
+    # 関係の無い語は段より下（＝段の並びに割り込んでいない）
+    assert min(lonely) > max(linked)
+    assert page.locator("svg.rel-graph .rel-lonely-rule").count() == 1
+    assert "5" in (page.locator("svg.rel-graph .rel-lonely-caption").text_content() or "")
+    assert "段の外" in (page.locator("#legend").text_content() or "")
+
+
+def test_the_graph_lights_a_relation_and_its_words_together(page, server, seeded):
+    """線と一言は一緒に光る。一言は線より上の層に居る。
+
+    一言は空いているところへ逃がすので**線の真上とは限らない**。線だけ色が
+    変わっても、どの関係が選ばれているのか分からない（実際にそう見えた）。
+
+    層を分けているのは、**あとに描いた辺の線が前の辺の一言を横切る**から。
+    下になった文字は縁取りごと消えて読めなくなる。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[{"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"}],
+        ),
+        ref=a.ref,
+    )
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph .rel-edge-label").wait_for(timeout=15000)
+    hot = "() => [document.querySelectorAll('.rel-edge-group.hot').length," \
+          " document.querySelectorAll('.rel-edge-label.hot').length]"
+
+    page.locator("svg.rel-graph .rel-edge-group").hover()
+    page.wait_for_timeout(150)
+    assert page.evaluate(hot) == [1, 1], "線に乗せても一言が光らない"
+
+    page.mouse.move(0, 0)
+    page.wait_for_timeout(150)
+    assert page.evaluate(hot) == [0, 0], "離れても光ったまま"
+
+    # 一言のほうに乗せても線が光る（どちらから触っても同じ関係だと分かる）
+    page.locator("svg.rel-graph .rel-edge-label").hover()
+    page.wait_for_timeout(150)
+    assert page.evaluate(hot) == [1, 1], "一言に乗せても線が光らない"
+
+    # 焦点でも同じ
+    page.mouse.move(0, 0)
+    page.locator("svg.rel-graph .rel-edge-group").focus()
+    page.wait_for_timeout(150)
+    assert page.evaluate(hot) == [1, 1], "焦点では光らない"
+
+    layers = page.evaluate(
+        "() => [...document.querySelector('svg.rel-graph').children]"
+        ".map((n) => n.getAttribute('class') || n.tagName)"
+    )
+    assert layers.index("rel-edge-lines") < layers.index("rel-edge-labels"), "一言が線より下"
+    # 一言そのものの文字は一言だけ（<text> の中に <title> を入れない）
+    assert page.locator("svg.rel-graph .rel-edge-label").text_content() == "親友"
+
+
+def test_the_graph_can_be_panned_and_zoomed(page, server, seeded):
+    """図はドラッグで動かし、ホイールで拡大縮小できる。
+
+    **掴みを `pointerdown` で捕まえないこと**の見張りでもある。捕まえると以後の
+    ポインタ事象が入れ物へ付け替えられ、**線を押しても編集ダイアログが開かなくなる**
+    （HTML も JS も正しいので、画面を開くまで気付けない壊れ方）。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[{"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"}],
+        ),
+        ref=a.ref,
+    )
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    box_of = "() => document.querySelector('svg.rel-graph').getAttribute('viewBox')"
+    read = lambda: [float(v) for v in page.evaluate(box_of).split()]  # noqa: E731
+
+    fit = read()
+    canvas = page.locator("#canvas").bounding_box()
+    cx = canvas["x"] + canvas["width"] / 2
+    cy = canvas["y"] + canvas["height"] / 2
+
+    page.mouse.move(cx, cy)
+    page.mouse.wheel(0, -400)
+    page.wait_for_timeout(150)
+    zoomed = read()
+    assert zoomed[2] < fit[2], "ホイールで拡大できない"
+
+    page.mouse.move(cx, cy)
+    page.mouse.down()
+    page.mouse.move(cx - 120, cy - 60, steps=8)
+    page.mouse.up()
+    page.wait_for_timeout(150)
+    panned = read()
+    assert panned[0] > zoomed[0] and panned[1] > zoomed[1], "ドラッグで動かない"
+    assert abs(panned[2] - zoomed[2]) < 0.01, "動かしただけで拡大率が変わった"
+    # 掴んで動かした直後のクリックは飲む（線の上で放しても編集は開かない）
+    assert page.locator("#edgeDialog[open]").count() == 0
+
+    page.click("#zoomFit")
+    page.wait_for_timeout(150)
+    assert [round(v, 1) for v in read()] == [round(v, 1) for v in fit], "全体に戻らない"
+
+    # **縮めても線は押せる**（当たり判定だけは縮めていない）
+    for _ in range(3):
+        page.click("#zoomOut")
+    page.wait_for_timeout(150)
+    page.click("svg.rel-graph .rel-edge-group")
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
 
 
 def test_the_viewer_opens_a_graph_of_just_this_document(page, server, seeded):

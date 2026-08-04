@@ -4,6 +4,7 @@ import { installGlossPopup, invalidatePopupCache } from "./popup.js";
 import { installSelectionAdd } from "./select-add.js";
 import { openEntryEditor, encodePath } from "./editor.js";
 import { openMerge } from "./merge.js";
+import { openRelationsDialog } from "./relations-draft.js";
 
 //: 描く先。`/glossary/<カテゴリ>/<slug>` を直接開いたときはそのページの器、
 //: ビューアに重ねるときは覆いの器。**`location` を直接読まない** —— 重ねると
@@ -302,12 +303,33 @@ function relationsSection(entry) {
   parts.push(status);
   parts.push(relationForm(entry));
   parts.push(
-    el("p", {}, [
+    el("p", { class: "rel-actions" }, [
       el("a", {
         class: "btn",
         href: `/graph?category=${encodeURIComponent(entry.category)}` +
           (entry.scope === "local" ? "&scope=local" : ""),
         text: "相関図で見る →",
+      }),
+      // **1 語ぶんの下書き。** 全体まとめての下書きはビューアにあるが、
+      // 「この語だけ関係が空のまま」を埋める道がここに無かった
+      el("button", {
+        type: "button",
+        text: "✨ この語の関係を下書き",
+        title: "開いているフォルダの本文から、この語が一方の端になる関係を探す",
+        onclick: async (ev) => {
+          // **ボタンは最初の await より前に掴む。** `currentTarget` は配送が
+          // 終わると null になり、書き込みのあとは描き直しで消えてもいる
+          const button = ev.currentTarget;
+          button.disabled = true;
+          try {
+            if (await openRelationsDialog({ ref: entry.ref, term: entry.term })) {
+              invalidatePopupCache();
+              await reload(entry.ref);
+            }
+          } finally {
+            if (button.isConnected) button.disabled = false;
+          }
+        },
       }),
     ])
   );
