@@ -3,6 +3,8 @@ import { api, el, esc, externalLink, paintEntryCount, setStatus } from "./base.j
 import { openExtractDialog } from "./extract.js";
 import { installGlossPopup } from "./popup.js";
 import { createTracker, keyFor } from "./progress.js";
+import { installOverlay, open } from "./overlay.js";
+import { openRelationsDialog } from "./relations-draft.js";
 import { installSelectionAdd } from "./select-add.js";
 import { available as speechAvailable, createReader } from "./speech.js";
 
@@ -48,6 +50,7 @@ async function renderCurrent() {
     doc.innerHTML = res.html || '<p class="empty">(空のドキュメント)</p>';
     docHead.hidden = false;
     paintDocMeta(res);
+    paintDocGraphLink();
     paintTerms(res.terms);
     // 段落の番号で覚えているので、描き直したら対応づけ直す
     paintToc(source.sections || []);
@@ -75,6 +78,20 @@ function paintDocMeta(res) {
   }
 }
 
+/**
+ * 「この文書の相関図」へのリンク。
+ *
+ * サーバは `?doc=` を content の中のパスとして読み直すので、**フォルダの
+ * ファイルを開いているときだけ**出せる（貼り付け・ドロップ・URL には
+ * 読み直せる道が無い）。出しておいて絞れないより、出さないほうがまし。
+ */
+function paintDocGraphLink() {
+  const link = $("docGraph");
+  const path = source?.contentPath || "";
+  link.href = path ? `/graph?doc=${encodeURIComponent(path)}` : "/graph";
+  link.hidden = !path;
+}
+
 function paintTerms(terms) {
   if (!terms.length) {
     termsList.replaceChildren(el("li", { class: "empty", text: "まだヒットなし" }));
@@ -92,6 +109,35 @@ function paintTerms(terms) {
   );
 }
 
+//: 最後に開いていた「フォルダの中のファイル」。相関図や辞書へ寄り道して戻った
+//: ときに続きから読めるようにする。**覚えるのはフォルダの中のファイルだけ** ——
+//: 貼り付け・ドロップ・URL は読み直す道が無いので、覚えると嘘になる
+//: （`progress.js` が段落の位置を覚えるのと対で、こちらは「どれを」を覚える）
+const LAST_KEY = "glosspop.viewer.last";
+
+function rememberOpened(next) {
+  try {
+    if (next?.contentPath && currentRoot) {
+      localStorage.setItem(
+        LAST_KEY, JSON.stringify({ root: currentRoot, path: next.contentPath })
+      );
+    } else {
+      // 貼り付けや URL に切り替えたら忘れる。残すと、次に開いたときに
+      // 「読んでいたはずのもの」と違うものが出る
+      localStorage.removeItem(LAST_KEY);
+    }
+  } catch { /* localStorage が使えない環境では覚えないだけ */ }
+}
+
+function lastOpened() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAST_KEY) || "null");
+    return saved && typeof saved.path === "string" ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 表示する文書を差し替える。
  *
@@ -103,6 +149,7 @@ async function setSource(next, { restore = true, highlight = "" } = {}) {
   // 前の文書の鍵で保存してしまう
   tracker.switchTo(keyFor(next, currentRoot));
   source = next;
+  rememberOpened(next);
   selection.hide();
   reader?.reset();      // 別の文書になったので読み上げは打ち切る
   note("");
@@ -375,6 +422,24 @@ $("extractFolder").addEventListener("click", () => {
   runExtract($("extractFolder"), { folder: true });
 });
 
+// 登録済みの用語どうしの関係を、**表示中の文書から**探す。
+//
+// 相関図には置かない —— あちらは辞書全体を出すので、下書きが読む範囲
+// （開いているもの）と一致しない（→ docs/open-questions.md の 7 番）。
+// 以前は抽出ダイアログの中にしか無く、読むたびに抽出と登録を通し直していた。
+$("draftRelations").addEventListener("click", async () => {
+  if (!source) return;
+  const button = $("draftRelations");
+  button.disabled = true;
+  try {
+    if (await openRelationsDialog({ text: source.text, source: sourceLabel() })) {
+      await Promise.all([renderCurrent(), paintEntryCount($("count"))]);
+    }
+  } finally {
+    button.disabled = false;
+  }
+});
+
 // URL を開く (取得はサーバ側。CORS を踏まないため)
 async function openUrl(url) {
   $("urlGo").disabled = true;
@@ -449,9 +514,12 @@ $("urlDictForm").addEventListener("submit", async (ev) => {
 async function loadFileList() {
   filesList.replaceChildren(el("li", { class: "empty", text: "読み込み中…" }));
   try {
-    paintFileList(await api("/api/content"));
+    const res = await api("/api/content");
+    paintFileList(res);
+    return res;
   } catch (err) {
     filesList.replaceChildren(el("li", { class: "empty", text: `一覧を取得できません: ${err.message}` }));
+    return null;
   }
 }
 
@@ -756,13 +824,17 @@ window.addEventListener("drop", async (ev) => {
 async function openFromQuery() {
   const params = new URLSearchParams(location.search);
   const path = params.get("open");
-  if (!path) return;
+  if (!path) return false;
   const term = params.get("term");
   // 初出へ飛ぶと決まっているときは読書位置を戻さない（戻してもすぐ上書きされ、
   // 「前回の続き」の案内だけが嘘になる）
   await openContent(path, { restore: !term });
-  if (!term) return;
-  // annotate 済みの本文から、その語の最初のリンクを探して寄せる
+  if (term) flashTerm(term);
+  return true;
+}
+
+/** annotate 済みの本文から、その語の最初のリンクを探して寄せる。 */
+function flashTerm(term) {
   const hit = doc.querySelector(`[data-gloss="${CSS.escape(term)}"]`);
   if (hit) {
     hit.scrollIntoView({ block: "center" });
@@ -772,5 +844,69 @@ async function openFromQuery() {
   }
 }
 
+/**
+ * 前に読んでいたファイルを開き直す。
+ *
+ * 相関図・辞書・用語ページへ寄り道して戻ると、**開いていた本文が消えて
+ * 案内文に戻っていた**（読書位置だけ覚えていても、開き直すのは手作業）。
+ *
+ * 開くのは**いま一覧に出ているファイルだけ**。フォルダを切り替えた後や、
+ * 外で消された後に `openContent` を呼ぶと、ページを開いた瞬間にエラーが出る。
+ */
+async function restoreLast(listing) {
+  const saved = lastOpened();
+  if (!saved || !listing || saved.root !== listing.root) return;
+  if (!listing.files?.some((f) => f.path === saved.path)) return;
+  await openContent(saved.path);
+}
+
+/**
+ * ビューアの現在地を URL にしたもの（覆いを閉じたときに戻す先）。
+ *
+ * 開いているものをそのまま指すので、その状態で再読み込みしても同じものが出る。
+ */
+function viewerUrl() {
+  return source?.contentPath ? `/?open=${encodeURIComponent(source.contentPath)}` : "/";
+}
+
+// 辞書・用語・相関図・点検は**ビューアの上に重ねる**。ページとして開き直すと、
+// 戻るたびに本文を取り直して描き直すことになる（→ overlay.js の頭）
+installOverlay({
+  viewerUrl,
+  onClose: ({ changed }) => {
+    // **変わったときだけ描き直す。** 毎回描き直すと重ねた意味が無くなる
+    if (!changed) return;
+    paintEntryCount($("count"));
+    return renderCurrent();
+  },
+  // 覆いの中からビューアを名指しで呼ぶリンク（用語ページの「初出: 〇〇.md L.42 →」）
+  onViewerLink: (url) => {
+    const path = url.searchParams.get("open");
+    if (!path) return;
+    const term = url.searchParams.get("term");
+    // 初出へ飛ぶと決まっているときは読書位置を戻さない（すぐ上書きされる）
+    openContent(path, { restore: !term }).then(() => {
+      if (term) flashTerm(term);
+    });
+  },
+});
+
 paintEntryCount($("count"));
-loadFileList().then(openFromQuery);
+loadFileList().then(async (listing) => {
+  if (await openFromQuery()) return;   // URL の指定が最優先
+  if (await openOverlayFromLocation()) return;
+  await restoreLast(listing);
+});
+
+/**
+ * `/glossary` などを直接開かれたとき。
+ *
+ * サーバはそれぞれのページを返すので普段はここを通らないが、覆いを開いたまま
+ * 再読み込みされた場合に**ビューアの URL で辞書のページが要求される**ことがある
+ * （履歴に積んだ URL はビューアのものではないので、実際にはサーバ側のページが
+ * 返る）。念のため、ビューアが `/` 以外で動いていたら覆いを開いておく。
+ */
+async function openOverlayFromLocation() {
+  if (location.pathname === "/") return false;
+  return open(location.href, { push: false });
+}

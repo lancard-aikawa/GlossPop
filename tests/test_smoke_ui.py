@@ -234,6 +234,157 @@ def test_the_graph_draws_nodes_and_an_edge(page, server, seeded):
     assert "親友" in (page.locator("svg.rel-graph").text_content() or "")
 
 
+def test_the_viewer_opens_a_graph_of_just_this_document(page, server, seeded):
+    """ビューア →「この文書の相関図」→ **その文書に出てくる語だけ**の図。
+
+    以前は相関図が辞書全体しか出せず、読んでいるものに辿り着けなかった
+    （→ docs/design-notes.md）。**何を出している図なのかを画面に書くこと**も
+    あわせて見る —— 書かないと、全体の図を開いている文書の図だと思われる。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    # この文書には出てこない語。関係だけ張っておく（図から落ちるのが正しい）
+    zanelli = store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[{"to": b.ref, "label": "親友", "back": "親友"},
+                       {"to": zanelli.ref, "label": "同級生"}],
+        ),
+        ref=a.ref,
+    )
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+    page.click("#docGraph")
+
+    page.locator("svg.rel-graph").wait_for(timeout=SETTLE_MS)
+    assert "銀河.md" in page.locator("#scopeNote").inner_text()
+    nodes = page.locator("svg.rel-graph .rel-node")
+    assert nodes.count() == 2                      # ザネリは出てこないので出ない
+    assert "ザネリ" not in (page.locator("svg.rel-graph").text_content() or "")
+    # 落とした辺は黙って消さない
+    assert "1 本伏せています" in page.locator("#notes").inner_text()
+
+    # 辞書全体に戻せること（戻したらザネリも出る）
+    page.click("#scopeAll")
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-graph .rel-node').length === 3",
+        timeout=SETTLE_MS,
+    )
+    assert "辞書全体" in page.locator("#scopeNote").inner_text()
+
+
+def test_the_viewer_comes_back_to_what_you_were_reading(page, server, seeded):
+    """寄り道して戻っても、開いていた本文が消えないこと。
+
+    相関図へ行って戻ると案内文に戻ってしまい、**読んでいたものを開き直す**
+    ところからやり直しになっていた。担保は 2 つあり、**どちらも見る**:
+    図の「ビューア」が同じ文書を指すことと、素の `/` でも開き直すこと。
+    """
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+
+    # **ページを離れていない**ことと、**本文を描き直していない**ことの目印
+    page.evaluate("() => { window.__alive = true; }")
+    renders = page.evaluate(
+        "() => performance.getEntriesByType('resource')"
+        ".filter(r => r.name.includes('/api/render')).length"
+    )
+
+    page.click("#docGraph")
+    page.locator("svg.rel-graph").wait_for(timeout=SETTLE_MS)
+    page.click('.topnav a:has-text("ビューア")')
+    page.locator("svg.rel-graph").wait_for(state="detached", timeout=SETTLE_MS)
+
+    assert "銀河.md" in page.locator("#docMeta").inner_text()
+    assert page.evaluate("() => window.__alive") is True, "ページを離れている（重なっていない）"
+    assert page.evaluate(
+        "() => performance.getEntriesByType('resource')"
+        ".filter(r => r.name.includes('/api/render')).length"
+    ) == renders, "戻るのに本文を描き直している"
+
+    # 素の `/` でも、最後に読んでいたものを開き直す（辞書側から戻る道）
+    page.goto(f"{server}/")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+    assert "銀河.md" in page.locator("#docMeta").inner_text()
+
+    # 貼り付けに切り替えたら忘れる（読み直す道が無いものを覚えると嘘になる）
+    page.fill("#paste", "ただのメモ。")
+    page.click("#showPaste")
+    page.locator("#doc:has-text('ただのメモ')").wait_for(timeout=SETTLE_MS)
+    page.goto(f"{server}/")
+    page.locator("#doc h1:has-text('GlossPop')").wait_for(timeout=SETTLE_MS)
+    assert page.locator("#docHead").is_hidden()
+
+
+def test_everything_opens_over_the_viewer_without_leaving_it(page, server, seeded):
+    """辞書・用語・相関図・点検は**ビューアの上に重ねる**。
+
+    ページとして開き直すと、戻るたびに本文を取り直して描き直すことになる
+    （実測 149 ms / 39,000 字。長編ではその数倍。→ docs/design-notes.md）。
+    見るのは「ページを離れていないこと」で、`window.__alive` が残っていれば
+    重なっている（離れれば JS の世界ごと作り直される）。
+    """
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+    page.evaluate("() => { window.__alive = true; }")
+
+    for nav, ready in [
+        ('.topnav a:has-text("辞書")', ".overlay .card"),
+        ('.topnav a:has-text("相関図")', ".overlay svg.rel-graph"),
+        ('.overlay a:has-text("点検")', ".overlay .entry-head h1"),
+    ]:
+        page.click(nav)
+        page.locator(ready).first.wait_for(timeout=SETTLE_MS)
+        assert page.evaluate("() => window.__alive") is True, f"{nav} でページを離れている"
+
+    # 用語ページも重なる（吹き出しの「辞書ページを開く →」から）
+    page.click("[data-ref=close]")
+    page.locator("#doc a.gloss-link").first.click()
+    page.locator(".gloss-pop .pop-foot a").wait_for(timeout=SETTLE_MS)
+    page.click(".gloss-pop .pop-foot a")
+    page.locator(".overlay .entry-head h1").wait_for(timeout=SETTLE_MS)
+    assert page.evaluate("() => window.__alive") is True
+
+    # Esc で閉じて読書に戻る
+    page.keyboard.press("Escape")
+    page.locator(".overlay .entry-head h1").wait_for(state="hidden", timeout=SETTLE_MS)
+    assert "銀河.md" in page.locator("#docMeta").inner_text()
+
+
+def test_a_change_made_in_the_overlay_reaches_the_text_underneath(page, server, isolated_dirs):
+    """重ねた側で登録したら、閉じたときに下の本文がリンクになること。
+
+    **変わったときだけ描き直す**という約束（`dictionaryRevision()`）の裏側。
+    描き直しを止めすぎると、登録したのに本文が古いまま＝「登録できていない」
+    ように見える。逆に毎回描き直すと重ねた意味が無くなるので、両方見る。
+    """
+    (config.content_dir() / "銀河.md").write_text(
+        "ジョバンニは活版所で働いていた。\n", encoding="utf-8"
+    )
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("#doc:has-text('活版所')").wait_for(timeout=SETTLE_MS)
+    assert page.locator("#doc a.gloss-link").count() == 0
+    page.evaluate("() => { window.__alive = true; }")
+
+    page.click('.topnav a:has-text("辞書")')
+    page.locator(".overlay #add").wait_for(timeout=SETTLE_MS)
+    page.click(".overlay #add")
+    page.locator("dialog.sheet[open] [data-ref=term]").wait_for(timeout=SETTLE_MS)
+    page.fill("dialog.sheet[open] [data-ref=term]", "活版所")
+    page.select_option("dialog.sheet[open] [data-ref=category]", "/new")   # ＋ 新しいカテゴリ
+    page.fill("dialog.sheet[open] [data-ref=newCategory]", "場所")
+    page.fill("dialog.sheet[open] [data-ref=definition]", "活字を組む仕事場。")
+    page.click("dialog.sheet[open] [data-ref=save]")
+    page.locator(".overlay .card").first.wait_for(timeout=SETTLE_MS)
+
+    page.click(".overlay [data-ref=close]")
+    # 閉じたら本文が描き直され、いま登録した語がリンクになっている
+    page.locator("#doc a.gloss-link:has-text('活版所')").wait_for(timeout=SETTLE_MS)
+    assert page.evaluate("() => window.__alive") is True, "ページを離れている（重なっていない）"
+
+
 def test_the_entry_page_finds_where_the_term_appears_and_takes_an_example(page, server, seeded):
     """用語ページ →「出てくる文書」→ その文を使用例に足す、まで通す。
 
@@ -405,8 +556,8 @@ def test_a_stale_graph_refuses_to_write(page, server, seeded):
 
 def test_the_doctor_is_quiet_then_reports_a_broken_reference(page, server, seeded):
     page.goto(f"{server}/doctor")
-    page.locator("#root .empty").wait_for(timeout=15000)
-    assert "直すところはありません" in page.locator("#root").inner_text()
+    page.locator("[data-ref=report] .empty").wait_for(timeout=15000)
+    assert "直すところはありません" in page.locator("[data-ref=report]").inner_text()
 
     entry = store.find_by_surface("ジョバンニ")[0]
     store.save(
@@ -417,9 +568,9 @@ def test_the_doctor_is_quiet_then_reports_a_broken_reference(page, server, seede
         ),
         ref=entry.ref,
     )
-    page.click("#reload")
+    page.click("[data-ref=reload]")
     page.locator(".issue-badge.error").wait_for(timeout=10000)
-    text = page.locator("#root").inner_text()
+    text = page.locator("[data-ref=report]").inner_text()
     assert "解決できない関係" in text
     # 壊れた参照は「次に書くべきエントリ」でもある
     assert "いない人 を登録" in text
@@ -430,15 +581,15 @@ def test_the_doctor_can_fix_an_entry_in_place(page, server, isolated_dirs):
     store.save(EntryDraft(term="冪等", category="プログラミング", definition="本文。"))
     page.goto(f"{server}/doctor")
     page.locator(".issue-badge").wait_for(timeout=15000)
-    assert "要約が無い" in page.locator("#root").inner_text()
+    assert "要約が無い" in page.locator("[data-ref=report]").inner_text()
 
     page.click("button:has-text('直す')")
     page.locator("dialog.sheet[open]").wait_for(timeout=10000)
     page.fill("dialog.sheet[open] [data-ref='summary']", "何度実行しても結果が同じであること。")
     page.click("dialog.sheet[open] [data-ref='save']")
 
-    page.locator("#root .empty").wait_for(timeout=15000)
-    assert "直すところはありません" in page.locator("#root").inner_text()
+    page.locator("[data-ref=report] .empty").wait_for(timeout=15000)
+    assert "直すところはありません" in page.locator("[data-ref=report]").inner_text()
 
 
 def test_content_search_opens_the_file_at_the_hit(page, server, isolated_dirs):
@@ -1031,6 +1182,9 @@ def test_relations_can_be_drafted_then_continued(page, server, seeded, monkeypat
 
     2 回目はサーバが「すでに関係が書かれています」として落とすので、同じ組が
     二重に出ない。閉じて開き直させないためのボタン。
+
+    **入り口はビューア（表示中の文書）。** 相関図には置かない —— あちらは辞書
+    全体を出すので、下書きが読む範囲と一致しない（→ docs/open-questions.md の 7 番）。
     """
     from glosspop import ai
 
@@ -1044,9 +1198,9 @@ def test_relations_can_be_drafted_then_continued(page, server, seeded, monkeypat
     ]
     monkeypatch.setattr(ai, "_generate", lambda prompt, **_: json.dumps(answers.pop(0)))
 
-    page.goto(f"{server}/graph")
-    page.locator("#draft").wait_for(timeout=15000)
-    page.click("#draft")
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=15000)
+    page.click("#draftRelations")
     page.locator("dialog.sheet [data-ref=spoiler]").wait_for(timeout=10000)
     page.select_option("dialog.sheet [data-ref=spoiler]", "full")
     page.click("dialog.sheet [data-ref=go]")
@@ -1149,3 +1303,66 @@ def test_the_update_notice_appears(page, server, isolated_dirs):
     notice.wait_for(timeout=15000)
     assert "v99.0.0" in notice.inner_text()
     assert notice.get_attribute("href").endswith("/releases/latest")
+
+
+#: 折り返しているボタンの文字を集める。**隠れているものは見ない**（`hidden` の
+#: パネルや閉じたダイアログまで拾うと、原因の分からない失敗になる）。
+#: 唯一の例外が横断検索の抜粋 —— ラベルではなく本文なので、1 行に切ると
+#: 何にヒットしたのか分からなくなる
+_WRAPPED_LABELS = """() => {
+  const bad = [];
+  for (const b of document.querySelectorAll("button, .btn, .chip, .topnav a")) {
+    if (!b.getClientRects().length) continue;
+    if (b.closest(".search-results")) continue;
+    const wrapped = b.scrollHeight > b.clientHeight + 1;
+    const nowrap = getComputedStyle(b).whiteSpace === "nowrap";
+    if (wrapped || !nowrap) bad.push((b.textContent || "").trim().slice(0, 24));
+  }
+  return bad;
+}"""
+
+
+def _assert_no_wrapped_labels(page, where: str):
+    bad = page.evaluate(_WRAPPED_LABELS)
+    assert not bad, f"{where}: ボタンの文字が折り返しています: {bad}"
+
+
+def test_no_button_label_ever_wraps(page, server, seeded):
+    """**ボタンの文字は決して折り返さない。**
+
+    縦に割れたラベル（「保 / 存」）は読めず、押せる範囲も分からなくなる。
+    幅は周り（行の折り返し・隣の基準幅・`…`）で吸収する約束なので、
+    **狭い画面でこそ確かめる** —— 広い画面では絶対に踏まない。
+
+    HTML も JS も正しいまま崩れるので、画面を描かせないと気付けない。
+    """
+    for width in (1280, 380):
+        page.set_viewport_size({"width": width, "height": 900})
+
+        page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+        page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+        _assert_no_wrapped_labels(page, f"ビューア ({width}px)")
+
+        open_glossary(page, server)
+        _assert_no_wrapped_labels(page, f"一覧 ({width}px)")
+
+        # カテゴリ管理は、ボタンが縮まないと名前の側が 1 文字ずつ縦に割れる
+        page.click("#manageCats")
+        page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=SETTLE_MS)
+        _assert_no_wrapped_labels(page, f"カテゴリ管理 ({width}px)")
+        page.keyboard.press("Escape")
+
+        page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+        page.locator(".entry-actions").wait_for(timeout=SETTLE_MS)
+        _assert_no_wrapped_labels(page, f"用語ページ ({width}px)")
+
+        page.goto(f"{server}/graph")
+        page.locator(".graph-toolbar").wait_for(timeout=SETTLE_MS)
+        _assert_no_wrapped_labels(page, f"相関図 ({width}px)")
+
+        page.goto(f"{server}/doctor")
+        page.locator(".topbar #settings").wait_for(timeout=SETTLE_MS)
+        page.click("#settings")
+        page.locator("dialog.sheet[open] [data-ref='theme']").wait_for(timeout=SETTLE_MS)
+        _assert_no_wrapped_labels(page, f"設定 ({width}px)")
+        page.keyboard.press("Escape")

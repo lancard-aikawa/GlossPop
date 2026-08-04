@@ -4,28 +4,61 @@ import { openEntryEditor } from "./editor.js";
 import { installSelectionAdd } from "./select-add.js";
 import { invalidatePopupCache } from "./popup.js";
 
-const $ = (id) => document.getElementById(id);
-const list = $("list");
-const qInput = $("q");
-const catFilter = $("catFilter");
-const tagFilter = $("tagFilter");
-const catDialog = $("catDialog");
+//: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない）
+const TEMPLATE = `
+<h1>用語辞書</h1>
+<p class="lede" id="lede"></p>
+
+<div class="toolbar">
+  <input type="search" id="q" placeholder="用語・別名・本文を検索" autocomplete="off"
+         title="用語・別名・本文を検索" aria-label="用語・別名・本文を検索">
+  <select id="catFilter" class="auto-width" title="カテゴリで絞り込む" aria-label="カテゴリで絞り込む">
+    <option value="">すべてのカテゴリ</option>
+  </select>
+  <select id="tagFilter" class="auto-width" title="タグで絞り込む" aria-label="タグで絞り込む">
+    <option value="">すべてのタグ</option>
+  </select>
+  <span class="spacer"></span>
+  <button type="button" id="manageCats">カテゴリ管理</button>
+  <button type="button" class="primary" id="add">＋ 新規登録</button>
+</div>
+
+<div id="list"></div>
+
+<dialog class="sheet" id="catDialog">
+  <div class="cat-manager">
+    <header>
+      <h2>カテゴリ管理</h2>
+      <div class="spacer"></div>
+      <button type="button" class="ghost" data-ref="catClose" aria-label="閉じる">✕</button>
+    </header>
+    <div class="body" data-ref="catBody"></div>
+    <footer>
+      <select data-ref="catScope" title="どちらの辞書に作るか" aria-label="どちらの辞書に作るか" hidden>
+        <option value="global">全体の辞書</option>
+        <option value="local">📁 このフォルダの辞書</option>
+      </select>
+      <input type="text" data-ref="catNew" class="auto-width" placeholder="新しいカテゴリ名"
+             title="新しいカテゴリ名" aria-label="新しいカテゴリ名" autocomplete="off">
+      <button type="button" data-ref="catAdd">＋ 追加</button>
+      <span class="status" data-ref="catStatus"></span>
+      <span class="spacer"></span>
+      <span class="hint">用語 0 件のカテゴリも登録できます。並びは ↑ ↓ で変えられます。削除できるのは空のカテゴリだけです。</span>
+    </footer>
+  </div>
+</dialog>
+`;
+
+//: 描く先。`mount()` で埋める（`location` は読まない —— 重ねたときに
+//: 「覆いが出しているもの」と食い違う）
+let host = null;
+let list, qInput, catFilter, tagFilter, catDialog;
+const $ = (id) => host.querySelector(`#${id}`);
 
 let tree = [];
 let timer = null;
 //: 最初の読み込み。**開くのが速すぎたダイアログがこれを待って描き直す**
 let ready = null;
-
-// 一覧の要約に出てきた知らない語も、その場で選んで登録できるようにする
-// （ビューア・用語ページと同じ口。ここだけ「新規登録」ボタンからしか入れなかった）
-installSelectionAdd({
-  root: list,
-  source: () => "辞書一覧",
-  onSaved: async () => {
-    invalidatePopupCache();
-    await refreshAll();
-  },
-});
 
 /** 選択したまま指を離したか。カードの上でのドラッグ選択と、リンクの遷移を分ける。 */
 function hasSelection() {
@@ -338,7 +371,7 @@ async function refreshAll() {
   await Promise.all([loadCategories(), loadTags()]);
   await reload();
   paintCategoryManager();
-  paintEntryCount($("count"));
+  paintEntryCount(document.getElementById("count"));
 }
 
 async function removeCategory(node) {
@@ -398,19 +431,75 @@ async function paintScopeChoice() {
 
 // ------------------------------------------------------------------- 起動
 
-qInput.addEventListener("input", () => {
-  clearTimeout(timer);
-  timer = setTimeout(reload, 180);
-});
-catFilter.addEventListener("change", reload);
-tagFilter.addEventListener("change", reload);
+/**
+ * 辞書一覧を ``host`` に描く。ページとして開いたときも、ビューアに重ねる
+ * ときも、ここを通る。
+ */
+export async function mount(container, { search = "" } = {}) {
+  host = container;
+  host.innerHTML = TEMPLATE;
+  list = $("list");
+  qInput = $("q");
+  catFilter = $("catFilter");
+  tagFilter = $("tagFilter");
+  catDialog = $("catDialog");
+  tree = [];
 
-$("add").addEventListener("click", async () => {
+  // 一覧の要約に出てきた知らない語も、その場で選んで登録できるようにする
+  // （ビューア・用語ページと同じ口。ここだけ「新規登録」ボタンからしか入れなかった）
+  installSelectionAdd({
+    root: list,
+    source: () => "辞書一覧",
+    onSaved: async () => {
+      invalidatePopupCache();
+      await refreshAll();
+    },
+  });
+
+  // **listener は最初の await より前に付ける**（その間の操作を落とさない）
+  qInput.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(reload, 180);
+  });
+  catFilter.addEventListener("change", reload);
+  tagFilter.addEventListener("change", reload);
+  $("add").addEventListener("click", onAdd);
+  $("manageCats").addEventListener("click", onManageCats);
+  catDialog.querySelector("[data-ref=catAdd]").addEventListener("click", addCategory);
+  catDialog.querySelector("[data-ref=catNew]").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      addCategory();
+    }
+  });
+  catDialog.querySelector("[data-ref=catClose]").addEventListener("click", () => catDialog.close());
+
+  const initial = new URLSearchParams(search);
+  qInput.value = initial.get("q") || "";
+  paintEntryCount(document.getElementById("count"));
+
+  ready = Promise.all([loadCategories(), loadTags()]).then(() => {
+    // `?category=` はスコープを持たないことがある（用語ページからのリンクなど）。
+    // `?scope=` があればそれで、無ければ最初に見つかったものに合わせる
+    const cat = initial.get("category");
+    if (cat) {
+      const wanted = initial.get("scope");
+      const hit = tree.find((n) => n.category === cat && (!wanted || n.scope === wanted));
+      if (hit) catFilter.value = `${hit.scope}/${hit.category}`;
+    }
+    const tag = initial.get("tag");
+    if (tag) tagFilter.value = tag;
+    return reload();
+  });
+  await ready;
+}
+
+async function onAdd() {
   const saved = await openEntryEditor({});
   if (saved) await refreshAll();
-});
+}
 
-$("manageCats").addEventListener("click", async () => {
+async function onManageCats() {
   // 開いた時点で持っているものを描き、**ダイアログを開いてから** await する
   // （開く前に待つと、その間のクリックが黙って無視される）
   paintCategoryManager();
@@ -421,30 +510,4 @@ $("manageCats").addEventListener("click", async () => {
   // 遅いときだけ起きるので気付きにくい）
   await ready;
   paintCategoryManager();
-});
-catDialog.querySelector("[data-ref=catAdd]").addEventListener("click", addCategory);
-catDialog.querySelector("[data-ref=catNew]").addEventListener("keydown", (ev) => {
-  if (ev.key === "Enter") {
-    ev.preventDefault();
-    addCategory();
-  }
-});
-catDialog.querySelector("[data-ref=catClose]").addEventListener("click", () => catDialog.close());
-
-const initial = new URLSearchParams(location.search);
-qInput.value = initial.get("q") || "";
-
-paintEntryCount($("count"));
-ready = Promise.all([loadCategories(), loadTags()]).then(() => {
-  // `?category=` はスコープを持たないことがある（用語ページからのリンクなど）。
-  // `?scope=` があればそれで、無ければ最初に見つかったものに合わせる
-  const cat = initial.get("category");
-  if (cat) {
-    const wanted = initial.get("scope");
-    const hit = tree.find((n) => n.category === cat && (!wanted || n.scope === wanted));
-    if (hit) catFilter.value = `${hit.scope}/${hit.category}`;
-  }
-  const tag = initial.get("tag");
-  if (tag) tagFilter.value = tag;
-  reload();
-});
+}

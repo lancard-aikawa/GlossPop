@@ -317,6 +317,27 @@ class Linker:
             return iter(())
         return self._re.finditer(text)
 
+    def entries_in(self, text: str) -> list[Entry]:
+        """**素のテキスト**に出てくるエントリを初出順で返す。
+
+        `annotate()` から「リンクを差し込む」を抜いたもので、当たり方は同じ。
+        別に照合を書くと**リンクにならない語を「出てくる」と言う**ようになるので、
+        ここも `finditer()` と同じ正規表現から出す（`?ref=` の出現探しと同じ話）。
+
+        HTML ではなく素のテキストを見るので、`SKIP_TAGS`（`pre` や既存のリンクの
+        内側）の除外は掛からない。文書に**出てくるか**を知りたい側の口で、
+        本文にリンクを貼る側の口ではない。
+        """
+        hits: dict[str, Entry] = {}
+        for m in self.finditer(text):
+            matched = m.group(0)
+            group = self._groups.get(matched.casefold()) or self._groups.get(matched.lower())
+            if group is None:
+                continue
+            for entry in group.entries:
+                hits.setdefault(entry.ref, entry)
+        return list(hits.values())
+
     def annotate(
         self,
         html: str,

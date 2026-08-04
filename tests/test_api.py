@@ -804,6 +804,44 @@ def test_graph_rejects_an_unknown_scope(client):
     assert client.get("/api/graph", params={"scope": "どこか"}).status_code == 400
 
 
+def test_graph_can_be_narrowed_to_one_document(client):
+    """`?doc=` は、その文書に出てくる語だけの図にする。
+
+    出てくるかどうかは `Linker` の規則で決める（素の部分一致に戻すと
+    リンクにならない語まで「出てくる」ことになる）。相手が出てこない関係は
+    落として数だけ返す —— 足すと、その文書に無い語が図に混ざる。
+    """
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    _person(client, "ザネリ")
+    client.put(
+        f"/api/entries/{ref_path(a)}",
+        json={
+            "term": "ジョバンニ",
+            "category": "登場人物",
+            "relations": [{"to": b, "label": "親友"}, {"to": "ザネリ", "label": "同級生"}],
+        },
+    )
+    (config.content_dir() / "章1.md").write_text(
+        "ジョバンニはカムパネルラと歩いた。\n", encoding="utf-8"
+    )
+
+    g = client.get("/api/graph", params={"doc": "章1.md"}).json()
+    assert {n["term"] for n in g["nodes"]} == {"ジョバンニ", "カムパネルラ"}
+    assert [e["label"] for e in g["edges"]] == ["親友"]
+    assert g["outside"] == 1            # ザネリ行きは黙って消さない
+    assert g["doc"] == "章1.md"
+
+    # 絞らなければ全部出る（既定は変わっていない）
+    whole = client.get("/api/graph").json()
+    assert len(whole["nodes"]) == 3 and whole["outside"] == 0 and whole["doc"] == ""
+
+
+def test_graph_refuses_a_document_outside_content(client):
+    assert client.get("/api/graph", params={"doc": "../secret.md"}).status_code == 400
+    assert client.get("/api/graph", params={"doc": "ない.md"}).status_code == 404
+
+
 def test_entry_detail_carries_relations_both_ways(client):
     a = _person(client, "ジョバンニ")
     b = _person(client, "カムパネルラ")

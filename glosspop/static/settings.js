@@ -86,13 +86,19 @@ function build() {
             解凍すればそのまま読めます。<strong>フォルダの辞書（<code>.glosspop</code>）と
             URL ごとの辞書は含みません。</strong>
           </p>
+          <!-- 書き出しは 1 つの動作、取り込みは「どう取り込むか」を伴う動作。
+               行を分けて、取り込み方はその押すボタンの隣に置く（前に置くと
+               書き出しにも掛かって見える）。選択ボックスは中身に合わせて短く -->
           <div class="setting-row setting-row-plain">
             <button type="button" data-ref="export">⬇ 書き出す</button>
-            <select data-ref="importMode" aria-label="取り込み方">
-              <option value="replace">置き換える</option>
-              <option value="merge">併合する（足して上書き）</option>
-            </select>
+          </div>
+          <div class="setting-row setting-row-plain">
             <button type="button" data-ref="importPick">⬆ 取り込む…</button>
+            <label class="field-inline" for="gp-import-mode">取り込み方</label>
+            <select id="gp-import-mode" class="auto-width" data-ref="importMode">
+              <option value="replace">置き換える</option>
+              <option value="merge">併合する</option>
+            </select>
             <input type="file" accept=".zip,application/zip" data-ref="importFile" hidden>
           </div>
           <p class="notice">

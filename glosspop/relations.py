@@ -14,6 +14,7 @@ ref でも、用語名そのままでもよい。ID を別に持たない代わ�
 
 from __future__ import annotations
 
+from collections.abc import Container
 from dataclasses import dataclass, field
 
 from .linker import entry_url
@@ -130,11 +131,17 @@ def build_graph(
     scope: str | None = None,
     category: str | None = None,
     spoilers: bool = False,
+    only: Container[str] | None = None,
 ) -> dict:
-    """相関図に渡す ``{nodes, edges, broken, hidden}`` を作る。
+    """相関図に渡す ``{nodes, edges, broken, hidden, outside}`` を作る。
 
     ``scope`` / ``category`` は図に載せる範囲。範囲外のエントリでも、辺の相手に
     なっていれば ``outside`` 付きのノードとして足す（辺が宙に浮かないように）。
+
+    ``only`` は**ここに挙げた ref しか出さない**（「この文書に出てくる語だけ」）。
+    こちらは相手を足さない —— 足すと**その文書に出てこない語が図に混ざる**ので、
+    絞った意味が無くなる。落とした辺は数えて ``outside`` で返す
+    （**黙って欠けた図を出さない**。``hidden`` と同じ約束）。
 
     ``spoilers=False`` のとき、``reveal`` が書かれた関係は **出さずに数だけ返す**。
     相関図は本文より先を一望させてしまうので、既定は伏せる側に倒す。
@@ -145,11 +152,13 @@ def build_graph(
         e for e in entries
         if (scope is None or e.scope == scope)
         and (category is None or e.category == category)
+        and (only is None or e.ref in only)
     ]
     nodes: dict[str, dict] = {e.ref: _node(e, inside=True) for e in inside}
     edges: list[dict] = []
     broken: list[dict] = []
     hidden = 0
+    outside = 0
 
     for entry in inside:
         # **番号は「伏せたものも数えた」位置。** 相関図から関係を直すとき、
@@ -161,6 +170,11 @@ def build_graph(
                 hidden += 1
                 continue
             res = resolve(rel.to, entries, origin=entry)
+            if only is not None and (res.entry is None or res.entry.ref not in only):
+                # 絞ったときは相手を足さない。足すと、その文書に出てこない語が
+                # 図に混ざって「この文書の図」でなくなる（数だけ返す）
+                outside += 1
+                continue
             if res.entry is None:
                 broken.append({
                     "from": entry.ref,
@@ -199,6 +213,8 @@ def build_graph(
         "broken": broken,
         # 黙って伏せない: 何本隠したかは必ず返す
         "hidden": hidden,
+        # 絞り込みの外を向いていて落とした辺。絞っていないときは必ず 0
+        "outside": outside,
     }
 
 

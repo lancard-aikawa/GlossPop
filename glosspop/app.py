@@ -754,17 +754,37 @@ def graph(
     category: str | None = None,
     scope: str | None = None,
     spoilers: bool = False,
+    doc: str | None = None,
 ) -> dict:
     """エントリ間の関係をノードと辺で返す。配置はクライアントの仕事。
+
+    ``doc`` を渡すと、**その文書に出てくる語だけ**の図になる。出てくるかどうかは
+    `Linker` に決めさせる —— 素の部分一致に戻すと `API` が `rapid` に当たり、
+    **リンクにならない語を「出てくる」と言う**ことになる（`?ref=` の出現探しと
+    同じ規則）。読むのは 1 文書だけで、フォルダ全体には広げない。
 
     ``spoilers=False`` （既定）では ``reveal`` が書かれた関係を出さない。
     伏せた本数は ``hidden`` で返すので、UI は「黙って欠けている」状態にはならない。
     """
     if scope is not None and scope not in (GLOBAL_SCOPE, LOCAL_SCOPE):
         raise HTTPException(400, f"不明な保存先です: {scope}")
-    return relations.build_graph(
-        store.load_all(), scope=scope, category=category, spoilers=spoilers
+
+    entries = store.load_all()
+    only: set[str] | None = None
+    if doc:
+        path = _safe_content_path(doc)
+        try:
+            text = documents.read_cached(path).plain
+        except documents.DocumentError as exc:
+            raise HTTPException(400, f"読めません: {doc}（{exc}）") from exc
+        only = {e.ref for e in _linker().entries_in(text)}
+
+    result = relations.build_graph(
+        entries, scope=scope, category=category, spoilers=spoilers, only=only
     )
+    # 何に絞ったのかは画面に出す（絞っていないときは「辞書全体」と言わせる）
+    result["doc"] = doc or ""
+    return result
 
 
 def _relation_scope(category: str, scope: str) -> list[Entry]:

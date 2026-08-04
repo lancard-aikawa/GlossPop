@@ -28,66 +28,15 @@ try {
   <span class="meta" id="count"></span>
 </div>
 
+<!-- 中身は graph.js が描く（ビューアに重ねるときと同じものを、同じ出どころから） -->
 <div class="page">
-  <div class="page-inner">
-    <div class="toolbar graph-toolbar">
-      <select id="category" class="auto-width" aria-label="カテゴリ"></select>
-      <label class="check">
-        <input type="checkbox" id="spoilers">
-        <span>判明位置つきの関係も出す</span>
-      </label>
-      <button type="button" id="draft" title="登録済みの用語どうしの関係を本文から探す">
-        ✨ 関係を下書き
-      </button>
-      <a class="btn" href="/doctor" title="辞書全体の壊れを点検する">🩺 点検</a>
-      <span class="spacer"></span>
-      <span class="status" id="status"></span>
-    </div>
-    <p class="notice" id="notes" hidden></p>
-    <div class="graph-canvas" id="canvas">
-      <p class="empty">読み込み中…</p>
-    </div>
-    <p class="hint" id="legend"></p>
-  </div>
+  <div class="page-inner" id="page-root"></div>
 </div>
 
-<!-- 辺を押すと開く。点検ページと同じで、直すためにページを渡り歩かせない -->
-<dialog class="sheet" id="edgeDialog">
-  <div class="edge-editor">
-    <header>
-      <h2>関係を直す</h2>
-      <div class="spacer"></div>
-      <button type="button" class="ghost" data-ref="close" aria-label="閉じる">✕</button>
-    </header>
-    <p class="rel-who" data-ref="who"></p>
-    <div class="body">
-      <label>相手
-        <input type="text" data-ref="to" autocomplete="off"
-               placeholder="用語名 または カテゴリ/slug"></label>
-      <label>この語から見た一言
-        <input type="text" data-ref="label" autocomplete="off" placeholder="例: 親友"></label>
-      <label>逆から見た一言
-        <input type="text" data-ref="back" autocomplete="off" placeholder="空なら一方的（→）"></label>
-      <label>上下
-        <select data-ref="rank" class="auto-width"></select></label>
-      <label>判明する位置
-        <input type="text" data-ref="reveal" autocomplete="off"
-               placeholder="例: 第6章（書くと図では既定で伏せる）"></label>
-    </div>
-    <footer>
-      <button type="button" class="danger" data-ref="remove">削除</button>
-      <span class="status" data-ref="status"></span>
-      <span class="spacer"></span>
-      <button type="button" data-ref="cancel">やめる</button>
-      <button type="button" class="primary" data-ref="save">保存</button>
-    </footer>
-    <p class="hint">
-      すべて「この語から見た相手」の向きで書きます。相手側に同じ関係を書く必要はありません。
-    </p>
-  </div>
-</dialog>
-
-<script type="module" src="/static/graph.js"></script>
+<script type="module">
+  import { mount } from "/static/graph.js";
+  mount(document.getElementById("page-root"), { search: location.search });
+</script>
 <script type="module" src="/static/settings.js"></script>
 </body>
 </html>

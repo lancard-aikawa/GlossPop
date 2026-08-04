@@ -102,6 +102,14 @@ try {
         <span class="spacer"></span>
         <button type="button" id="speak" title="本文を読み上げる (辞書のリンクと吹き出しはそのまま使える)" hidden>▶ 読み上げ</button>
         <button type="button" id="extract" title="この文書から辞書化する語を挙げる">✨ 用語を抽出</button>
+        <!-- 下書きが読むのは「いま開いている文書」。読むものが決まっている場所は
+             ここだけなので、相関図ではなく本文の側に置く -->
+        <button type="button" id="draftRelations"
+                title="この文書から、登録済みの用語どうしの関係を探す">✨ 関係を下書き</button>
+        <!-- フォルダの中のファイルを開いているときだけ。貼り付け / URL には
+             サーバ側から読み直せる道が無いので出さない（出しても絞れない） -->
+        <a class="btn" id="docGraph" href="/graph"
+           title="この文書に出てくる語だけの相関図" hidden>🕸 この文書の相関図</a>
       </div>
       <div class="check-row speech-bar" id="speechBar" hidden>
         <button type="button" id="speakPrev" title="前の段落">◀◀</button>

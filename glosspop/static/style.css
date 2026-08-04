@@ -105,12 +105,14 @@ a { color: var(--accent); }
 .brand span { color: var(--accent); }
 
 .topnav { display: flex; gap: 4px; }
+/* 見た目がボタンなので、ボタンと同じく折り返さない (`button, .btn` の項) */
 .topnav a {
   padding: 4px 12px;
   border-radius: 999px;
   text-decoration: none;
   color: var(--fg-dim);
   font-size: 13px;
+  white-space: nowrap;
 }
 .topnav a:hover { background: var(--panel-2); color: var(--fg); }
 .topnav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
@@ -134,7 +136,6 @@ a { color: var(--accent); }
   font-family: inherit;
   font-size: 13px;
   cursor: pointer;
-  white-space: nowrap;
 }
 .topbar-action:hover { background: var(--panel-2); }
 .topbar-action:hover .topbar-action-icon { transform: rotate(30deg); }
@@ -149,10 +150,14 @@ a { color: var(--accent); }
   .topbar-action-icon { transition: none; }
   .topbar-action:hover .topbar-action-icon { transform: none; }
 }
-/* 幅が足りないときは歯車だけにする（ナビが折り返して崩れるより良い） */
+/* 幅が足りないときは歯車だけにする（ナビが折り返して崩れるより良い）。
+   ボタンの文字は折り返さない＝縮まないので、足りないぶんは間隔を詰め、
+   無くても困らない語数を落とす（ここを削らないと横スクロールが出る） */
 @media (max-width: 640px) {
   .topbar-action span:not(.topbar-action-icon) { display: none; }
   .topbar-action { padding: 4px 10px; }
+  .topbar { gap: 10px; }
+  .topbar .meta { display: none; }
 }
 
 /* ---------------------------------------------------------------- layout */
@@ -200,6 +205,12 @@ main.doc-wrap { padding: 28px 40px 120px; }
    これが無いと JS 側の `node.hidden = true` が効かず、要素が出たままになる */
 [hidden] { display: none !important; }
 
+/* **ボタンの文字は決して折り返さない。** 幅が足りないとき、詰めて縦に割れた
+   ラベル（「保 / 存」）は読めないし、押せる範囲も分からなくなる。狭いところでは
+   ボタン自体を折り返すか (`flex-wrap: wrap`)、ラベルを削ること。
+   `flex-shrink: 0` が対（無いと flex の行で潰されて、nowrap の文字が枠から溢れる）。
+   長い名前が入りうるもの（ファイル一覧・統合の候補）は個別に `…` で切る —— 折り返しに
+   戻さないこと。ここを 1 か所で決めているので、ボタンごとに nowrap を書き足さない */
 button, .btn {
   font: inherit;
   font-size: 13px;
@@ -214,6 +225,8 @@ button, .btn {
   align-items: center;
   gap: 6px;
   line-height: 1.4;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 button:hover, .btn:hover { border-color: var(--accent); color: var(--accent); }
 button:disabled { opacity: .5; cursor: default; }
@@ -268,9 +281,15 @@ label.check {
   line-height: 1.4;
 }
 label.check input { accent-color: var(--accent); margin: 0; }
+/* ボタンは縮まないので、幅は入力欄と `.wide` の側で吸収する（どちらも縮む）。
+   **ここを `flex-wrap: wrap` にしないこと** —— `.wide` は幅 100% なので、
+   横に並ぶ小さなボタン（お気に入りの ☆）が必ず次の行へ落ちる */
 .check-row { display: flex; gap: 6px; align-items: center; }
 
-.wide { width: 100%; }
+/* 幅いっぱいに広げるもの。**縮んでよい**（`button` の `flex-shrink: 0` を戻す）——
+   横に別のボタンが並ぶ行 (`.check-row`) で縮めないと、行が枠から溢れて隣のボタンが
+   画面外へ出る。文字は折り返さないままなので、詰まっても縦には割れない */
+.wide { width: 100%; min-width: 0; flex-shrink: 1; }
 .auto-width { width: auto; }
 .gap-top { margin-top: 6px; }
 button.icon { padding: 0 5px; }
@@ -296,15 +315,20 @@ body.dropping::after {
 .filelist, .termlist { list-style: none; margin: 0; padding: 0; }
 .filelist li, .termlist li { margin-bottom: 2px; }
 
+/* ファイル名と章名は長くなりうるが、ボタンなので折り返さない。溢れたぶんは `…` で
+   切る（全体は `title` に入れてある）。`display: block` なのは、inline-flex のままだと
+   中の文字が匿名のフレックス項目になって text-overflow が効かないため */
 .filelist button {
+  display: block;
   width: 100%;
-  justify-content: flex-start;
   border-color: transparent;
   background: transparent;
   font-size: 13px;
   text-align: left;
   padding: 4px 8px;
   color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .filelist button:hover { background: var(--panel-2); color: var(--fg); }
 .filelist button[aria-current="true"] {
@@ -325,6 +349,8 @@ body.dropping::after {
   color: var(--fg);
 }
 .search-file h3 .count { color: var(--fg-faint); font-weight: 400; }
+/* ここだけがボタンで折り返す。中身はラベルではなく本文の抜粋で、1 行に切ると
+   何にヒットしたのか分からなくなる。**ラベルを持つボタンには広げないこと** */
 .search-results .filelist button {
   display: block;
   white-space: normal;
@@ -538,7 +564,6 @@ dialog.sheet footer {
      (詰めるとボタンの文字が縦に割れて読めなくなる) */
   flex-wrap: wrap;
 }
-dialog.sheet footer button { white-space: nowrap; }
 dialog.sheet footer .spacer { flex: 1; }
 
 /* ダイアログのタブ。**選択中がひと目で分かる差を付けること** —— 下線だけだと
@@ -652,6 +677,34 @@ dialog.sheet footer .spacer { flex: 1; }
   overflow: auto;
   padding: 28px 24px 80px;
 }
+
+/* ビューアの上に重ねる覆い。**ビューアを隠さずに上に乗せる** —— `display: none`
+   で下を消すと、戻したときにスクロール位置が失われる（重ねる目的が「本文を
+   そのまま残す」ことなので、そこが崩れると意味が無い）。
+   `top` は topbar の高さを JS が入れる（topbar は覆いの外に残して使えるまま
+   にしてあり、高さは文字サイズで変わるので決め打ちにしない） */
+.overlay {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: 52px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: auto;
+}
+.overlay > .page { padding-top: 8px; }
+.overlay-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 24px 0;
+}
+/* 覆いが出ている間、下のビューアは触らせない（読み上げなどは動いたまま） */
+body.overlaid .layout { pointer-events: none; }
 .page-inner { max-width: 900px; margin: 0 auto; }
 .page h1 { font-size: 1.5em; margin: 0 0 4px; }
 .page .lede { color: var(--fg-dim); font-size: 13px; margin: 0 0 20px; }
@@ -719,6 +772,8 @@ dialog.sheet footer .spacer { flex: 1; }
 .entry-head .summary { margin: 10px 0 0; font-size: 15px; }
 
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+/* 丸い粒が割れると印に見えなくなるので、こちらも折り返さない
+   (`.chips` 側が `flex-wrap: wrap` なので、粒ごと次の行へ落ちる) */
 .chip {
   font-size: 11px;
   padding: 1px 9px;
@@ -727,6 +782,7 @@ dialog.sheet footer .spacer { flex: 1; }
   border: 1px solid var(--border);
   color: var(--fg-dim);
   text-decoration: none;
+  white-space: nowrap;
 }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
 
@@ -736,12 +792,15 @@ dialog.sheet footer .spacer { flex: 1; }
 dialog.sheet .cat-manager { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
 dialog.sheet .cat-manager .body { padding: 8px 18px; overflow: auto; }
 dialog.sheet .cat-manager footer { flex-wrap: wrap; }
+/* ボタンは縮まないので、幅が足りないときは行のほうを折り返す。詰めると
+   カテゴリ名の側が 1 文字ずつ縦に割れる（ダイアログの footer と同じ考え方） */
 .cat-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 9px 0;
   border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
 }
 /* 目次。章が多い本でも脇のパネルを占領しないよう、高さで区切ってスクロールさせる */
 .toc { max-height: 40vh; overflow: auto; margin-bottom: 6px; }
@@ -784,7 +843,9 @@ dialog.sheet .edge-editor .rel-who {
 dialog.sheet .edge-editor > .hint { padding: 0 18px 12px; margin: 0; }
 
 .cat-row:last-child { border-bottom: 0; }
-.cat-row-main { flex: 1; min-width: 0; }
+/* 基準幅を持たせる。`flex: 1`（基準 0）だと、ボタンが縮まないぶん名前の側が
+   0 まで潰れて 1 文字ずつ縦に割れる。基準を割ったら行ごと折り返す */
+.cat-row-main { flex: 1 1 140px; min-width: 0; }
 .cat-row-name { font-size: 14px; font-weight: 600; }
 .cat-row-meta { font-size: 11px; color: var(--fg-faint); overflow-wrap: anywhere; }
 
@@ -804,10 +865,20 @@ dialog.sheet .edge-editor > .hint { padding: 0 18px 12px; margin: 0; }
 .move-panel input { width: auto; }
 /* 統合ダイアログ。**既存の変数だけで作る** —— 新しい色を足すと、ダークの定義が
    2 か所にあるぶん片方だけ直す事故が起きる */
-.merge-results { display: grid; gap: 6px; margin-top: 10px; max-height: 40vh; overflow: auto; }
+/* 列に `minmax(0, 1fr)` を使う。既定 (`auto` = min-content 以上) だと、折り返さない
+   候補の説明のぶんだけ列が伸びて**横スクロールが出る**（`…` で切られない） */
+.merge-results {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  margin-top: 10px;
+  max-height: 40vh;
+  overflow: auto;
+}
 .merge-cand {
   display: block;
   width: 100%;
+  min-width: 0;
   text-align: left;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -816,8 +887,10 @@ dialog.sheet .edge-editor > .hint { padding: 0 18px 12px; margin: 0; }
   cursor: pointer;
 }
 .merge-cand:hover { border-color: var(--border-strong); background: var(--panel-2); }
-.merge-cand .t { display: block; font-weight: 600; font-size: 14px; }
-.merge-cand .s { display: block; font-size: 11px; color: var(--fg-faint); }
+/* 用語名も説明も長くなりうる。ボタンなので折り返さず `…` で切る */
+.merge-cand .t, .merge-cand .s { display: block; overflow: hidden; text-overflow: ellipsis; }
+.merge-cand .t { font-weight: 600; font-size: 14px; }
+.merge-cand .s { font-size: 11px; color: var(--fg-faint); }
 .merge-section { margin-top: 18px; }
 .merge-section > h3 {
   font-size: 11px;
@@ -1017,9 +1090,12 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .setting-choice label.check { align-items: flex-start; }
 .setting-choice label.check > span { display: flex; flex-direction: column; gap: 2px; }
 .setting-choice .hint { margin: 0; }
-.setting-row { display: flex; gap: 8px; align-items: center; margin: 0 0 10px 22px; }
+/* 横のボタンが縮まないので、幅が足りないときは行を折り返す。詰めると
+   見出し（「モデル」）が 1 文字ずつ縦に割れる */
+.setting-row { display: flex; gap: 8px; align-items: center; margin: 0 0 10px 22px; flex-wrap: wrap; }
 .setting-row[hidden] { display: none; }
-.setting-row input { flex: 1 1 auto; width: auto; }
+.setting-row > label { white-space: nowrap; }
+.setting-row input { flex: 1 1 120px; width: auto; min-width: 0; }
 .path-details { margin-top: 12px; }
 .path-details summary {
   cursor: pointer;

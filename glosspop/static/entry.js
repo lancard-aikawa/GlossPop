@@ -5,13 +5,13 @@ import { installSelectionAdd } from "./select-add.js";
 import { openEntryEditor, encodePath } from "./editor.js";
 import { openMerge } from "./merge.js";
 
-const root = document.getElementById("root");
-const countNode = document.getElementById("count");
-const initialRef = decodeURIComponent(
-  location.pathname.replace(/^\/glossary\/?/, "").replace(/\/$/, "")
-);
-
-installGlossPopup();
+//: 描く先。`/glossary/<カテゴリ>/<slug>` を直接開いたときはそのページの器、
+//: ビューアに重ねるときは覆いの器。**`location` を直接読まない** —— 重ねると
+//: 「覆いが出しているもの」と食い違う
+let root = null;
+let countNode = null;
+let initialRef = "";
+let selection = null;
 
 /** 表記 -> [{ref, path_label}] の索引。関連語をリンクにするために使う。 */
 let index = new Map();
@@ -19,17 +19,6 @@ let index = new Map();
 let allEntries = [];
 /** 表示中のエントリ。 */
 let current = null;
-
-// 辞書ページの本文でも、知らない語を選択してそのまま登録できるようにする
-const selection = installSelectionAdd({
-  root,
-  source: () => (current ? `辞書: ${current.term}` : "辞書"),
-  onSaved: async () => {
-    invalidatePopupCache();
-    await Promise.all([loadIndex(), reload()]);
-    paintEntryCount(countNode);
-  },
-});
 
 async function loadIndex() {
   try {
@@ -542,7 +531,31 @@ async function mergeWith(entry) {
   history.replaceState(null, "", `/glossary/${encodePath(merged)}`);
 }
 
-async function main() {
+/**
+ * 用語ページを ``host`` に描く。ページとして開いたときも、ビューアに重ねる
+ * ときも、ここを通る。``path`` は `/glossary/<カテゴリ>/<slug>`。
+ */
+export async function mount(host, { path = "" } = {}) {
+  root = host;
+  countNode = document.getElementById("count");   // topbar は覆いの外
+  initialRef = decodeURIComponent(
+    (path || location.pathname).replace(/^\/glossary\/?/, "").replace(/\/$/, "")
+  );
+  current = null;
+  root.replaceChildren(el("p", { class: "empty", text: "読み込み中…" }));
+
+  installGlossPopup();
+  // 辞書ページの本文でも、知らない語を選択してそのまま登録できるようにする
+  selection = installSelectionAdd({
+    root,
+    source: () => (current ? `辞書: ${current.term}` : "辞書"),
+    onSaved: async () => {
+      invalidatePopupCache();
+      await Promise.all([loadIndex(), reload()]);
+      paintEntryCount(countNode);
+    },
+  });
+
   paintEntryCount(countNode);
   await loadIndex();
   try {
@@ -556,5 +569,3 @@ async function main() {
     );
   }
 }
-
-main();

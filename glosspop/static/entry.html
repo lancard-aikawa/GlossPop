@@ -28,13 +28,15 @@ try {
   <span class="meta" id="count"></span>
 </div>
 
+<!-- 中身は entry.js が描く（ビューアに重ねるときと同じものを、同じ出どころから） -->
 <div class="page">
-  <div class="page-inner" id="root">
-    <p class="empty">読み込み中…</p>
-  </div>
+  <div class="page-inner" id="page-root"></div>
 </div>
 
-<script type="module" src="/static/entry.js"></script>
+<script type="module">
+  import { mount } from "/static/entry.js";
+  mount(document.getElementById("page-root"), { path: location.pathname });
+</script>
 <script type="module" src="/static/settings.js"></script>
 </body>
 </html>

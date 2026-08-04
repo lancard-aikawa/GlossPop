@@ -7,6 +7,10 @@ const MAX_TERM_LEN = 100;
 const CONTEXT_LEN = 1400;
 const BLOCK_SELECTOR = "p,li,td,th,h1,h2,h3,h4,h5,h6,blockquote,pre,dd,dt,figcaption";
 
+//: 仕掛けたもの。**開き直すたびに増えないよう**、外れた root のぶんは次の
+//: install のときに片付ける（ビューアに重ねる作りになってから必要になった）
+const installs = new Set();
+
 /** 選択範囲の前後を含めた文脈テキストを取り出す (AI 下書きの精度用)。 */
 function selectionContext(range) {
   const start = range.commonAncestorContainer;
@@ -45,12 +49,32 @@ async function lookup(term) {
  * @param {(entry: object) => void} [o.onSaved] 保存後に呼ばれる (再描画用)
  */
 export function installSelectionAdd({ root, source = () => "", onSaved = () => {} }) {
+  // **使い終わったものを片付ける。** ビューアに重ねるようになってから、辞書や
+  // 用語ページは開くたびに描き直される（＝ここも呼び直される）。放っておくと
+  // ボタンと document の listener が開いた回数だけ増え、外れた本文を相手に
+  // 動き続ける。**目印は「その root がもう文書に居ないこと」**
+  for (const old of [...installs]) {
+    if (document.contains(old.root)) continue;
+    old.destroy();
+    installs.delete(old);
+  }
+
+  const abort = new AbortController();
+  const on = { signal: abort.signal };
   const button = document.createElement("button");
   button.type = "button";
   button.className = "sel-add primary";
   button.textContent = "＋ 辞書に登録";
   button.hidden = true;
   document.body.append(button);
+  const entry = {
+    root,
+    destroy: () => {
+      abort.abort();
+      button.remove();
+    },
+  };
+  installs.add(entry);
 
   let pending = null;
 
@@ -82,20 +106,20 @@ export function installSelectionAdd({ root, source = () => "", onSaved = () => {
     button.style.top = `${Math.round(top)}px`;
   }
 
-  document.addEventListener("mouseup", () => setTimeout(refresh, 0));
+  document.addEventListener("mouseup", () => setTimeout(refresh, 0), on);
   document.addEventListener("keyup", (ev) => {
     if (ev.shiftKey || ev.key === "Shift") setTimeout(refresh, 0);
-  });
+  }, on);
   document.addEventListener("selectionchange", () => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) hide();
-  });
+  }, on);
   window.addEventListener("scroll", () => {
     if (!button.hidden) refresh();
-  }, { passive: true, capture: true });
+  }, { passive: true, capture: true, signal: abort.signal });
   window.addEventListener("resize", () => {
     if (!button.hidden) refresh();
-  });
+  }, on);
 
   // mousedown を止めて、クリック時点でも選択を保持しておく
   button.addEventListener("mousedown", (ev) => ev.preventDefault());
@@ -116,5 +140,5 @@ export function installSelectionAdd({ root, source = () => "", onSaved = () => {
     if (saved) onSaved(saved);
   });
 
-  return { refresh, hide, button };
+  return { refresh, hide, button, destroy: entry.destroy };
 }

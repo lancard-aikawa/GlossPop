@@ -28,27 +28,15 @@ try {
   <span class="meta" id="count"></span>
 </div>
 
+<!-- 中身は doctor.js が描く（ビューアに重ねるときと同じものを、同じ出どころから） -->
 <div class="page">
-  <div class="page-inner">
-    <div class="entry-head">
-      <h1>辞書の点検</h1>
-      <p class="summary">
-        壊れているものだけを挙げます。カテゴリ違いの同名や、関係が書かれていない語は
-        正常なので出しません。
-      </p>
-    </div>
-    <div class="toolbar">
-      <button type="button" id="reload">もう一度点検する</button>
-      <span class="spacer"></span>
-      <span class="status" id="status"></span>
-    </div>
-    <div id="root">
-      <p class="empty">点検中…</p>
-    </div>
-  </div>
+  <div class="page-inner" id="page-root"></div>
 </div>
 
-<script type="module" src="/static/doctor.js"></script>
+<script type="module">
+  import { mount } from "/static/doctor.js";
+  mount(document.getElementById("page-root"));
+</script>
 <script type="module" src="/static/settings.js"></script>
 </body>
 </html>

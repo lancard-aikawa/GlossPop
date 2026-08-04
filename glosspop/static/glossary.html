@@ -28,53 +28,15 @@ try {
   <span class="meta" id="count"></span>
 </div>
 
+<!-- 中身は glossary.js が描く（ビューアに重ねるときと同じものを、同じ出どころから） -->
 <div class="page">
-  <div class="page-inner">
-    <h1>用語辞書</h1>
-    <p class="lede" id="lede"></p>
-
-    <div class="toolbar">
-      <input type="search" id="q" placeholder="用語・別名・本文を検索" autocomplete="off"
-             title="用語・別名・本文を検索" aria-label="用語・別名・本文を検索">
-      <select id="catFilter" class="auto-width" title="カテゴリで絞り込む" aria-label="カテゴリで絞り込む">
-        <option value="">すべてのカテゴリ</option>
-      </select>
-      <select id="tagFilter" class="auto-width" title="タグで絞り込む" aria-label="タグで絞り込む">
-        <option value="">すべてのタグ</option>
-      </select>
-      <span class="spacer"></span>
-      <button type="button" id="manageCats">カテゴリ管理</button>
-      <button type="button" class="primary" id="add">＋ 新規登録</button>
-    </div>
-
-    <div id="list"></div>
-  </div>
+  <div class="page-inner" id="page-root"></div>
 </div>
 
-<dialog class="sheet" id="catDialog">
-  <div class="cat-manager">
-    <header>
-      <h2>カテゴリ管理</h2>
-      <div class="spacer"></div>
-      <button type="button" class="ghost" data-ref="catClose" aria-label="閉じる">✕</button>
-    </header>
-    <div class="body" data-ref="catBody"></div>
-    <footer>
-      <select data-ref="catScope" title="どちらの辞書に作るか" aria-label="どちらの辞書に作るか" hidden>
-        <option value="global">全体の辞書</option>
-        <option value="local">📁 このフォルダの辞書</option>
-      </select>
-      <input type="text" data-ref="catNew" class="auto-width" placeholder="新しいカテゴリ名"
-             title="新しいカテゴリ名" aria-label="新しいカテゴリ名" autocomplete="off">
-      <button type="button" data-ref="catAdd">＋ 追加</button>
-      <span class="status" data-ref="catStatus"></span>
-      <span class="spacer"></span>
-      <span class="hint">用語 0 件のカテゴリも登録できます。並びは ↑ ↓ で変えられます。削除できるのは空のカテゴリだけです。</span>
-    </footer>
-  </div>
-</dialog>
-
-<script type="module" src="/static/glossary.js"></script>
+<script type="module">
+  import { mount } from "/static/glossary.js";
+  mount(document.getElementById("page-root"), { search: location.search });
+</script>
 <script type="module" src="/static/settings.js"></script>
 </body>
 </html>

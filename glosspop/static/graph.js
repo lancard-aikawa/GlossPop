@@ -3,18 +3,78 @@
 // 力学モデル (力の釣り合いを反復して解く) は使わない。カテゴリという階層が
 // すでにあるうえ、`rank`（上下）で層が決まるので、決定的に置けば足りる。
 // 乱数も収束待ちも無いぶん、同じ辞書なら毎回同じ絵になる。
+//
+// **入れ物は外から渡される**（`mount()`）。`/graph` を直接開いたときは
+// そのページの器に、ビューアの上に重ねるときは覆いの器に、同じものを描く。
 import { api, el, paintEntryCount, RANK_OPTIONS, setStatus } from "./base.js";
 import { encodePath } from "./editor.js";
-import { openRelationsDialog } from "./relations-draft.js";
 
-const canvas = document.getElementById("canvas");
-const notes = document.getElementById("notes");
-const legend = document.getElementById("legend");
-const statusNode = document.getElementById("status");
-const countNode = document.getElementById("count");
-const categorySelect = document.getElementById("category");
-const spoilerCheck = document.getElementById("spoilers");
-const draftButton = document.getElementById("draft");
+//: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
+//: 片方だけ直したときに「ページでは出るのに重ねると出ない」になる）
+const TEMPLATE = `
+<div class="toolbar graph-toolbar">
+  <!-- **何を出している図なのかを必ず書く。** 書かないと、辞書全体の図を
+       「開いている文書の図」だと思われる（その取り違えが元で下書きを
+       ここから外した。→ docs/design-notes.md） -->
+  <span class="hint" id="scopeNote"></span>
+  <a class="btn" id="scopeAll" href="/graph" hidden>辞書全体を出す</a>
+  <select id="category" class="auto-width" aria-label="カテゴリ"></select>
+  <label class="check">
+    <input type="checkbox" id="spoilers">
+    <span>判明位置つきの関係も出す</span>
+  </label>
+  <!-- **ここに「関係を下書き」を戻さないこと。** この図は辞書全体を出すのに、
+       下書きは開いているフォルダの本文を読む。並べると「図に出ている語について
+       探す」と読まれるが、実際に読むのはビューアで開いているものとも図とも
+       一致しない範囲だった（→ docs/design-notes.md） -->
+  <a class="btn" href="/doctor" title="辞書全体の壊れを点検する">🩺 点検</a>
+  <span class="spacer"></span>
+  <span class="status" id="status"></span>
+</div>
+<p class="notice" id="notes" hidden></p>
+<div class="graph-canvas" id="canvas">
+  <p class="empty">読み込み中…</p>
+</div>
+<p class="hint" id="legend"></p>
+
+<!-- 辺を押すと開く。点検ページと同じで、直すためにページを渡り歩かせない -->
+<dialog class="sheet" id="edgeDialog">
+  <div class="edge-editor">
+    <header>
+      <h2>関係を直す</h2>
+      <div class="spacer"></div>
+      <button type="button" class="ghost" data-ref="close" aria-label="閉じる">✕</button>
+    </header>
+    <p class="rel-who" data-ref="who"></p>
+    <div class="body">
+      <label>相手
+        <input type="text" data-ref="to" autocomplete="off"
+               placeholder="用語名 または カテゴリ/slug"></label>
+      <label>この語から見た一言
+        <input type="text" data-ref="label" autocomplete="off" placeholder="例: 親友"></label>
+      <label>逆から見た一言
+        <input type="text" data-ref="back" autocomplete="off" placeholder="空なら一方的（→）"></label>
+      <label>上下
+        <select data-ref="rank" class="auto-width"></select></label>
+      <label>判明する位置
+        <input type="text" data-ref="reveal" autocomplete="off"
+               placeholder="例: 第6章（書くと図では既定で伏せる）"></label>
+    </div>
+    <footer>
+      <button type="button" class="danger" data-ref="remove">削除</button>
+      <span class="status" data-ref="status"></span>
+      <span class="spacer"></span>
+      <button type="button" data-ref="cancel">やめる</button>
+      <button type="button" class="primary" data-ref="save">保存</button>
+    </footer>
+    <p class="hint">
+      すべて「この語から見た相手」の向きで書きます。相手側に同じ関係を書く必要はありません。
+    </p>
+  </div>
+</dialog>
+`;
+
+let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck;
 
 //: 2 つの ref をつないで組の鍵にするための区切り。カテゴリ名も slug も
 //: "<" ">" を弾いているので、ref の中身と衝突しない
@@ -388,7 +448,7 @@ function draw(graph) {
 // 辞書ページまで移動させると、図を見ながらの手直しが続かない。
 // --------------------------------------------------------------------------- //
 
-const edgeDialog = document.getElementById("edgeDialog");
+let edgeDialog;
 const dlg = (name) => edgeDialog.querySelector(`[data-ref=${name}]`);
 
 /** ref -> 用語名。ダイアログの見出しに使う（辺が持つのは ref だけ） */
@@ -472,8 +532,15 @@ async function onEdgeRemove() {
 // 読み込み
 // --------------------------------------------------------------------------- //
 
-const params = new URLSearchParams(location.search);
-let currentScope = params.get("scope") || "";
+let params = new URLSearchParams("");
+let currentScope = "";
+//: 絞り込む文書（ビューアから `?doc=` で渡ってくる）。空なら辞書全体。
+//: **何に絞っているかは必ず画面に出す** —— 出さないと、辞書全体の図を
+//: 「開いている文書の図」だと思われる（逆も同じ）
+let currentDoc = "";
+//: ビューアの上に重ねられているか。重ねているときは topbar を書き換えない
+//: （戻るのは覆いを閉じるだけで、ページ移動ではない）
+let embedded = false;
 
 async function loadCategories() {
   const tree = await api("/api/categories").catch(() => []);
@@ -496,6 +563,27 @@ async function loadCategories() {
   }
 }
 
+/** 何を出している図なのかを画面に書く（絞っているなら外す口も出す）。 */
+function paintScope() {
+  const note = document.getElementById("scopeNote");
+  const all = document.getElementById("scopeAll");
+  note.textContent = currentDoc
+    ? `📄 「${currentDoc}」に出てくる語だけ`
+    : "辞書全体を出しています";
+  // 外すときも、カテゴリなど他の絞り込みは残す
+  const rest = new URLSearchParams(params);
+  rest.delete("doc");
+  all.href = rest.toString() ? `/graph?${rest}` : "/graph";
+  all.hidden = !currentDoc;
+
+  // **戻り先も同じ文書にする。** ページとして開かれているとき、topbar の
+  // 「ビューア」は素の `/` なので、押すと読んでいたものが消えて案内文に戻る、
+  // と見える。重ねているときは触らない（戻るのは覆いを閉じるだけ）
+  if (embedded) return;
+  const back = document.querySelector('.topnav a[href="/"]');
+  if (back && currentDoc) back.href = `/?open=${encodeURIComponent(currentDoc)}`;
+}
+
 function selection() {
   if (!categorySelect.value) return { category: null, scope: null };
   // カテゴリ名に空白は使えるが "/" は使えない。最初の "/" で 1 回だけ割る
@@ -508,6 +596,13 @@ function selection() {
 
 function paintNotes(graph) {
   const lines = [];
+  if (graph.outside) {
+    // 絞ったぶんで落ちた辺。黙って欠けた図を出さない
+    lines.push(
+      `この文書に出てこない語との関係を ${graph.outside} 本伏せています` +
+      "（相手も出てくる文書で見るか、辞書全体に戻してください）。"
+    );
+  }
   if (graph.hidden) {
     // 黙って伏せない。何本隠しているかは必ず出す
     lines.push(
@@ -528,6 +623,7 @@ async function refresh() {
   if (category) query.set("category", category);
   if (scope) query.set("scope", scope);
   if (spoilerCheck.checked) query.set("spoilers", "true");
+  if (currentDoc) query.set("doc", currentDoc);
   try {
     const graph = await api(`/api/graph?${query}`);
     draw(graph);
@@ -544,25 +640,33 @@ async function refresh() {
   }
 }
 
-async function onDraft() {
-  const { category, scope } = selection();
-  draftButton.disabled = true;
-  try {
-    // 書き込まれたぶんを図に反映する。0 本でも状態は描き直しておく
-    if (await openRelationsDialog({ category: category || "", scope: scope || "" })) {
-      await refresh();
-    }
-  } finally {
-    draftButton.disabled = false;
-  }
-}
+/**
+ * 相関図を ``host`` に描く。
+ *
+ * `/graph` を直接開いたときも、ビューアの上に重ねるときも、ここを通る。
+ * **入れ物と URL は外から渡す** —— `location` を直接読むと、重ねたときに
+ * 「いま覆いが出しているもの」と食い違う。
+ */
+export async function mount(host, { search = "", embed = false } = {}) {
+  host.innerHTML = TEMPLATE;
+  canvas = host.querySelector("#canvas");
+  notes = host.querySelector("#notes");
+  legend = host.querySelector("#legend");
+  statusNode = host.querySelector("#status");
+  categorySelect = host.querySelector("#category");
+  spoilerCheck = host.querySelector("#spoilers");
+  edgeDialog = host.querySelector("#edgeDialog");
+  countNode = document.getElementById("count");   // topbar は覆いの外
+  params = new URLSearchParams(search);
+  currentScope = params.get("scope") || "";
+  currentDoc = params.get("doc") || "";
+  embedded = embed;
+  termByRef = new Map();
 
-async function main() {
   // **listener は最初の await より前に付ける。** あとに回すと、その間の操作が
   // 黙って無視される（設定ダイアログと extract.js で 2 回踏んだ）
   categorySelect.addEventListener("change", refresh);
   spoilerCheck.addEventListener("change", refresh);
-  draftButton.addEventListener("click", onDraft);
   dlg("rank").replaceChildren(
     ...RANK_OPTIONS.map(([value, text]) => el("option", { value, text }))
   );
@@ -572,9 +676,9 @@ async function main() {
     dlg(name).addEventListener("click", () => edgeDialog.close());
   }
 
+  // 読み込みを待たずに書く。何の図なのかは最初から見えていないと意味が無い
+  paintScope();
   paintEntryCount(countNode);
   await loadCategories();
   await refresh();
 }
-
-main();

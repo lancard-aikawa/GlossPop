@@ -25,8 +25,14 @@ function ensurePop() {
   pop.addEventListener("pointerleave", () => {
     if (!pinned) scheduleHide();
   });
-  // アコーディオンを開閉しても閉じないよう、内側のクリックは外に伝えない
-  pop.addEventListener("click", (ev) => ev.stopPropagation());
+  pop.addEventListener("click", (ev) => {
+    // **中のリンクは外へ通す。** 止めると、覆いを開く仕掛け（`overlay.js` の
+    // document 上の listener）まで届かず、「辞書ページを開く →」だけが
+    // ページ移動になる（＝読んでいた本文が捨てられる）
+    if (ev.target.closest("a[href]")) return hide();
+    // アコーディオンを開閉しても閉じないよう、それ以外は外に伝えない
+    ev.stopPropagation();
+  });
   document.body.append(pop);
   return pop;
 }
@@ -180,14 +186,32 @@ async function show(anchor) {
   if (current === anchor) place(anchor);
 }
 
+//: 辞書が変わった回数。**「変わったか」を知る唯一の合図**として使う ——
+//: 覆いを閉じたときに本文を描き直すべきかの判断がこれ（増えていなければ
+//: リンクも吹き出しも変わらないので、描き直さない）
+let revision = 0;
+
 /** 辞書が更新されたら呼ぶ (吹き出しが古い内容を出さないように)。 */
 export function invalidatePopupCache(surface) {
   if (surface) cache.delete(surface);
   else cache.clear();
+  revision += 1;
+}
+
+/** 辞書が変わった回数。前に取った値と比べて使う。 */
+export function dictionaryRevision() {
+  return revision;
 }
 
 /** ページ全体に 1 回だけ仕掛ける。 */
+//: 二重に付けない。ビューアに重ねると、ビューアと用語ページの両方から
+//: 呼ばれる（同じ document なので、付けた数だけ吹き出しが開こうとする）
+let installed = false;
+
 export function installGlossPopup() {
+  if (installed) return;
+  installed = true;
+
   document.addEventListener("pointerover", (ev) => {
     const anchor = ev.target.closest?.("a.gloss-link");
     if (!anchor || anchor === current) return;

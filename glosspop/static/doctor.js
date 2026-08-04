@@ -7,10 +7,28 @@ import { api, el, paintEntryCount, setStatus } from "./base.js";
 import { encodePath, openEntryEditor } from "./editor.js";
 import { invalidatePopupCache } from "./popup.js";
 
-const root = document.getElementById("root");
-const statusNode = document.getElementById("status");
-const countNode = document.getElementById("count");
-const reloadButton = document.getElementById("reload");
+//: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない）。
+//: id を使わず `data-ref` にしてあるのは、ビューアに重ねたときに**同じ id が
+//: 2 つある文書**にならないようにするため（ビューアにも `#root` がある）
+const TEMPLATE = `
+<div class="entry-head">
+  <h1>辞書の点検</h1>
+  <p class="summary">
+    壊れているものだけを挙げます。カテゴリ違いの同名や、関係が書かれていない語は
+    正常なので出しません。
+  </p>
+</div>
+<div class="toolbar">
+  <button type="button" data-ref="reload">もう一度点検する</button>
+  <span class="spacer"></span>
+  <span class="status" data-ref="status"></span>
+</div>
+<div data-ref="report">
+  <p class="empty">点検中…</p>
+</div>
+`;
+
+let root, statusNode, countNode, reloadButton;
 
 /** その場で編集ダイアログを開く。ページを渡り歩かせない。 */
 async function fix(ref) {
@@ -96,6 +114,17 @@ async function refresh() {
   reloadButton.disabled = false;
 }
 
-paintEntryCount(countNode);
-reloadButton.addEventListener("click", refresh);
-refresh();
+/**
+ * 点検を ``host`` に描く。`/doctor` を直接開いたときも、ビューアの上に
+ * 重ねるときも、ここを通る。
+ */
+export async function mount(host) {
+  host.innerHTML = TEMPLATE;
+  root = host.querySelector("[data-ref=report]");
+  statusNode = host.querySelector("[data-ref=status]");
+  reloadButton = host.querySelector("[data-ref=reload]");
+  countNode = document.getElementById("count");   // topbar は覆いの外
+  reloadButton.addEventListener("click", refresh);
+  paintEntryCount(countNode);
+  await refresh();
+}

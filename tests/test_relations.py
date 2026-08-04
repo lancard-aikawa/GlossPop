@@ -301,6 +301,48 @@ class TestGraph:
         assert g["edges"][0]["index"] == 1     # 伏せた 1 本ぶんずれない
         assert g["hidden"] == 1
 
+    def test_only_keeps_the_listed_refs_and_drops_the_rest(self, cast, add_entry):
+        """`only`（この文書に出てくる語だけ）は、**相手を足さない**。
+
+        カテゴリ絞りは辺が宙に浮かないよう相手を `outside` として足すが、
+        こちらで足すと**その文書に出てこない語が図に混ざる**。絞った意味が
+        無くなるので落とし、落とした数を返す（黙って欠けた図を出さない）。
+        """
+        giovanni, campanella = cast
+        zanelli = add_entry("ザネリ", category="登場人物")
+        store.save(
+            EntryDraft(
+                term=giovanni.term, category=giovanni.category,
+                relations=[rel(to=campanella.ref, label="親友"),
+                           rel(to=zanelli.ref, label="同級生")],
+            ),
+            ref=giovanni.ref,
+        )
+        g = relations.build_graph(store.load_all(), only={giovanni.ref, campanella.ref})
+        assert {n["term"] for n in g["nodes"]} == {"ジョバンニ", "カムパネルラ"}
+        assert [e["label"] for e in g["edges"]] == ["親友"]
+        assert g["outside"] == 1               # ザネリ行きは数だけ返す
+
+    def test_only_drops_unresolved_targets_too(self, cast):
+        """行き先が未登録の関係も、絞ったときは出さない。
+
+        未登録の語は**文書に出てくる語ではありえない**（辞書に無いのだから
+        照合対象にならない）。赤リンクとして足すと、絞ったはずの図に
+        この文書と関係の無いノードが生える。壊れの報告は点検の仕事。
+        """
+        giovanni, _ = cast
+        _link(giovanni, "まだ書いていない人", label="兄")
+        g = relations.build_graph(store.load_all(), only={giovanni.ref})
+        assert [n["term"] for n in g["nodes"]] == ["ジョバンニ"]
+        assert g["edges"] == []
+        assert g["broken"] == []
+        assert g["outside"] == 1
+
+    def test_outside_is_zero_when_not_filtered(self, cast):
+        giovanni, campanella = cast
+        _link(giovanni, campanella.ref, label="親友")
+        assert relations.build_graph(store.load_all())["outside"] == 0
+
 
 class TestBacklinks:
     def test_the_side_that_did_not_write_it_still_sees_it(self, cast):

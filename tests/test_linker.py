@@ -138,6 +138,39 @@ def test_hits_are_in_first_appearance_order():
     assert [e.slug for e in hits] == ["u", "i", "a"]
 
 
+class TestEntriesIn:
+    """素のテキストに出てくるエントリ（相関図を 1 文書に絞るのに使う）。"""
+
+    def test_returns_entries_in_first_appearance_order(self):
+        entries = [mk("あ", slug="a"), mk("い", slug="i"), mk("う", slug="u")]
+        found = Linker(entries).entries_in("う い あ")
+        assert [e.slug for e in found] == ["u", "i", "a"]
+
+    def test_uses_the_same_rule_as_the_links(self):
+        """**リンクにならない語を「出てくる」と言わない。**
+
+        素の部分一致に戻すと `API` が `rapid` に当たる。同じ正規表現から出す
+        かぎり、本文でリンクになる語と «出てくる» 語は必ず一致する。
+        """
+        entries = [mk("API", slug="api")]
+        assert Linker(entries).entries_in("rapid development") == []
+        assert [e.slug for e in Linker(entries).entries_in("the API here")] == ["api"]
+
+    def test_an_alias_counts_as_the_entry(self):
+        entry = mk("冪等", aliases=["idempotent"], slug="idempotent")
+        assert [e.slug for e in Linker([entry]).entries_in("it is idempotent.")] == ["idempotent"]
+
+    def test_the_same_surface_in_two_categories_yields_both(self):
+        entries = [mk("ソース", category="料理", slug="sauce"),
+                   mk("ソース", category="開発", slug="source")]
+        found = Linker(entries).entries_in("ソースをかける")
+        assert sorted(e.slug for e in found) == ["sauce", "source"]
+
+    def test_empty_glossary_and_empty_text(self):
+        assert Linker([]).entries_in("なにもない") == []
+        assert Linker([mk("あ", slug="a")]).entries_in("") == []
+
+
 class TestAcrossInlineMarkup:
     """強調などで語が分断されていても、またいで一致させる。"""
 
