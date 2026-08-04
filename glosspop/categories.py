@@ -130,9 +130,12 @@ def write(categories: list[Category], scope: str = GLOBAL_SCOPE) -> None:
     _write(categories, scope)
 
 
-def _write(categories: list[Category], scope: str = GLOBAL_SCOPE) -> None:
-    path = _require_file(scope)
-    path.parent.mkdir(parents=True, exist_ok=True)
+def dumps(categories: list[Category]) -> str:
+    """マスターの YAML 文字列を作る。
+
+    **書式の正はここ 1 か所。** ファイルへ書くのも、書き出しの zip に一部だけ
+    入れるのも同じものを通す（2 か所で組み立てると、片方だけ項目が増える）。
+    """
     payload = {
         "categories": [
             {
@@ -147,7 +150,13 @@ def _write(categories: list[Category], scope: str = GLOBAL_SCOPE) -> None:
             for c in categories
         ]
     }
-    text = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    return yaml.safe_dump(payload, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
+
+def _write(categories: list[Category], scope: str = GLOBAL_SCOPE) -> None:
+    path = _require_file(scope)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = dumps(categories)
     tmp = path.with_suffix(".yaml.tmp")
     tmp.write_text(text, encoding="utf-8", newline="\n")
     tmp.replace(path)

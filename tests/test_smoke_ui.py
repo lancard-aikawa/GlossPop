@@ -1497,6 +1497,50 @@ def test_the_settings_dialog_exports_and_imports_the_glossary(page, server, isol
     assert "開き直して" not in result.inner_text()
 
 
+def test_the_settings_dialog_can_export_one_category(page, server, isolated_dirs):
+    """辞書の一部だけを渡せる。**決めるのは書き出す側だけ。**
+
+    選んだ時点で「何語入るか」と「渡した先で行き先の無くなる関係が何本か」を
+    出すところまで見る（押したあとでは気付けない）。
+    """
+    store.save(EntryDraft(term="ソース", category="料理", definition="本文。"))
+    store.save(EntryDraft(
+        term="冪等", category="プログラミング", definition="本文。",
+        relations=[{"to": "料理/ソース", "label": "例"}],
+    ))
+
+    page.goto(f"{server}/glossary")
+    page.locator("#settings").wait_for(timeout=15000)
+    page.click("#settings")
+    scope = page.locator("dialog.sheet[open] [data-ref=exportScope]")
+    scope.wait_for(timeout=10000)
+
+    note = page.locator("dialog.sheet[open] [data-ref=exportNote]")
+    page.wait_for_function(
+        "() => (document.querySelector('dialog.sheet[open] [data-ref=exportNote]')"
+        "?.textContent || '').includes('辞書全体')",
+        timeout=10000,
+    )
+    assert "2 語" in note.inner_text()
+
+    # カテゴリは読み込みが届いてから足される（開いた時点では「辞書全体」だけ）
+    page.wait_for_function(
+        "() => document.querySelectorAll("
+        "'dialog.sheet[open] [data-ref=exportScope] option').length > 1",
+        timeout=10000,
+    )
+    scope.select_option("プログラミング")
+    page.wait_for_function(
+        "() => (document.querySelector('dialog.sheet[open] [data-ref=exportNote]')"
+        "?.textContent || '').includes('このカテゴリ')",
+        timeout=10000,
+    )
+    said = note.inner_text()
+    assert "1 語" in said
+    # **黙って切らない。** 渡した先で相手を失う関係は数で出す
+    assert "行き先の無くなる関係が 1 本" in said and "冪等 → ソース" in said
+
+
 def test_the_settings_dialog_can_merge_instead_of_replacing(page, server, isolated_dirs, tmp_path):
     """併合を選ぶと、**手元にしか無い語が消えないこと**。
 

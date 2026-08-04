@@ -244,6 +244,38 @@ def test_export_downloads_a_zip(client):
     assert res.content[:2] == b"PK"
 
 
+def test_export_can_take_one_category(client):
+    """一部だけ渡す。**決めるのは書き出す側だけ**（取り込む側は変えていない）。"""
+    import io
+    import zipfile
+
+    client.post("/api/entries", json=ENTRY)
+    client.post("/api/entries", json={"term": "ソース", "category": "料理"})
+
+    res = client.get("/api/export", params={"category": "料理"})
+    assert res.status_code == 200
+    assert "-part-" in res.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(res.content)) as zf:
+        names = set(zf.namelist())
+    assert "glossary/料理/ソース.md" in names
+    assert not any(name.startswith("glossary/プログラミング/") for name in names)
+
+
+def test_the_export_plan_says_what_would_lose_its_target(client):
+    """一部だけ渡すと、渡した先で相手の居ない関係ができる。押す前に数で出す。"""
+    client.post("/api/entries", json={"term": "ソース", "category": "料理"})
+    client.post("/api/entries", json={
+        **ENTRY, "relations": [{"to": "料理/ソース", "label": "例"}],
+    })
+
+    whole = client.get("/api/export/plan").json()
+    assert whole["entries"] == 2 and whole["dangling_count"] == 0
+
+    part = client.get("/api/export/plan", params={"category": "プログラミング"}).json()
+    assert part["entries"] == 1 and part["dangling_count"] == 1
+    assert part["partial"] is True
+
+
 def test_import_replaces_the_glossary_and_keeps_a_backup(client):
     from glosspop import archive
 

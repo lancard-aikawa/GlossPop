@@ -548,20 +548,34 @@ def import_data(req: ImportRequest) -> dict:
 
 
 @app.get("/api/export")
-def export_glossary() -> Response:
+def export_glossary(category: list[str] = Query(default=[])) -> Response:
     """全体の辞書とカテゴリマスターを zip で返す（バックアップ / 持ち出し）。
 
     中身は Markdown のまま。解凍すればエディタで読めることを保つため、独自形式に
     しない。フォルダの辞書と URL ごとの辞書は含まない（それぞれ別の運び方がある）。
+
+    ``category`` を渡すと**そのカテゴリだけ**を書き出す（1 カテゴリだけ人に渡す
+    用途）。**取り込む側は変えていない** —— 併合は入っているものを足して上書き
+    するだけなので、中身が一部でもそのまま通る。
     """
+    picked = [name for name in category if name.strip()]
     return Response(
-        content=archive.export_bytes(),
+        content=archive.export_bytes(picked),
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{archive.export_name()}"',
+            "Content-Disposition": f'attachment; filename="{archive.export_name(picked)}"',
             "Cache-Control": "no-store",
         },
     )
+
+
+@app.get("/api/export/plan")
+def export_glossary_plan(category: list[str] = Query(default=[])) -> dict:
+    """書き出す前の下見。**何語入るか**と、**行き先が外に出る関係が何本か**。
+
+    一部だけ渡すと、渡した先で相手の居ない関係ができる。押す前に数で見せる。
+    """
+    return archive.export_plan([name for name in category if name.strip()])
 
 
 async def _archive_body(request: Request) -> bytes:

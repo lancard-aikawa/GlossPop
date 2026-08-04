@@ -41,9 +41,9 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from . import categories, config, store
+from . import categories, config, relations, store
 from .installer import InstallError, safe_members
-from .models import CategoryNameError
+from .models import GLOBAL_SCOPE, CategoryNameError
 
 #: zip の中の置き場所。展開時もこの名前で探す
 GLOSSARY_PREFIX = "glossary/"
@@ -75,23 +75,32 @@ def backup_dir() -> Path:
 # 書き出し
 # --------------------------------------------------------------------------- #
 
-def export_bytes() -> bytes:
+def export_bytes(only: list[str] | None = None) -> bytes:
     """全体の辞書とカテゴリマスターを zip にして返す。
 
     ファイルはそのまま入れる（Markdown のまま）。**解凍すればテキストエディタで
     読める**ことを保ったままにするため、独自形式にはしない。
+
+    ``only`` にカテゴリ名を渡すと**そのカテゴリだけ**を入れる（1 カテゴリだけ人に
+    渡す用途）。**取り込む側は何も変えなくてよい** —— 併合は「入っているものを
+    足して上書きする」だけなので、中身が一部でもそのまま通る。決めるのは
+    書き出す側だけ、という切り分けにしてある。
     """
     root = config.GLOSSARY_DIR
+    picked = set(only) if only else None
     buf = io.BytesIO()
     count = 0
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         if root.exists():
             for path in sorted(root.glob("*/*.md")):
+                if picked is not None and path.parent.name not in picked:
+                    continue
                 rel = path.relative_to(root).as_posix()
                 zf.writestr(f"{GLOSSARY_PREFIX}{rel}", path.read_bytes())
                 count += 1
-        if config.CATEGORIES_FILE.exists():
-            zf.writestr(CATEGORIES_NAME, config.CATEGORIES_FILE.read_bytes())
+        master = _export_categories(picked)
+        if master is not None:
+            zf.writestr(CATEGORIES_NAME, master)
         zf.writestr(
             MANIFEST_NAME,
             json.dumps(
@@ -99,6 +108,10 @@ def export_bytes() -> bytes:
                     "app": "GlossPop",
                     "kind": "glossary",
                     "entries": count,
+                    # 一部だけ書き出したことは中身にも残す（受け取った側が
+                    # 「これで全部」と思わないように）
+                    "partial": picked is not None,
+                    "categories": sorted(picked) if picked is not None else [],
                     "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 },
                 ensure_ascii=False,
@@ -108,8 +121,62 @@ def export_bytes() -> bytes:
     return buf.getvalue()
 
 
-def export_name() -> str:
-    return f"glosspop-glossary-{_stamp()}.zip"
+def _export_categories(picked: set[str] | None) -> bytes | None:
+    """zip に入れるカテゴリマスター。
+
+    **全部書き出すときはファイルをそのまま。** 控え (`write_backup`) もここを
+    通るので、書式ごと元に戻せる形を崩さない。一部だけのときは選んだぶんを
+    組み立て直す（渡す相手に関係の無いカテゴリの説明と並びを送りつけない）。
+    """
+    if picked is None:
+        if not config.CATEGORIES_FILE.exists():
+            return None
+        return config.CATEGORIES_FILE.read_bytes()
+    items = [c for c in categories.load() if c.name in picked]
+    if not items:
+        return None
+    return categories.dumps(items).encode("utf-8")
+
+
+def export_name(only: list[str] | None = None) -> str:
+    """書き出す zip の名前。
+
+    **カテゴリ名はファイル名に入れない。** 空白も日本語も使えるので、
+    ``Content-Disposition`` に載せると経路ごとに化ける。一部であることだけ示す。
+    """
+    part = "-part" if only else ""
+    return f"glosspop-glossary{part}-{_stamp()}.zip"
+
+
+def export_plan(only: list[str] | None = None) -> dict:
+    """書き出す前の下見。**何語入るか**と、**行き先が外に出る関係が何本か**。
+
+    一部だけ渡すと、渡した先で**相手の居ない関係**ができる（関係は名前で書くので
+    保存はできるが、リンクにも図の辺にもならない）。押す前に数で見せておかないと、
+    受け取った側が「関係が消えた」と読む。数えるのは**解決できている関係だけ** ——
+    もともと壊れている参照は点検 (`/doctor`) の担当で、ここで二重に出さない。
+    """
+    picked = set(only) if only else None
+    entries = [e for e in store.load_all() if e.scope == GLOBAL_SCOPE]
+    inside = [e for e in entries if picked is None or e.category in picked]
+    refs = {e.ref for e in inside}
+
+    dangling: list[str] = []
+    for entry in inside:
+        for rel in entry.relations:
+            target = relations.resolve(rel.to, entries, origin=entry).entry
+            if target is not None and target.ref not in refs:
+                dangling.append(f"{entry.term} → {target.term}")
+    return {
+        "entries": len(inside),
+        "categories": sorted(picked) if picked is not None else sorted(
+            {e.category for e in entries}
+        ),
+        "partial": picked is not None,
+        "dangling": _cut(dangling),
+        "dangling_count": len(dangling),
+        "truncated": len(dangling) > MAX_REPORTED,
+    }
 
 
 def write_backup() -> Path:

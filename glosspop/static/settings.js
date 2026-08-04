@@ -89,9 +89,17 @@ function build() {
           <!-- 書き出しは 1 つの動作、取り込みは「どう取り込むか」を伴う動作。
                行を分けて、取り込み方はその押すボタンの隣に置く（前に置くと
                書き出しにも掛かって見える）。選択ボックスは中身に合わせて短く -->
+          <!-- **渡す範囲は書き出す側で決める。** 取り込む側は変えていない
+               （併合は入っているものを足して上書きするだけなので、中身が一部でも
+               そのまま通る）。→ docs/design-notes.md -->
           <div class="setting-row setting-row-plain">
             <button type="button" data-ref="export">⬇ 書き出す</button>
+            <label class="field-inline" for="gp-export-scope">範囲</label>
+            <select id="gp-export-scope" class="auto-width" data-ref="exportScope">
+              <option value="">辞書全体</option>
+            </select>
           </div>
+          <p class="hint" data-ref="exportNote"></p>
           <div class="setting-row setting-row-plain">
             <button type="button" data-ref="importPick">⬆ 取り込む…</button>
             <label class="field-inline" for="gp-import-mode">取り込み方</label>
@@ -419,10 +427,37 @@ export async function openSettingsDialog() {
     }
   };
 
+  /** 書き出す範囲。空なら辞書全体（カテゴリ名は空白を含みうるので値のまま使う）。 */
+  const exportQuery = () => (refs.exportScope.value
+    ? `?category=${encodeURIComponent(refs.exportScope.value)}`
+    : "");
+
+  /**
+   * 何語入って、**行き先が外に出る関係が何本あるか**を先に出す。
+   *
+   * 一部だけ渡すと、渡した先で相手の居ない関係ができる（保存はできるが、
+   * リンクにも図の辺にもならない）。押したあとでは気付けないので、選んだ時点で
+   * 数を見せる。書き出し自体は何も壊さないので、確認までは取らない。
+   */
+  const onExportScope = async () => {
+    refs.exportNote.textContent = "";
+    try {
+      const plan = await api(`/api/export/plan${exportQuery()}`);
+      const dangling = plan.dangling_count
+        ? `。渡した先で行き先の無くなる関係が ${plan.dangling_count} 本あります`
+          + `（例: ${plan.dangling.slice(0, 3).join("、")}）`
+        : "";
+      refs.exportNote.textContent =
+        `${plan.partial ? "このカテゴリ" : "辞書全体"}で ${plan.entries} 語${dangling}。`;
+    } catch (err) {
+      refs.exportNote.textContent = err.message;
+    }
+  };
+
   /** 辞書を zip で書き出す。ブラウザに保存させるだけなので確認は要らない。 */
   const onExport = () => {
     // `api()` は JSON を返す前提なので、ダウンロードは素の遷移でやる
-    const frame = el("a", { href: "/api/export", download: "" });
+    const frame = el("a", { href: `/api/export${exportQuery()}`, download: "" });
     document.body.append(frame);
     frame.click();
     frame.remove();
@@ -667,6 +702,7 @@ export async function openSettingsDialog() {
   refs.modeCustom.addEventListener("change", onMode);
   refs.theme.addEventListener("change", onTheme);
   refs.export.addEventListener("click", onExport);
+  refs.exportScope.addEventListener("change", onExportScope);
   refs.importPick.addEventListener("click", onImportPick);
   refs.importFile.addEventListener("change", onImportFile);
   refs.download.addEventListener("click", onDownload);
@@ -683,6 +719,22 @@ export async function openSettingsDialog() {
   refs.cancel.addEventListener("click", finish);
   refs.close.addEventListener("click", finish);
   refs.form.addEventListener("submit", onSubmit);
+
+  // **開いた時点で持っているものを描き、届いたら足す。** 選択肢には「辞書全体」が
+  // 最初から入っているので、読み込みが遅くても書き出し自体はできる
+  onExportScope();
+  api("/api/categories")
+    .then((tree) => {
+      refs.exportScope.append(
+        ...tree
+          // 書き出すのは全体の辞書だけ（フォルダの辞書はフォルダごと運ぶ）
+          .filter((node) => node.scope !== "local" && node.count > 0)
+          .map((node) => el("option", { value: node.category, text: node.category }))
+      );
+    })
+    .catch(() => {
+      /* 選べなくても辞書全体は書き出せる。ここで止めない */
+    });
 
   // AI の設定は保存先とは別に読む。片方が落ちてももう片方は使えるように
   // （**listener を付けたあとの最初の await より前に**、読み込みを始めない）
@@ -724,6 +776,7 @@ export async function openSettingsDialog() {
         refs.modeCustom.removeEventListener("change", onMode);
         refs.theme.removeEventListener("change", onTheme);
         refs.export.removeEventListener("click", onExport);
+        refs.exportScope.removeEventListener("change", onExportScope);
         refs.importPick.removeEventListener("click", onImportPick);
         refs.importFile.removeEventListener("change", onImportFile);
         refs.download.removeEventListener("click", onDownload);

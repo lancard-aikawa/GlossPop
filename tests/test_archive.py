@@ -61,6 +61,100 @@ def test_export_of_an_empty_glossary_still_works():
 
 
 # --------------------------------------------------------------------------- #
+# 一部だけ書き出す
+#
+# **決めるのは書き出す側だけ。** 取り込む側は何も変えていない —— 併合は
+# 「入っているものを足して上書きする」だけなので、中身が一部でもそのまま通る。
+# --------------------------------------------------------------------------- #
+
+class TestExportingOneCategory:
+    def test_takes_only_that_category(self, add_entry):
+        add_entry("冪等", category="プログラミング")
+        add_entry("ソース", category="料理")
+        names = _names(archive.export_bytes(["料理"]))
+
+        assert "glossary/料理/ソース.md" in names
+        assert not any(name.startswith("glossary/プログラミング/") for name in names)
+
+    def test_says_so_in_the_manifest(self, add_entry):
+        """受け取った側が「これで全部」と思わないように、中身にも残す。"""
+        add_entry("冪等", category="プログラミング")
+        add_entry("ソース", category="料理")
+        with zipfile.ZipFile(io.BytesIO(archive.export_bytes(["料理"]))) as zf:
+            manifest = json.loads(zf.read(archive.MANIFEST_NAME))
+        assert manifest["partial"] is True
+        assert manifest["categories"] == ["料理"] and manifest["entries"] == 1
+
+    def test_trims_the_category_master_too(self, add_entry):
+        """渡す相手に関係の無いカテゴリの説明と並びを送りつけない。"""
+        add_entry("冪等", category="プログラミング")
+        add_entry("ソース", category="料理")
+        with zipfile.ZipFile(io.BytesIO(archive.export_bytes(["料理"]))) as zf:
+            master = zf.read(archive.CATEGORIES_NAME).decode("utf-8")
+        assert "料理" in master and "プログラミング" not in master
+
+    def test_a_full_export_keeps_the_master_file_as_is(self, add_entry):
+        """全部書き出すときはファイルそのまま（控えもここを通る）。"""
+        add_entry("冪等", category="プログラミング")
+        with zipfile.ZipFile(io.BytesIO(archive.export_bytes())) as zf:
+            assert zf.read(archive.CATEGORIES_NAME) == config.CATEGORIES_FILE.read_bytes()
+
+    def test_merging_it_back_leaves_the_rest_alone(self, add_entry):
+        """**取り込む側は変えていない。** 一部だけの zip でも併合はそのまま通る。"""
+        add_entry("冪等", category="プログラミング")
+        sauce = add_entry("ソース", category="料理", definition="元の説明。")
+        part = archive.export_bytes(["料理"])
+
+        store.save(
+            EntryDraft(term="ソース", category="料理", definition="書き替えた。"), ref=sauce.ref
+        )
+        archive.import_bytes(part, "merge")
+        assert _terms() == {"冪等", "ソース"}       # 手元にしか無い語は消えない
+        assert "元の説明" in store.get(sauce.ref).definition   # 取り込む側が勝つ
+
+    def test_replacing_with_a_partial_zip_still_replaces(self, add_entry):
+        """一部の zip で「置き換え」を選べば、そのぶんだけの辞書になる。
+
+        止めはしない（そう書いてあるとおりに動く）が、控えは必ず取る。
+        """
+        add_entry("冪等", category="プログラミング")
+        add_entry("ソース", category="料理")
+        part = archive.export_bytes(["料理"])
+
+        report = archive.import_bytes(part, "replace")
+        assert _terms() == {"ソース"}
+        assert Path(report["backup"]).exists()
+
+
+class TestExportPlan:
+    def test_counts_what_goes_in(self, add_entry):
+        add_entry("冪等", category="プログラミング")
+        add_entry("ソース", category="料理")
+        assert archive.export_plan(["料理"])["entries"] == 1
+        assert archive.export_plan()["entries"] == 2
+
+    def test_counts_relations_that_would_lose_their_target(self, add_entry):
+        """**一部だけ渡すと、渡した先で相手の居ない関係ができる。**
+
+        保存はできるが、リンクにも図の辺にもならない。押す前に数で見せる。
+        """
+        add_entry("ソース", category="料理")
+        add_entry("冪等", category="プログラミング", relations=[{"to": "料理/ソース", "label": "例"}])
+
+        whole = archive.export_plan()
+        assert whole["dangling_count"] == 0        # 全部渡すなら誰も外に出ない
+
+        part = archive.export_plan(["プログラミング"])
+        assert part["dangling_count"] == 1
+        assert part["dangling"] == ["冪等 → ソース"]
+
+    def test_ignores_references_that_were_already_broken(self, add_entry):
+        """壊れている参照は点検の担当。ここで二重に出さない。"""
+        add_entry("冪等", category="プログラミング", relations=[{"to": "居ない語", "label": "例"}])
+        assert archive.export_plan(["プログラミング"])["dangling_count"] == 0
+
+
+# --------------------------------------------------------------------------- #
 # 取り込み（置き換え）
 # --------------------------------------------------------------------------- #
 
