@@ -400,6 +400,42 @@ def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
     page.locator("svg.rel-graph:not(.rel-fabric)").wait_for(timeout=10000)
 
 
+def test_the_crossing_free_mode_sets_its_words_vertically(page, server, seeded):
+    """列の上の一言は**縦書き**（1 字ずつ立てて積む）。
+
+    `writing-mode: vertical-rl` を使わないのは、**`⇄` が `⇅` に回される**から
+    （`text-orientation: upright` を付けても Chrome では回った）。この辞書では
+    `⇄` が「相互」で、上下は `▲▼` と決めてあるので、回った矢印は別の意味に読める。
+    長音符や括弧のほうは逆に**寝かせる**（立てたままだと横倒しに見える）。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[{"to": b.ref, "label": "パートナー（仮）", "back": "相棒", "rank": "対等"}],
+        ),
+        ref=a.ref,
+    )
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "fabric")
+    page.locator("svg.rel-fabric .rel-edge-label").wait_for(timeout=10000)
+
+    stacked = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-fabric .rel-edge-label tspan')]"
+        ".map((t) => ({ ch: t.textContent, y: Number(t.getAttribute('y')),"
+        " laid: t.hasAttribute('rotate') }))"
+    )
+    # 1 字ずつ、上から下へ積まれている（横に流れていない）
+    assert [s["ch"] for s in stacked] == list("パートナー（仮）⇄相棒")
+    assert [s["y"] for s in stacked] == sorted(s["y"] for s in stacked)
+    assert len({s["y"] for s in stacked}) == len(stacked)
+    # ⇄ は立てたまま、長音符と括弧は寝かせる
+    laid = {s["ch"] for s in stacked if s["laid"]}
+    assert laid == {"ー", "（", "）"}, laid
+
+
 def test_the_graph_dims_everything_but_the_word_you_point_at(page, server, seeded):
     """1 つの語に乗せると、その語の関係だけが濃く出る。
 

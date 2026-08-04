@@ -19,15 +19,62 @@ const NODE_FONT = 12;
 const LONELY_GAP = 34;
 
 //: 縦に書く一言の上限。長い一言をそのまま立てると見出しだけで画面が埋まる
-//: （実例に 24 字のものがあった）。切ったことは「…」と `<title>` で分かる
+//: （実例に 24 字のものがあった）。切ったことは「…」で分かる
 const WORDS_MAX = 12;
+//: 縦書きの字送り（11px の文字を積む間隔）
+const LINE_H = 12.5;
 
-const cut = (text) =>
-  [...text].length > WORDS_MAX ? `${[...text].slice(0, WORDS_MAX).join("")}…` : text;
+//: 縦書きで**寝かせる**文字。長音符・括弧・ダッシュ・リーダは、立てたままだと
+//: 横倒しに見える（「パートナー」の「ー」が横棒のまま残る）。SVG の `rotate`
+//: 属性は 1 字ずつの回転なので、これだけを 90 度倒せる。
+//: **`⇄` は入れないこと** —— この辞書では「相互」の意味で、倒すと `⇅`（上下）に
+//: 見える。上下は `▲▼` と決めてあるので、別の意味に読めてしまう
+const LAID_DOWN = new Set([...'ー〜～（）()「」『』【】［］[]｛｝{}〈〉《》―—–‐-…‥']);
+
+/**
+ * 縦書きにしたときに実際に積まれる文字。**高さの計算と描画で同じものを使う。**
+ *
+ * 空白を落としてから切ること —— 「教師 ⇄ 生徒」の空白は横書きのための区切りで、
+ * 縦に積むと空の 1 行になるので落とす。落とす前に数えると、その 2 字ぶん早く
+ * 切れて、切る必要のない一言にまで「…」が付く（実際にそうなった）。
+ */
+function verticalChars(text) {
+  const chars = [...String(text || "")].filter((ch) => ch !== " ");
+  return chars.length > WORDS_MAX ? [...chars.slice(0, WORDS_MAX), "…"] : chars;
+}
+
+/**
+ * 一言を**縦書き**にする。文字を立てたまま 1 字ずつ積む。
+ *
+ * `writing-mode: vertical-rl` は SVG でも効くが、**`⇄` が `⇅` に回される**
+ * （Unicode がこの記号を「縦では回す」に分類しているため。`text-orientation:
+ * upright` を付けても Chrome では回った）。この辞書では `⇄` が「相互」、上下は
+ * `▲▼` と決めてあるので、回った矢印は**別の意味に読める**。1 字ずつ置けば
+ * 記号もそのままの向きで立つ。どのブラウザでも同じに出る、という利点もある。
+ *
+ * **下端を揃える**（上はぎざぎざ）。列の真上で終わるので、名前から目を落とした
+ * ときにどの列の話なのかが切れずに繋がる。
+ */
+function verticalLabel(text, x, bottom, klass) {
+  const chars = verticalChars(text);
+  const top = bottom - (chars.length - 1) * LINE_H;
+  return svg(
+    "text",
+    { x, y: top, class: klass, "text-anchor": "middle" },
+    chars.map((ch, i) => svg("tspan", {
+      x,
+      y: top + i * LINE_H,
+      rotate: LAID_DOWN.has(ch) ? 90 : null,
+      text: ch,
+    }))
+  );
+}
 
 function edgeTitle(edge) {
   const bits = [edge.mutual ? "相互" : "一方的"];
-  if (edge.label) bits.push(edge.label);
+  // **一言は切って出す**ので、全文はここ（線に乗せたときの吹き出し）で読ませる。
+  // `<text>` の中に `<title>` を入れると、描かれないまま文字の内容に数えられる
+  if (wordsOf(edge)) bits.push(wordsOf(edge));
   if (edge.rank) bits.push(`相手が${edge.rank}`);
   if (edge.reveal) bits.push(`判明: ${edge.reveal}`);
   return bits.join(" / ");
@@ -114,10 +161,9 @@ export function buildFabric(graph, { onEdge } = {}) {
   const colOf = new Map(columns.map((edgeIndex, i) => [edgeIndex, i]));
 
   const labelW = Math.max(60, ...rows.map((n) => estTextWidth(n.term, NODE_FONT)), 0);
-  const headH = Math.max(
-    ...edges.map((e) => estTextWidth(cut(wordsOf(e)), 11)),
-    20
-  ) + 10;
+  // 一言は縦書き。高さは**字数**で決まる（幅ではない）
+  const headH = Math.max(...edges.map((e) => verticalChars(wordsOf(e)).length), 2)
+    * LINE_H + 12;
   const x0 = PAD + labelW + LABEL_GAP;
   const colX = (edgeIndex) => x0 + colOf.get(edgeIndex) * COL_W + COL_W / 2;
   const rowY = (i) => headH + PAD + i * ROW_H;
@@ -176,18 +222,8 @@ export function buildFabric(graph, { onEdge } = {}) {
     const words = wordsOf(edge);
     // 一言は列の上に縦書き。横に書くと 22px の列幅に収まらない
     const text = words
-      ? svg("text", {
-          x,
-          y: headH + PAD - 8,
-          class: "rel-edge-label",
-          "text-anchor": "start",
-          transform: `rotate(-90 ${x} ${headH + PAD - 8})`,
-          text: cut(words),
-        })
+      ? verticalLabel(words, x, headH + PAD - 14, "rel-edge-label")
       : null;
-    if (text && cut(words) !== words) {
-      text.append(svg("title", { text: words }));
-    }
     lines.append(group);
     if (text) labels.append(text);
 
