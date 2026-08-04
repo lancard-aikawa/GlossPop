@@ -29,6 +29,7 @@ from . import (
     render,
     sites,
     store,
+    timeline,
     updates,
 )
 from .linker import Linker, entry_url
@@ -769,23 +770,30 @@ def graph(
 
     ``spoilers=False`` （既定）では ``reveal`` が書かれた関係を出さない。
     伏せた本数は ``hidden`` で返すので、UI は「黙って欠けている」状態にはならない。
+
+    ``doc`` があるときは、**その文書のどこで読めるようになるか**も足す
+    （`timeline.annotate()`。時系列の見せ方が使う）。**辞書全体の図には足さない**
+    —— 読むものが決まっていない以上、時系列は定義できない（`?doc=` と同じ約束）。
     """
     if scope is not None and scope not in (GLOBAL_SCOPE, LOCAL_SCOPE):
         raise HTTPException(400, f"不明な保存先です: {scope}")
 
     entries = store.load_all()
     only: set[str] | None = None
+    document: documents.Document | None = None
     if doc:
         path = _safe_content_path(doc)
         try:
-            text = documents.read_cached(path).plain
+            document = documents.read_cached(path)
         except documents.DocumentError as exc:
             raise HTTPException(400, f"読めません: {doc}（{exc}）") from exc
-        only = {e.ref for e in _linker().entries_in(text)}
+        only = {e.ref for e in _linker().entries_in(document.plain)}
 
     result = relations.build_graph(
         entries, scope=scope, category=category, spoilers=spoilers, only=only
     )
+    if document is not None:
+        timeline.annotate(result, document, _linker())
     # 何に絞ったのかは画面に出す（絞っていないときは「辞書全体」と言わせる）
     result["doc"] = doc or ""
     return result

@@ -317,6 +317,21 @@ class Linker:
             return iter(())
         return self._re.finditer(text)
 
+    def _hits(self, text: str):
+        """``(文字位置, エントリ)`` を**出てくる順**に流す。
+
+        「出てくるか」を知りたい側 (`entries_in`) と「どこで出てくるか」を
+        知りたい側 (`first_positions`) の**共通の出どころ**。片方に別の照合を
+        書くと、リンクにならない語を「出てくる」と言うようになる。
+        """
+        for m in self.finditer(text):
+            matched = m.group(0)
+            group = self._groups.get(matched.casefold()) or self._groups.get(matched.lower())
+            if group is None:
+                continue
+            for entry in group.entries:
+                yield m.start(), entry
+
     def entries_in(self, text: str) -> list[Entry]:
         """**素のテキスト**に出てくるエントリを初出順で返す。
 
@@ -329,14 +344,20 @@ class Linker:
         本文にリンクを貼る側の口ではない。
         """
         hits: dict[str, Entry] = {}
-        for m in self.finditer(text):
-            matched = m.group(0)
-            group = self._groups.get(matched.casefold()) or self._groups.get(matched.lower())
-            if group is None:
-                continue
-            for entry in group.entries:
-                hits.setdefault(entry.ref, entry)
+        for _, entry in self._hits(text):
+            hits.setdefault(entry.ref, entry)
         return list(hits.values())
+
+    def first_positions(self, text: str) -> dict[str, int]:
+        """``ref`` → **その語が最初に出てくる文字位置**。
+
+        当たり方は `entries_in()` とまったく同じ（同じ `_hits()` から出す）。
+        時系列 (`timeline.py`) が「その関係を読めるようになる位置」を出すのに使う。
+        """
+        out: dict[str, int] = {}
+        for start, entry in self._hits(text):
+            out.setdefault(entry.ref, start)
+        return out
 
     def annotate(
         self,

@@ -504,6 +504,74 @@ def test_the_matrix_mode_shows_which_pairs_have_no_relation(page, server, seeded
     assert page.evaluate("() => document.querySelectorAll('.rel-node.here').length") == 1
 
 
+def test_the_timeline_orders_relations_by_where_they_become_readable(page, server, seeded):
+    """時系列は**関係が読めるようになる順**に並べる。
+
+    位置は「両端が出そろうところ」で、毎回その場で計算する（保存しない）。
+    段の図・交差しない図・行列はどれも辞書を平らに出すので、**どの関係が先に
+    読めるようになるのかは絵に出ない** —— そこがこの見せ方の役目。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    zanelli = store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[
+                {"to": b.ref, "label": "親友", "back": "親友", "rank": "対等"},
+                {"to": zanelli.ref, "label": "同級生", "rank": "対等"},
+            ],
+        ),
+        ref=a.ref,
+    )
+    # ザネリだけ後の章に出す（＝その関係はそこまで読めない）
+    (config.content_dir() / "章.md").write_text(
+        "# 一\n\nジョバンニは活版所にいた。カムパネルラは黙っていた。\n\n# 二\n\nザネリが囃した。\n",
+        encoding="utf-8",
+    )
+
+    page.goto(f"{server}/graph?doc=章.md")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "timeline")
+    page.locator("svg.rel-timeline").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # 帯の見出しは上から順。両方が出そろう位置なので、ザネリ行きは後の帯へ
+    assert page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-timeline .tl-head text')]"
+        ".map((t) => t.textContent)"
+    ) == ["L.3", "L.7"]
+    # 行そのものも同じ順（上が先）
+    assert page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-timeline .rel-edge-label')]"
+        ".sort((p, q) => Number(p.getAttribute('y')) - Number(q.getAttribute('y')))"
+        ".map((t) => t.textContent)"
+    ) == ["親友", "同級生"]
+
+    # 線を押せば同じ編集ダイアログが開く（見せ方が変わっても直し方は 1 つ）
+    page.click("svg.rel-timeline .rel-edge-group")
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+    page.keyboard.press("Escape")
+
+
+def test_the_timeline_is_only_offered_when_a_document_is_open(page, server, seeded):
+    """辞書全体では時系列を出せない（読むものが決まっていないと定義できない）。
+
+    **覚えていた見せ方を黙って別のものに差し替えない。** 何が起きたのかを
+    注意書きに出し、覚えている選択のほうは書き換えない（文書を開いて戻ったら
+    また時系列で出す）。
+    """
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    assert page.locator('#mode option[value="timeline"]').is_disabled()
+
+    page.evaluate("() => localStorage.setItem('glosspop.graphMode', 'timeline')")
+    page.reload()
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    assert page.locator("#mode").input_value() == "layered"
+    assert "時系列は文書を開いているとき" in page.locator("#notes").inner_text()
+
+
 def test_the_crossing_free_mode_sets_its_words_vertically(page, server, seeded):
     """列の上の一言は**縦書き**（1 字ずつ立てて積む）。
 

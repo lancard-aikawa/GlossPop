@@ -71,22 +71,38 @@ class Document:
         """照合用の素のテキスト。"""
         return "\n".join(text for _, text in self.segments)
 
+    def locate_at(self, index: int) -> str:
+        """``plain`` の中の**文字位置**を、表示用の位置の文字列にする。
+
+        章やページの区切りがある文書ではその名前を、無ければ行番号
+        （`ai.locator_of()` と同じ ``L.n`` の形）を返す。
+
+        **位置の言い方はここ 1 か所**。用語から引く `locate()` も、関係が読める
+        ようになる位置を出す `timeline.py` も、同じ規則でものを言う必要がある
+        （章とページと行が見せ方ごとに違う名前で出ると、同じ図の中で読み方が割れる）。
+        """
+        if index < 0:
+            return ""
+        start = 0
+        for label, text in self.segments:
+            body = text or ""
+            end = start + len(body)
+            if index <= end:                    # 区切りの改行はその段の末尾に含める
+                return label or f"L.{body[:index - start].count(chr(10)) + 1}"
+            start = end + 1                     # ``plain`` は "\n" で繋いでいる
+        return ""
+
     def locate(self, term: str) -> str:
         """用語が最初に出てくる位置を表示用の文字列で返す。
 
         章やページの区切りがある文書ではその名前を、無ければ行番号を返す。
         """
-        needle = (term or "").casefold()
-        if not needle:
+        if not (term or "").strip():
             return ""
-        for label, text in self.segments:
-            if needle in (text or "").casefold():
-                if label:
-                    return label
-                from .ai import locator_of
-
-                return locator_of(text, term)
-        return ""
+        # **位置を数えるので、大文字小文字は畳まずに無視する。** ``casefold()`` は
+        # 文字数が変わりうる（ß → ss）ので、畳んだ文字列の位置は元とずれる
+        m = re.search(re.escape(term), self.plain, re.IGNORECASE)
+        return self.locate_at(m.start()) if m else ""
 
 
 # --------------------------------------------------------------------------- #

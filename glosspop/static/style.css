@@ -1153,6 +1153,21 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
    **塗るのは乗せた語だけ**（相手まで塗ると盤面の半分が色で埋まる） */
 .rel-matrix .rel-node.here .mx-band { fill: var(--accent-soft); }
 
+/* 時系列の見せ方（上から順に、関係が読めるようになる順）。線の色・太さ・
+   当たり判定・強調はすべて段の図と同じクラスを使い回す。ここに足すのは形だけ */
+/* 軸と見出しは飾り。**当たり判定を持たせない**（行の上に乗ると押せなくなる） */
+.rel-timeline .tl-axis { pointer-events: none; }
+.rel-timeline .tl-axis line { stroke: var(--border-strong); stroke-width: 1; }
+.rel-timeline .tl-split { stroke: var(--border); stroke-dasharray: 3 4; }
+.rel-timeline .tl-tick { fill: var(--border-strong); }
+.rel-timeline .tl-head text { fill: var(--fg-dim); font: 600 11px var(--sans); }
+/* 位置の出せなかった関係の帯。落としてはいないが、読み進む順ではないと分かるように */
+.rel-timeline .tl-head.undated text { fill: var(--fg-faint); font-weight: 400; }
+.rel-timeline .tl-empty { fill: var(--fg-dim); font: 12px var(--sans); }
+.rel-timeline .rel-node text { font: 600 12px var(--sans); }
+/* 人が書いた判明位置。並べ替えには使っていない（計算値と混ぜて読ませない） */
+.rel-timeline .tl-reveal { fill: var(--warn); font: 11px var(--sans); }
+
 /* 関係の無い語をまとめた帯。**段ではない**と見て分かるように区切る */
 .rel-lonely-rule line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; }
 .rel-lonely-caption { fill: var(--fg-dim); font: 11px var(--sans); }
@@ -1188,7 +1203,11 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-graph.focusing .rel-node.lit,
 .rel-graph.focusing .rel-edge-group.lit,
 .rel-graph.focusing .rel-edge-label.lit { opacity: 1; }
-.rel-node, .rel-edge-group, .rel-edge-label { transition: opacity 0.12s ease-out; }
+/* 判明位置も線・一言と一緒に濃くする（1 本の関係のものが揃って出ないと読めない） */
+.rel-timeline.focusing .tl-reveal { opacity: 0.12; }
+.rel-timeline.focusing .tl-reveal.lit { opacity: 1; }
+.rel-timeline .tl-reveal.hot { font-weight: 700; }
+.rel-node, .rel-edge-group, .rel-edge-label, .tl-reveal { transition: opacity 0.12s ease-out; }
 
 /* ---------------------------------------------------------------- 点検 */
 .issue-badge {

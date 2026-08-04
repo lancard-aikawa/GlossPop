@@ -837,6 +837,43 @@ def test_graph_can_be_narrowed_to_one_document(client):
     assert len(whole["nodes"]) == 3 and whole["outside"] == 0 and whole["doc"] == ""
 
 
+def test_graph_dates_relations_when_a_document_is_given(client):
+    """`?doc=` のときは「その文書のどこで読めるようになるか」も返す（時系列）。
+
+    位置は**両端が出そろうところ**。保存はしないので、本文を直せば次に読んだ
+    ときの図が変わるだけ（→ `timeline.py`）。
+    """
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    client.put(
+        f"/api/entries/{ref_path(a)}",
+        json={
+            "term": "ジョバンニ",
+            "category": "登場人物",
+            "relations": [{"to": b, "label": "親友"}],
+        },
+    )
+    (config.content_dir() / "章1.md").write_text(
+        "# 一\n\nジョバンニは走った。\n\n# 二\n\nカムパネルラが現れた。\n", encoding="utf-8"
+    )
+
+    g = client.get("/api/graph", params={"doc": "章1.md"}).json()
+    edge = g["edges"][0]
+    assert edge["at_label"] == "L.7"                  # 遅いほうの語が出てくる行
+    assert edge["at"] > 0 and g["undated"] == 0
+    assert {n["term"]: n["at_label"] for n in g["nodes"]} == {
+        "ジョバンニ": "L.3", "カムパネルラ": "L.7",
+    }
+
+
+def test_graph_of_the_whole_glossary_has_no_timeline(client):
+    """**辞書全体には時系列を足さない。** 読むものが決まっていないと定義できない。"""
+    _person(client, "ジョバンニ")
+    g = client.get("/api/graph").json()
+    assert "undated" not in g
+    assert all("at" not in n for n in g["nodes"])
+
+
 def test_graph_refuses_a_document_outside_content(client):
     assert client.get("/api/graph", params={"doc": "../secret.md"}).status_code == 400
     assert client.get("/api/graph", params={"doc": "ない.md"}).status_code == 404

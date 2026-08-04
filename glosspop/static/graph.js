@@ -17,6 +17,7 @@ import {
 import { levelsOf, seedOrder, splitLonely } from "./graph-model.js";
 import { buildFabric } from "./fabric.js";
 import { buildMatrix } from "./matrix.js";
+import { buildTimeline } from "./timeline.js";
 import { encodePath } from "./editor.js";
 
 //: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
@@ -34,6 +35,9 @@ const TEMPLATE = `
     <option value="layered">段の図</option>
     <option value="fabric">交差しない図</option>
     <option value="matrix">行列</option>
+    <!-- 時系列は「読むもの」が決まっていないと定義できないので、辞書全体の図では
+         選べない（文書を絞っているときだけ。→ timeline.js） -->
+    <option value="timeline">時系列（文書を開いているとき）</option>
   </select>
   <select id="category" class="auto-width" aria-label="カテゴリ"></select>
   <label class="check">
@@ -113,10 +117,14 @@ let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, 
 let detailNode;
 let modeSelect;
 
-//: 見せ方。layered = 段の図（既定） / fabric = 交差しない図。
+//: 見せ方。layered = 段の図（既定） / fabric = 交差しない図 /
+//: matrix = 行列 / timeline = 時系列（文書を開いているときだけ）。
 //: **覚えておく** —— 覆いは何度でも開き直されるので、毎回選び直させない
 const MODE_KEY = "glosspop.graphMode";
-const MODES = ["layered", "fabric", "matrix"];
+const MODES = ["layered", "fabric", "matrix", "timeline"];
+//: 読むものが決まっているときしか出せない見せ方。時系列は「その文書のどこで
+//: 読めるようになるか」を軸にするので、辞書全体では定義できない（`?doc=` と同じ話）
+const DOC_ONLY_MODES = ["timeline"];
 let mode = "layered";
 
 //: 2 つの ref をつないで組の鍵にするための区切り。カテゴリ名も slug も
@@ -1069,7 +1077,7 @@ function draw(graph) {
     return { lonely: 0 };
   }
 
-  const build = { fabric: buildFabric, matrix: buildMatrix }[mode];
+  const build = { fabric: buildFabric, matrix: buildMatrix, timeline: buildTimeline }[mode];
   const drawn = build
     ? build(graph, { onEdge: openEdgeEditor })
     : buildLayered(nodes, edges);
@@ -1342,6 +1350,20 @@ function paintNotes(graph) {
       `判明位置が書かれた関係を ${graph.hidden} 本伏せています（上のチェックで出せます）。`
     );
   }
+  if (graph.undated) {
+    // 時系列に置き場所の無かった関係。数だけでも出す（黙って欠けさせない）
+    lines.push(
+      `この文書での位置が分からない関係が ${graph.undated} 本あります` +
+      "（時系列ではいちばん下にまとめています）。"
+    );
+  }
+  if (modeFellBack) {
+    // 覚えていた見せ方を黙って別のものに差し替えない
+    lines.push(
+      "時系列は文書を開いているときだけ出せるので、いまは段の図にしています" +
+      "（ビューアの「🕸 この文書の相関図」から開くと出せます）。"
+    );
+  }
   for (const b of graph.broken) {
     lines.push(`「${b.from_term}」→「${b.to}」が解決できません: ${b.reason}`);
   }
@@ -1387,6 +1409,27 @@ function rememberedMode() {
   }
 }
 
+//: 覚えていた見せ方が「文書を開いているときだけ」のもので、いまは出せなかったか。
+//: **黙って別の図を出さない**（何が起きたのかは注意書きに出す）
+let modeFellBack = false;
+
+/**
+ * いまの範囲で選べる見せ方に揃える。
+ *
+ * 時系列は `?doc=` のときしか定義できないので、辞書全体の図では選ばせない。
+ * **覚えている選択は書き換えない** —— 文書を開いて戻ってきたら、また時系列で
+ * 出したい（一度だけ辞書全体を見たせいで設定が消えるのは驚く）。
+ */
+function syncModeOptions() {
+  for (const value of DOC_ONLY_MODES) {
+    const option = modeSelect.querySelector(`option[value="${value}"]`);
+    if (option) option.disabled = !currentDoc;
+  }
+  modeFellBack = DOC_ONLY_MODES.includes(mode) && !currentDoc;
+  if (modeFellBack) mode = "layered";
+  modeSelect.value = mode;
+}
+
 //: 直前に描いたグラフ。見せ方を変えるだけならサーバへ行き直さない
 let lastGraph = null;
 
@@ -1404,17 +1447,25 @@ function paintGraph(graph) {
     + "図を選んでからの ← ↑ ↓ → ＋ − 0 でも）。"
     + "語に乗せると、その語の関係だけが濃く出ます。";
   // **見せ方が違えば読み方の説明も違う。** 同じ文言を出すと、交差しない図でも
-  // 「上下は段」を探すことになる（どちらも上下は保っているが、形が違う）
+  // 「上下は段」を探すことになる（どちらも上下は保っているが、形が違う）。
+  // **ここは画面にそのまま出る文なので `**` で囲まないこと**（太字にする手段が
+  // 無いぶん、記号がそのまま読まれる。実際にそうなっていた）
   const shape = {
     fabric:
       "用語が横線、関係が縦線です。関係ごとに列が分かれているので線どうしは交差しません。"
       + "上下の関係は行の並びで表しています（上にあるものが上位）。",
-    // **「無い」が見えるのがこの見せ方の役目。** そう書かないと、ただの
-    // まばらな格子に見える
+    // 「無い」が見えるのがこの見せ方の役目。そう書かないと、ただのまばらな格子に見える
     matrix:
       "行が「から」、列が「へ」です。線を引かないので交差しません。"
-      + "**空きマスはまだ関係を書いていない組**で、対角を挟んで両側が埋まっていれば相互です。"
+      + "空きマスは、まだ関係を書いていない組です。対角を挟んで両側が埋まっていれば相互。"
       + "太い線はカテゴリの切れ目。上下の関係は行の並びで表しています（上にあるものが上位）。",
+    // 「いつ」が見えるのがこの見せ方の役目。位置は毎回その場で計算していて
+    // 保存はしていない、と書いておかないと「編集したらずれる」と読まれる
+    timeline:
+      "上から順に、この文書を読み進めると関係が読めるようになる順です。"
+      + "左の見出しは、両方の語が出そろう位置（章・ページ・行）。"
+      + "位置は開くたびに本文から数えていて保存はしないので、本文を直せば次に開いたときに追いつきます。"
+      + "「判明: …」は人が書いた判明位置で、並べ替えには使っていません。",
   }[mode] || "▲▼ の代わりに上下の関係は段で表しています。";
   legend.textContent =
     shape + common
@@ -1479,9 +1530,11 @@ export async function mount(host, { search = "", embed = false } = {}) {
   // **listener は最初の await より前に付ける。** あとに回すと、その間の操作が
   // 黙って無視される（設定ダイアログと extract.js で 2 回踏んだ）
   mode = rememberedMode();
-  modeSelect.value = mode;
+  syncModeOptions();
   modeSelect.addEventListener("change", () => {
     mode = MODES.includes(modeSelect.value) ? modeSelect.value : "layered";
+    // 自分で選び直したなら、落としたときの断り書きはもう要らない
+    modeFellBack = false;
     try {
       localStorage.setItem(MODE_KEY, mode);
     } catch {
