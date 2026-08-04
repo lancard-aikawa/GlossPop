@@ -546,6 +546,17 @@ a.gloss-link.gloss-split { padding: 0; }
   background: var(--panel-2);
 }
 .gloss-pop .pop-foot a { font-size: 12px; font-weight: 600; text-decoration: none; }
+/* 吹き出しの中の語を辿ったときの戻り道。中身の上に置く（辿った先でも
+   「どこから来たか」が本文より先に目に入る） */
+.gloss-pop .pop-back { margin: 0 0 6px; }
+.gloss-pop .pop-back button {
+  font-size: 11px;
+  padding: 1px 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
 .gloss-pop .pop-alias { font-size: 11px; color: var(--fg-faint); }
 .gloss-pop .pop-loading { color: var(--fg-faint); }
 

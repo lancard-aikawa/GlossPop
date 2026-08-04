@@ -273,7 +273,15 @@ export async function openEntryEditor({
 
   refs.title.textContent = targetRef ? "用語を編集" : "用語を辞書に登録";
   refs.save.textContent = targetRef ? "更新" : "保存";
-  refs.draft.hidden = Boolean(targetRef) && Boolean(entry?.definition);
+  // **編集中も隠さない。** 前は本文があると消していたので、文体（口調）を変えても
+  // 登録済みの語を書き直す手段が無かった。書き直しても**保存するまで確定しない**
+  // ので、隠して守るほどのものではない
+  const rewriting = Boolean(targetRef) && Boolean(entry?.definition);
+  refs.draft.hidden = false;
+  refs.draft.textContent = rewriting ? "✨ AI で書き直す" : "✨ AI で下書き";
+  refs.draft.title = rewriting
+    ? "要約・本文・使用例を AI に書き直させます（保存するまで確定しません）"
+    : "";
   writeForm(entry || { term, source });
   setStatus(refs.status, "");
   setNotice("");
@@ -307,8 +315,13 @@ export async function openEntryEditor({
         refs.term.focus();
         return;
       }
+      const wasEditing = Boolean(targetRef);
       refs.draft.disabled = refs.save.disabled = true;
-      setStatus(refs.status, "AI が下書きを作成中 (数十秒かかります)", "busy");
+      setStatus(
+        refs.status,
+        `AI が${rewriting ? "書き直し" : "下書きを作成"}中 (数十秒かかります)`,
+        "busy"
+      );
       try {
         rememberSpoiler(refs.spoiler.value);
         const origin = refs.source.value.trim() || source;
@@ -319,12 +332,34 @@ export async function openEntryEditor({
             context,
             source: origin,
             spoiler: refs.spoiler.value,
-            // 出典が content 内の相対パスなら、サーバが初出位置を数えられる
-            file: isHttpUrl(origin) ? "" : origin,
+            // 出典が content 内の相対パスなら、サーバが初出位置を数えられる。
+            // 編集中は記録済みの初出ファイルのほうが確か（出典は URL のこともある）
+            file: firstSeen.first_file || (isHttpUrl(origin) ? "" : origin),
             // ローカル辞書に入れるつもりなら、提案カテゴリでマスターを汚さない
             scope: refs.scope.value,
+            // **書き直しでは、いま書かれている説明を渡す。** 編集中は選択テキストも
+            // 文書も手元に無いので、渡さないと AI は用語名だけを頼りに一般論を書き、
+            // 人が手で直した内容が丸ごと消える
+            current: rewriting
+              ? [refs.summary.value.trim(), refs.definition.value.trim()]
+                  .filter(Boolean).join("\n\n")
+              : "",
           },
         });
+        if (rewriting) {
+          // **文体が効く項目だけ差し替える。** 用語名・別名・カテゴリ・保存先・タグは
+          // 人が決めたもので、カテゴリに至っては変えるとファイルごと移動する。
+          // **使用例も触らない** —— 選択して登録したものは本文からそのまま採った
+          // 引用なので、書き直すと引用でなくなる
+          if (res.draft.summary) refs.summary.value = res.draft.summary;
+          if (res.draft.definition) refs.definition.value = res.draft.definition;
+          setNotice(
+            "要約と本文を書き直しました。<strong>「更新」を押すまで保存されません。</strong>"
+            + "（用語名・別名・カテゴリ・タグ・使用例は変えていません）"
+          );
+          setStatus(refs.status, "書き直しました。確認して更新してください。");
+          return;
+        }
         // ユーザーが手で書いた内容は消さない
         const typed = readForm();
         const merged = { ...res.draft };
@@ -358,7 +393,10 @@ export async function openEntryEditor({
         }
         const notices = [];
         if (res.warning) notices.push(esc(res.warning));
-        if (res.existing?.length) {
+        // **もともと編集で開いていたなら黙る**（自分自身が「登録済み」に出るだけ）。
+        // いま `targetRef` を見ると、すぐ上で「既にある」と分かって入れたぶんまで
+        // 黙ってしまい、上書きになることを言わなくなる
+        if (res.existing?.length && !wasEditing) {
           const list = res.existing.map((e) => `<strong>${esc(e.path_label)}</strong>`).join("、");
           notices.push(
             inSame

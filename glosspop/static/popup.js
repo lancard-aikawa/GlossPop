@@ -10,7 +10,9 @@ const cache = new Map(); // 表記 -> lookup レスポンス
 let pop = null;
 let openTimer = null;
 let closeTimer = null;
-let current = null; // 表示中のアンカー
+let current = null; // 表示中のアンカー (位置の基準)
+let currentSurface = ""; // いま出している表記
+let trail = []; // 吹き出しの中の語を辿った履歴 (← 戻る 用)
 let pinned = false;
 let seq = 0;
 
@@ -26,7 +28,17 @@ function ensurePop() {
     if (!pinned) scheduleHide();
   });
   pop.addEventListener("click", (ev) => {
-    // **中のリンクは外へ通す。** 止めると、覆いを開く仕掛け（`overlay.js` の
+    // **吹き出しの中の用語は、この吹き出しの中で開く。** 新しく開こうとすると、
+    // `paint()` が innerHTML を差し替えて**いま指している要素ごと消える** ——
+    // 指す先を失ったポインタが離脱扱いになり、元の吹き出しまで一緒に閉じる
+    // （「両方消える」の正体がこれ）。位置の基準は元のアンカーのまま辿る
+    const inner = ev.target.closest("a.gloss-link");
+    if (inner) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return drill(inner.dataset.gloss || inner.textContent);
+    }
+    // **それ以外のリンクは外へ通す。** 止めると、覆いを開く仕掛け（`overlay.js` の
     // document 上の listener）まで届かず、「辞書ページを開く →」だけが
     // ページ移動になる（＝読んでいた本文が捨てられる）
     if (ev.target.closest("a[href]")) return hide();
@@ -47,7 +59,24 @@ function hide() {
   clearTimeout(closeTimer);
   pinned = false;
   current = null;
+  currentSurface = "";
+  trail = [];
   if (pop) pop.hidden = true;
+}
+
+/** 吹き出しの中の語へ辿る。**押して辿ったのだから、離しても消えない。** */
+function drill(surface) {
+  const term = (surface || "").trim();
+  if (!term || !current) return;
+  trail.push(currentSurface);
+  pinned = true;
+  show(current, term);
+}
+
+/** 1 つ前の語へ戻る。辿れる道が無ければ何もしない。 */
+function back() {
+  if (!trail.length || !current) return;
+  show(current, trail.pop());
 }
 
 function place(anchor) {
@@ -79,14 +108,30 @@ function place(anchor) {
   node.style.top = `${Math.round(top)}px`;
 }
 
-/** 本文は伸びるが、フッター (辞書ページへの導線) は常に見えるようにする。 */
+/**
+ * 本文は伸びるが、フッター (辞書ページへの導線) は常に見えるようにする。
+ *
+ * **戻る道はここで 1 か所だけ足す。** 描き方は 1 件 / 複数 / 読み込み中 / エラーと
+ * 4 通りあるので、それぞれに書くと必ずどれかで抜ける（辿った先でだけ戻れない、
+ * という壊れ方は画面を見ても分からない）。
+ */
 function paint(mainHtml, footHtml = "") {
   const node = ensurePop();
-  node.innerHTML = `<div class="pop-main">${mainHtml}</div>` + footHtml;
+  node.innerHTML = `<div class="pop-main">${backBar()}${mainHtml}</div>` + footHtml;
   for (const btn of node.querySelectorAll("[data-pop-close]")) {
     btn.addEventListener("click", hide);
   }
+  for (const btn of node.querySelectorAll("[data-pop-back]")) {
+    btn.addEventListener("click", back);
+  }
   return node;
+}
+
+function backBar() {
+  if (!trail.length) return "";
+  const prev = trail[trail.length - 1];
+  return `<p class="pop-back"><button type="button" class="ghost" data-pop-back>`
+    + `← ${esc(prev)}</button></p>`;
 }
 
 function closeButton() {
@@ -162,26 +207,34 @@ function renderResult(term, data) {
   return renderMultiple(data.entries[0].term || term, data.entries);
 }
 
-async function show(anchor) {
-  const surface = anchor.dataset.gloss || anchor.textContent;
+/**
+ * 吹き出しを出す。``surface`` を渡すと、位置はそのままで**中身だけ**入れ替える
+ * （吹き出しの中の語を辿るときに使う）。
+ */
+async function show(anchor, surface = null) {
+  // 新しい語から開き直したときだけ履歴を捨てる。辿るとき (drill / back) は
+  // 呼ぶ側がすでに積み下ろししているので触らない
+  if (surface === null) trail = [];
+  const term = surface ?? (anchor.dataset.gloss || anchor.textContent);
   current = anchor;
+  currentSurface = term;
   const token = ++seq;
 
-  if (cache.has(surface)) {
-    renderResult(surface, cache.get(surface));
+  if (cache.has(term)) {
+    renderResult(term, cache.get(term));
     place(anchor);
     return;
   }
-  renderLoading(surface);
+  renderLoading(term);
   place(anchor);
   try {
-    const data = await api(`/api/lookup?term=${encodeURIComponent(surface)}`);
+    const data = await api(`/api/lookup?term=${encodeURIComponent(term)}`);
     if (token !== seq) return;
-    cache.set(surface, data);
-    renderResult(surface, data);
+    cache.set(term, data);
+    renderResult(term, data);
   } catch (err) {
     if (token !== seq) return;
-    renderError(surface, err.message);
+    renderError(term, err.message);
   }
   if (current === anchor) place(anchor);
 }
@@ -212,9 +265,14 @@ export function installGlossPopup() {
   if (installed) return;
   installed = true;
 
+  // **吹き出しの中の語はホバーでは開かない**（`inPop`）。開こうとすると、いま
+  // ポインタが指している要素ごと差し替わって、元の吹き出しまで閉じる。
+  // 中の語は押したときだけ、その場で辿る（`drill`）
+  const inPop = (node) => Boolean(pop && node && pop.contains(node));
+
   document.addEventListener("pointerover", (ev) => {
     const anchor = ev.target.closest?.("a.gloss-link");
-    if (!anchor || anchor === current) return;
+    if (!anchor || anchor === current || inPop(anchor)) return;
     if (pinned) return;
     clearTimeout(closeTimer);
     clearTimeout(openTimer);
@@ -223,7 +281,7 @@ export function installGlossPopup() {
 
   document.addEventListener("pointerout", (ev) => {
     const anchor = ev.target.closest?.("a.gloss-link");
-    if (!anchor || pinned) return;
+    if (!anchor || pinned || inPop(anchor)) return;
     if (pop && ev.relatedTarget && pop.contains(ev.relatedTarget)) return;
     clearTimeout(openTimer);
     scheduleHide();
@@ -231,12 +289,13 @@ export function installGlossPopup() {
 
   document.addEventListener("focusin", (ev) => {
     const anchor = ev.target.closest?.("a.gloss-link");
-    if (anchor) show(anchor);
+    // 中の語に焦点が移っただけでは描き替えない（Enter を押せば `drill` で辿る）
+    if (anchor && !inPop(anchor)) show(anchor);
   });
 
   document.addEventListener("click", (ev) => {
     const anchor = ev.target.closest?.("a.gloss-link");
-    if (anchor) {
+    if (anchor && !inPop(anchor)) {
       // 修飾キーつきクリックは通常のリンクとして扱う (別タブで開く等)
       if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
       ev.preventDefault();

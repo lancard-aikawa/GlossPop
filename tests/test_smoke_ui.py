@@ -197,6 +197,65 @@ def test_registered_terms_become_links_with_a_popup(page, server, seeded):
     assert "活版所で働く少年" in popup.inner_text()
 
 
+def test_a_term_inside_the_popup_is_followed_in_place(page, server, isolated_dirs):
+    """**吹き出しの中の用語は、その吹き出しの中で辿る。**
+
+    新しく開こうとすると `paint()` が innerHTML を差し替え、**いまポインタが指して
+    いる要素ごと消える** —— 指す先を失った離脱で元の吹き出しまで閉じる
+    （「両方消える」の正体）。押した先はその場で入れ替わり、← で戻れること。
+    """
+    store.save(EntryDraft(
+        term="カムパネルラ", category="登場人物",
+        summary="ジョバンニの級友。", definition="同級生。",
+    ))
+    store.save(EntryDraft(
+        term="ジョバンニ", category="登場人物",
+        summary="活版所で働く少年。", definition="カムパネルラと同じ組の少年。",
+    ))
+    (config.content_dir() / "銀河.md").write_text(
+        "# 午后の授業\n\nジョバンニは活版所で働いていた。\n", encoding="utf-8"
+    )
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    link = page.locator("a.gloss-link", has_text="ジョバンニ").first
+    link.wait_for(timeout=15000)
+    link.hover()
+    popup = page.locator(".gloss-pop")
+    popup.wait_for(timeout=5000)
+
+    inner = popup.locator("a.gloss-link", has_text="カムパネルラ").first
+    inner.wait_for(timeout=5000)
+    inner.click()
+
+    # 消えない。中身だけが相手の語に入れ替わる
+    page.locator(".gloss-pop [data-pop-back]").wait_for(timeout=5000)
+    assert popup.is_visible()
+    assert "級友" in popup.inner_text()
+
+    page.click(".gloss-pop [data-pop-back]")
+    page.locator(".gloss-pop .pop-term", has_text="ジョバンニ").wait_for(timeout=5000)
+    assert popup.is_visible()
+    assert "活版所で働く少年" in popup.inner_text()
+
+
+def test_an_existing_entry_can_be_rewritten_by_ai(page, server, seeded):
+    """**編集でも「AI で書き直す」が出ること。**
+
+    前は本文があるとボタンごと消していたので、文体（口調）を変えても登録済みの語を
+    書き直す手段が無かった（実際に困った）。AI は呼ばず、口があることだけを見る。
+    """
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    page.locator("button:has-text('編集')").first.wait_for(timeout=15000)
+    page.click("button:has-text('編集')")
+
+    draft = page.locator("dialog.sheet[open] [data-ref=draft]")
+    draft.wait_for(timeout=10000)
+    assert draft.is_visible()
+    assert "書き直す" in draft.inner_text()
+    # 本文は消えていない（書き直しは押したときだけ）
+    assert page.input_value("dialog.sheet[open] [data-ref=definition]") == "主人公。"
+
+
 def test_a_relation_can_be_added_and_shows_on_both_sides(page, server, seeded):
     """関係は片側にだけ書き、相手のページには逆引きで出る。"""
     page.goto(f"{server}/glossary/登場人物/ジョバンニ")

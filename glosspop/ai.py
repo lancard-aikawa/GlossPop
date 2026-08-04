@@ -358,6 +358,7 @@ def build_prompt(
     spoiler: str = "full",
     scope_folder: str | None = None,
     kind: str = "",
+    current: str = "",
 ) -> str:
     tree = store.category_tree()
     if tree:
@@ -390,6 +391,20 @@ def build_prompt(
         "",
         f"## 対象の用語\n{term}",
     ]
+    if current.strip():
+        # **書き直しは事実を作り直す作業ではない。** 文体を変えたあとに登録済みの
+        # 語を書き直す経路なので、渡した説明が唯一の情報源になることがある
+        # （選択テキストも文書も手元に無い）。ここで「調べ直してよい」と読ませると、
+        # 人が手で直した内容が AI の一般論に置き換わる
+        parts += [
+            "",
+            "## いまの説明（これを書き直してください）",
+            current.strip()[:4000],
+            "",
+            "**書かれている事実は変えないでください。**足すことも削ることもせず、"
+            "文体・語り口・区切り方だけを整え直します。"
+            "知らないことを補ったり、一般論に置き換えたりしないこと。",
+        ]
     if context.strip():
         heading = "## 用語が現れた文脈（この文脈での意味を優先する）"
         if spoiler == "first":
@@ -1410,18 +1425,20 @@ async def draft_entry(
     spoiler: str = "full",
     scope_folder: str | None = None,
     kind: str = "",
+    current: str = "",
 ) -> EntryDraft:
     """選択テキストから辞書エントリの下書きを作る。保存はしない。
 
     ``scope_folder`` を渡すと、保存先（全体 / そのフォルダだけ）も選ばせる。
     ``kind`` は抽出時の種別（``EXTRACT_KINDS``）。保存先の下敷きに使う。
+    ``current`` を渡すと**書き直し**になる（事実は変えず、文体だけ整え直す）。
     """
     term = term.strip()
     if not term:
         raise AIError("用語が空です")
     prompt = build_prompt(
         term, context, source=source, spoiler=spoiler,
-        scope_folder=scope_folder, kind=kind,
+        scope_folder=scope_folder, kind=kind, current=current,
     )
     raw = await to_thread.run_sync(_generate, prompt, abandon_on_cancel=True)
     data = parse_draft(raw)

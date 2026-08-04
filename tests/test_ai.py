@@ -469,6 +469,29 @@ class TestStyle:
         assert "文体（口調）" not in ai.build_extract_prompt(TEXT, limit=5)
 
 
+class TestRewrite:
+    """登録済みの語の書き直し。**文体を変えたあとに使う経路。**"""
+
+    def test_the_current_text_is_handed_over(self):
+        prompt = ai.build_prompt("冪等", current="何度実行しても同じ結果になること。")
+        assert "いまの説明" in prompt
+        assert "何度実行しても同じ結果になること。" in prompt
+
+    def test_it_forbids_inventing_facts(self):
+        """渡した説明が唯一の情報源になりうる（選択テキストも文書も手元に無い）。"""
+        prompt = ai.build_prompt("冪等", current="何度実行しても同じ結果になること。")
+        assert "書かれている事実は変えないでください" in prompt
+        assert "一般論に置き換えたりしないこと" in prompt
+
+    def test_nothing_is_added_without_it(self):
+        assert "いまの説明" not in ai.build_prompt("冪等")
+
+    def test_the_style_still_applies(self):
+        config.save_settings({"ai_style": "講談調で"})
+        prompt = ai.build_prompt("冪等", current="何度実行しても同じ結果になること。")
+        assert "講談調で" in prompt and "いまの説明" in prompt
+
+
 class TestFolderStyle:
     """フォルダごとの文体。**口調は作品につく**ので、辞書と同じ場所に置く。"""
 

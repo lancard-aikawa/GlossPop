@@ -796,6 +796,29 @@ class TestSpoilerLevels:
         assert "間諜" in seen["prompt"]
         assert "ネタバレの禁止" not in seen["prompt"]
 
+    def test_the_current_text_makes_it_a_rewrite(self, client, monkeypatch):
+        """文体を変えたあと、登録済みの語を書き直せること。"""
+        seen = {}
+
+        def fake_run(prompt: str, **_) -> str:
+            seen["prompt"] = prompt
+            return '{"term": "冪等", "summary": "書き直した要約。", "category": "プログラミング"}'
+
+        monkeypatch.setattr(ai, "_generate", fake_run)
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+
+        res = client.post("/api/ai/draft", json={
+            "term": "冪等",
+            "current": "何度実行しても同じ結果になること。",
+            "spoiler": "full",
+        })
+        assert res.status_code == 200
+        assert "いまの説明" in seen["prompt"]
+        assert "何度実行しても同じ結果になること。" in seen["prompt"]
+        # **事実を作り直させない**（渡した説明が唯一の情報源になりうる）
+        assert "書かれている事実は変えないでください" in seen["prompt"]
+        assert res.json()["draft"]["summary"] == "書き直した要約。"
+
     def test_unknown_level_falls_back_to_the_configured_default(self, client, monkeypatch):
         monkeypatch.setattr(config, "SPOILER_DEFAULT", "position")
         monkeypatch.setattr(config, "CLAUDE_BIN", "")

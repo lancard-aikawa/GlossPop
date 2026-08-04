@@ -116,6 +116,10 @@ class DraftRequest(BaseModel):
     scope: str = AUTO_SCOPE
     #: 抽出時の種別 (ai.EXTRACT_KINDS のキー)。保存先の下敷きにする
     kind: str = ""
+    #: いま書かれている説明。**渡すと「書き直し」になる** ——
+    #: 事実は変えずに、文体や書きぶりだけを整え直させる（文体を変えたあと、
+    #: 登録済みの語を書き直したいときの経路）
+    current: str = ""
 
 
 class FetchRequest(BaseModel):
@@ -1738,6 +1742,7 @@ async def ai_draft(req: DraftRequest) -> dict:
             # 自動のときだけ保存先も選ばせる。フォルダ名が判断材料になる
             scope_folder=config.content_dir().name if auto_scope else None,
             kind=req.kind,
+            current=req.current,
         )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc
