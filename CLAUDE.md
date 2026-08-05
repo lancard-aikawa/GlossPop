@@ -1313,4 +1313,4 @@ Playwright を動かして確かめる。
 | 機能を足した / 設計の判断をした | `docs/open-questions.md`（**片付いた宿題は消す** —— 残ると「まだ無いもの」に見える）、`docs/design-notes.md`（決めたことと、その代償を書く） |
 | 使い方の説明を増やした | `MANUAL.md`（**README には移さない** —— README は入口だけに保つ。目次も一緒に直す） |
 | ビルド・リリースの手順 | `DEVELOP.md` |
-| バージョン | `pyproject.toml` と `glosspop/__init__.py` の**両方**（タグと不一致だと release ワークフローが落ちる）。`release-notes.md` の版番号の例も見る |
+| バージョン | `pyproject.toml` と `glosspop/__init__.py` と `uv.lock` の**3 つとも**（前 2 つがタグと不一致だと release ワークフローが落ちる。lock は落ちないぶん気付けない）。`release-notes.md` と MANUAL の版番号の例も見る（あそこに出るのは**次の版**） |
