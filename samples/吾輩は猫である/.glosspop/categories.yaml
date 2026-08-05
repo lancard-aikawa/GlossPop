@@ -1,0 +1,8 @@
+categories:
+- name: 猫
+- name: 人間
+  subcategories:
+  - 主人の家
+  - 客人
+  - 金田家
+- name: 場所・もの
