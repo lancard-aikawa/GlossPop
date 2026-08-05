@@ -669,59 +669,17 @@ class TestPickFolder:
         assert client.get("/api/content").json()["is_default"] is True
 
 
-class TestAIExtractFolder:
-    """フォルダ横断の抽出。claude CLI は差し替える。"""
+def test_there_is_no_folder_wide_extract_endpoint(client, monkeypatch):
+    """**候補語の抽出にフォルダ横断の口は無い。**
 
-    def _write(self, rel: str, text: str) -> None:
-        path = config.CONTENT_DIR / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-
-    def test_reads_every_file_and_sorts_by_frequency(self, client, monkeypatch):
-        self._write("a.md", "サーキットブレーカーで止める。指数バックオフで待つ。")
-        self._write("sub/b.md", "サーキットブレーカーは有効。")
-        seen = {}
-
-        def fake_run(prompt: str, **_) -> str:
-            seen["prompt"] = prompt
-            return '[{"term": "指数バックオフ"}, {"term": "サーキットブレーカー"}]'
-
-        monkeypatch.setattr(ai, "_generate", fake_run)
-        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
-
-        res = client.post("/api/ai/extract-folder", json={}).json()
-        assert "### a.md" in seen["prompt"] and "### sub/b.md" in seen["prompt"]
-        assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー", "指数バックオフ"]
-        assert res["candidates"][0]["files"] == ["a.md", "sub/b.md"]
-        assert res["root"] == str(config.CONTENT_DIR)
-
-    def test_html_is_read_as_text(self, client, monkeypatch):
-        self._write("page.html", "<html><body><p>サーキットブレーカーの説明</p></body></html>")
-        captured = {}
-
-        def fake_run(prompt: str, **_) -> str:
-            captured["prompt"] = prompt
-            return '[{"term": "サーキットブレーカー"}]'
-
-        monkeypatch.setattr(ai, "_generate", fake_run)
-        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
-
-        res = client.post("/api/ai/extract-folder", json={}).json()
-        assert "<p>" not in captured["prompt"]  # タグは渡さない
-        assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー"]
-
-    def test_reports_files_it_did_not_read(self, client, monkeypatch):
-        for i in range(3):
-            self._write(f"{i}.md", "サーキットブレーカー")
-        monkeypatch.setattr(ai, "_generate", lambda prompt, **_: '[{"term": "サーキットブレーカー"}]')
-        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
-
-        res = client.post("/api/ai/extract-folder", json={"max_files": 1}).json()
-        assert res["files_skipped"] == ["1.md", "2.md"]
-
-    def test_empty_folder_is_400(self, client, monkeypatch):
-        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
-        assert client.post("/api/ai/extract-folder", json={}).status_code == 400
+    かつて ``/api/ai/extract-folder`` があったが、何ファイルまとめても AI に
+    渡せる本文の枠 (``ai.EXTRACT_TEXT_CHARS``) は 1 文書のときと同じで、
+    ファイル数ぶん薄まるだけだった（→ docs/design-notes.md）。戻すなら先に
+    「渡せる枠を増やせるか」から考えること。
+    """
+    monkeypatch.setattr(ai, "available", lambda: True)
+    assert client.post("/api/ai/extract-folder", json={}).status_code == 404
+    assert not hasattr(ai, "extract_terms_from_documents")
 
 
 class TestSpoilerLevels:
@@ -1286,6 +1244,40 @@ def test_relations_draft_can_read_the_displayed_document(client, monkeypatch):
         "text": "ジョバンニとカムパネルラは親友だった。",
         "source": "https://example.com/gingatetsudo",
     }).json()
+    assert [r["to_term"] for r in body["relations"]] == ["カムパネルラ"]
+    assert "ジョバンニとカムパネルラは親友だった。" in seen["prompt"]
+
+
+def test_relations_draft_reads_the_folder_when_no_text_is_given(client, monkeypatch):
+    """**本文を渡さない経路が残っている。** 用語ページの「✨ この語の関係を下書き」は
+    読んでいる文書を持たないので、サーバがフォルダを読んで補う。
+
+    候補語の抽出からはフォルダを読む道を畳んだが、**こちらは畳んでいない** ——
+    渡すのは読んだ本文そのものではなく選んだ窓なので、ファイルを読む代金
+    (実測 17.6 ms) は待ち時間に効かない。ここを一緒に消すと、用語ページの
+    ボタンが「読める文書がありません」しか返さなくなる（実際に消しかけた）。
+    """
+    import json as _json
+
+    from glosspop import ai
+
+    (config.CONTENT_DIR / "銀河鉄道の夜.md").write_text(
+        "ジョバンニとカムパネルラは親友だった。", encoding="utf-8"
+    )
+    ref = _person(client, "ジョバンニ")
+    _person(client, "カムパネルラ")
+    seen = {}
+
+    def fake(prompt, **_):
+        seen["prompt"] = prompt
+        return _json.dumps([
+            {"from": "ジョバンニ", "to": "カムパネルラ", "label": "親友", "back": "親友"}
+        ])
+
+    monkeypatch.setattr(ai, "_generate", fake)
+    monkeypatch.setattr(ai, "available", lambda: True)
+    body = client.post("/api/ai/relations", json={"ref": ref, "spoiler": "full"}).json()
+
     assert [r["to_term"] for r in body["relations"]] == ["カムパネルラ"]
     assert "ジョバンニとカムパネルラは親友だった。" in seen["prompt"]
 

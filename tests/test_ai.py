@@ -297,36 +297,45 @@ class TestCombineDocuments:
         assert len(combined) > ai.PER_FILE_CHARS * 3
 
 
-class TestExtractFromDocuments:
-    async def _extract(self, monkeypatch, response: str, **kwargs):
-        monkeypatch.setattr(ai, "_generate", lambda prompt, **_: response)
-        return await ai.extract_terms_from_documents(DOCS, **kwargs)
+class TestFolderWideExtractIsGone:
+    """**候補語の抽出はフォルダを横断しない**（`extract_terms()` の 1 つだけ）。
 
-    @pytest.mark.anyio
-    async def test_sorts_by_how_many_files_mention_the_term(self, monkeypatch):
-        res = await self._extract(
-            monkeypatch, '[{"term": "指数バックオフ"}, {"term": "サーキットブレーカー"}]'
+    かつて `extract_terms_from_documents()` があったが、`combine_documents()` で
+    何ファイルまとめても `build_extract_prompt()` が `EXTRACT_TEXT_CHARS` まで
+    間引き直すので、**AI に届く量は 1 文書のときと変わらなかった**。
+    """
+
+    def test_no_folder_wide_entry_point(self):
+        assert not hasattr(ai, "extract_terms_from_documents")
+
+    def test_combining_more_files_does_not_buy_more_text(self):
+        """戻したくなったときのための実測。**枠は増えない。**
+
+        1 冊でも 5 冊でも、プロンプトに載る本文は同じ ``EXTRACT_TEXT_CHARS``。
+        ファイル数を増やしても取り分は薄まるだけで、待ち時間だけが積み上がる。
+        """
+        one, _, _ = ai.combine_documents([("novel.md", "あ" * 100_000)])
+        many, _, _ = ai.combine_documents(
+            [(f"ch{i}.md", "あ" * 100_000) for i in range(5)]
         )
-        # 2 ファイルに出る語を先に出す (AI が返した順ではない)
-        assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー", "指数バックオフ"]
-        first = res["candidates"][0]
-        assert first["files"] == ["a.md", "sub/b.md"]
-        assert first["file_count"] == 2 and first["count"] == 2
-        assert first["source"] == "a.md"
+        # 元の 500,000 字はファイル数ぶん多いのに、まとめた時点でもう同じ大きさ
+        assert len(many) == pytest.approx(len(one), rel=0.01)
+        # そのうえプロンプトに載るところで、さらに同じ枠まで間引き直される
+        for combined in (one, many):
+            assert len(ai.sample_text(combined, ai.EXTRACT_TEXT_CHARS)) == pytest.approx(
+                ai.EXTRACT_TEXT_CHARS, rel=0.05
+            )
 
-    @pytest.mark.anyio
-    async def test_matches_against_the_whole_text_not_just_the_prompt(self, monkeypatch):
-        # プロンプトには頭しか載せないが、後ろに出てくる語も採用してよい
-        docs = [("long.md", "x" * 5000 + "サーキットブレーカー")]
-        monkeypatch.setattr(ai, "_generate", lambda prompt, **_: '[{"term": "サーキットブレーカー"}]')
-        res = await ai.extract_terms_from_documents(docs)
-        assert [c["term"] for c in res["candidates"]] == ["サーキットブレーカー"]
+    def test_the_second_pass_used_to_cut_the_file_headers(self):
+        """**間引き直しは `### ファイル名` の行を割る。**
 
-    @pytest.mark.anyio
-    async def test_no_documents_is_an_error(self, monkeypatch):
-        monkeypatch.setattr(ai, "_generate", lambda prompt: "[]")
-        with pytest.raises(ai.AIError):
-            await ai.extract_terms_from_documents([])
+        残った本文が手前のファイル名の下にぶら下がるので、フォルダ横断では
+        「どのファイルの語か」が AI に伝わっていなかった。戻すならここも直すこと。
+        """
+        docs = [(f"file{i}.md", "あ" * 20_000) for i in range(5)]
+        combined, _, _ = ai.combine_documents(docs)
+        assert combined.count("### ") == 5
+        assert ai.sample_text(combined, ai.EXTRACT_TEXT_CHARS).count("### ") < 5
 
 
 @pytest.fixture

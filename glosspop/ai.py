@@ -126,6 +126,11 @@ def locator_of(text: str, term: str) -> str:
     """初出の行番号を表示用の文字列にする。見つからなければ空文字。
 
     PDF のページなど別の単位が来ても置き換えられるよう、文字列で持つ。
+
+    **いまアプリからは呼ばれていない**（唯一の利用者だったフォルダ横断の抽出を
+    畳んだため）。残してあるのは、これが ``L.n`` という書き方の**正**だから ——
+    `documents.Document.locate()` が返す形はこれに揃える約束で、docstring も
+    ここを指している。消すなら向こうの基準も一緒に決め直すこと。
     """
     index = (text or "").casefold().find((term or "").casefold())
     if index < 0:
@@ -976,30 +981,6 @@ def combine_documents(
     return "\n\n".join(parts), used, skipped
 
 
-def _occurrences(docs: list[tuple[str, str]], term: str) -> tuple[list[str], int]:
-    """語が出てくるファイルと総出現数。頻出順に並べるために使う。"""
-    needle = term.casefold()
-    files: list[str] = []
-    count = 0
-    for label, text in docs:
-        n = (text or "").casefold().count(needle)
-        if n:
-            files.append(label)
-            count += n
-    return files, count
-
-
-def _first_seen(docs: list[tuple[str, str]], term: str) -> tuple[str, str, str]:
-    """初出のファイル・位置・その場面の抜粋を返す。
-
-    docs は読む順に並んでいる前提（第 1 章から順に渡す）。
-    """
-    for label, text in docs:
-        if (term or "").casefold() in (text or "").casefold():
-            return label, locator_of(text, term), context_up_to_first(text, term)
-    return "", "", ""
-
-
 def _first_context(docs: list[tuple[str, str]], surfaces: list[str]) -> str:
     """**別名も含めて**いちばん早く現れた表記の初出の場面を返す。
 
@@ -1018,55 +999,16 @@ def _first_context(docs: list[tuple[str, str]], surfaces: list[str]) -> str:
     return ""
 
 
-async def extract_terms_from_documents(
-    docs: list[tuple[str, str]], *, limit: int = 20, kinds: list[str] | None = None
-) -> dict:
-    """フォルダ内の複数文書からまとめて候補を挙げる。
-
-    呼び出しは 1 回だけ。ファイル数ぶん呼ぶと数分かかるうえ、同じ語が
-    ファイルごとに重複して出てくる。
-    """
-    if not docs:
-        raise AIError("読める文書がありません")
-    combined, used, skipped = combine_documents(docs)
-    if not combined.strip():
-        raise AIError("読める文書がありません")
-
-    kinds = normalize_kinds(kinds)
-    limit = max(limit, len(kinds))
-    exclude = [s for e in store.load_all() for s in e.surfaces]
-    prompt = build_extract_prompt(combined, exclude=exclude, limit=limit, kinds=kinds)
-    ask = partial(_generate, timeout=extract_timeout(limit))
-    raw = await to_thread.run_sync(ask, prompt, abandon_on_cancel=True)
-    # 照合はプロンプトに載せた範囲ではなく全文に対して行う
-    # (頭 3000 字しか渡していなくても、後ろに出てくる語なら採用してよい)
-    haystack = "\n".join(text for _, text in docs)
-    parsed, aliases = split_aliases(parse_candidates(raw), haystack)
-    kept, dropped = filter_candidates(parsed, haystack, limit=limit, kinds=kinds)
-
-    for item in kept:
-        files, count = _occurrences(docs, item["term"])
-        first_file, locator, first_context = _first_seen(docs, item["term"])
-        item["files"] = files[:20]
-        item["file_count"] = len(files)
-        item["count"] = count
-        item["source"] = first_file
-        item["first_file"] = first_file
-        item["first_locator"] = locator
-        # 初出の場面。ネタバレを避けるとき (spoiler=first) はこれだけを AI に渡す
-        item["first_context"] = first_context
-    # 種別のまとまりは崩さず、その中で「多くのファイルに出てくる語」を上に出す
-    order = {k: i for i, k in enumerate(kinds)}
-    kept.sort(key=lambda i: (order.get(i["kind"], len(order)), -i["file_count"], -i["count"]))
-
-    return {
-        "candidates": kept,
-        "aliases": aliases,
-        "dropped": dropped,
-        "files_used": used,
-        "files_skipped": skipped,
-        "kinds": kinds,
-    }
+# **候補語の抽出にフォルダ横断の口は無い**（`extract_terms()` の 1 つだけ）。
+# かつて `extract_terms_from_documents()` があったが、`combine_documents()` で
+# 何ファイルまとめても `build_extract_prompt()` が `EXTRACT_TEXT_CHARS` まで
+# 間引き直すので、**AI に届く量は 1 文書のときと変わらない**。ファイル数ぶん
+# 薄まったぶんだけ取り分が減り、待ち時間（実測 100〜260 秒）だけが積み上がる。
+# ここに戻すなら、まず「渡せる本文の枠」を増やせるかから考えること
+# （→ docs/design-notes.md「フォルダ全体を AI に読ませる道は、抽出からは畳む」）。
+# **関係の下書きのほうは畳んでいない** —— あちらは読んだ本文をそのまま渡さず
+# `cooccurrence_context()` / `first_scene_context()` が窓を選ぶので、ファイルを
+# 読む代金は待ち時間に効かない（実測 17.6 ms）。同じ「フォルダを読む」でも話が違う。
 
 
 # --------------------------------------------------------------------------- #

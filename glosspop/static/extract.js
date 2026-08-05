@@ -105,11 +105,7 @@ function paintKinds(list, chosen, onChange) {
 function makeRow(candidate) {
   const check = el("input", { type: "checkbox", checked: true });
   const state = el("span", { class: "status" });
-  // フォルダ横断では「どのファイルに何回出たか」が選ぶ材料になる
-  const where = candidate.file_count
-    ? `${candidate.file_count} ファイル / ${candidate.count} 回: ${candidate.files.join(", ")}`
-    : "";
-  const why = [candidate.why, where, candidate.context].filter(Boolean).join(" — ");
+  const why = [candidate.why, candidate.context].filter(Boolean).join(" — ");
   const edit = el("button", { type: "button", class: "ghost", text: "編集", hidden: true });
   const li = el("li", {}, [
     el("div", { class: "check-row" }, [
@@ -170,15 +166,18 @@ function selected(rows) {
 /**
  * 抽出ダイアログを開く。
  *
+ * **読むのは渡された 1 文書だけ。** フォルダ全体を読む道は畳んだ ——
+ * 何ファイルまとめてもサーバが AI に渡せる本文の枠は同じなので、
+ * 待ち時間だけ増えて取り分が薄まる（→ docs/design-notes.md）。
+ *
  * @param {object} o
- * @param {string} [o.text]    表示中の文書の原文 (folder=false のとき必須)
+ * @param {string} [o.text]    表示中の文書の原文 (必須)
  * @param {string} [o.source]  出典 (ファイル名や URL)
- * @param {boolean} [o.folder] true なら開いているフォルダ全体から抽出する
  * @returns {Promise<number>} 保存した語数
  */
-export async function openExtractDialog({ text = "", source = "", folder = false } = {}) {
+export async function openExtractDialog({ text = "", source = "" } = {}) {
   build();
-  refs.title.textContent = folder ? "フォルダから用語をまとめて登録" : "用語をまとめて登録";
+  refs.title.textContent = "用語をまとめて登録";
   // 既定は AI におまかせ (語ごとに全体 / このフォルダを選ばせる)
   refs.scope.value = "auto";
   refs.spoiler.value = await defaultSpoiler();
@@ -271,10 +270,11 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     setStatus(refs.status, "AI が候補を抽出中 (数十秒かかります)", "busy");
     try {
       controller = new AbortController();
-      const options = { method: "POST", signal: controller.signal };
-      const res = folder
-        ? await api("/api/ai/extract-folder", { ...options, body: { kinds } })
-        : await api("/api/ai/extract", { ...options, body: { text, source, kinds } });
+      const res = await api("/api/ai/extract", {
+        method: "POST",
+        signal: controller.signal,
+        body: { text, source, kinds },
+      });
       controller = null;
       rows = (res.candidates || []).map(makeRow);
       aliasRows = (res.aliases || []).map(makeAliasRow);
@@ -282,9 +282,8 @@ export async function openExtractDialog({ text = "", source = "", folder = false
         refs.lead.textContent = "選んだ種別に当てはまる語は見つかりませんでした。";
         setStatus(refs.status, "");
       } else {
-        const scope = folder ? `${res.files_used?.length || 0} ファイルから挙げました。` : "";
         refs.lead.textContent =
-          scope + "登録する語を選んでください。下書きは 1 語あたり数十秒かかります（順に作ります）。";
+          "登録する語を選んでください。下書きは 1 語あたり数十秒かかります（順に作ります）。";
         const listed = [...groupRows(rows)];
         if (aliasRows.length) {
           // 既存の語に足すだけなので下書きは要らない。別の枠として先に見せる
@@ -317,17 +316,11 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     paintGo();
   };
 
-  /** 除いた語・読まなかったファイルを出す（黙って切らない）。 */
+  /** 除いた語を理由つきで出す（黙って切らない）。 */
   const paintNotes = (res) => {
     const notes = [];
     if (res.dropped?.length) {
       notes.push("除いた語: " + res.dropped.map((d) => `${d.term}（${d.reason}）`).join("、"));
-    }
-    if (res.files_skipped?.length) {
-      notes.push(
-        `読まなかったファイル (${res.files_skipped.length}): ` +
-          res.files_skipped.slice(0, 20).join("、")
-      );
     }
     refs.dropped.hidden = !notes.length;
     refs.dropped.textContent = notes.join(" / ");
@@ -352,10 +345,8 @@ export async function openExtractDialog({ text = "", source = "", folder = false
           body: {
             term: row.candidate.term,
             context: row.candidate.context,
-            // フォルダ横断では、その語が出てくるファイルを出典にする
-            source: row.candidate.source || source,
+            source,
             spoiler: refs.spoiler.value,
-            file: row.candidate.first_file || "",
             scope: refs.scope.value,
             // 抽出時の種別。保存先 (人物ならこのフォルダの辞書) の下敷きになる
             kind: row.candidate.kind || "",
@@ -476,10 +467,11 @@ export async function openExtractDialog({ text = "", source = "", folder = false
     ];
     refs.relations.disabled = true;
     try {
-      // カテゴリが 1 つに絞れるならそこだけ、混ざっていれば辞書全体で探す
+      // カテゴリが 1 つに絞れるならそこだけ、混ざっていれば辞書全体で探す。
+      // 本文はいま抽出に使ったものをそのまま渡す（サーバは読み直さない）
       await openRelationsDialog({
         category: categories.length === 1 ? categories[0] : "",
-        text: folder ? "" : text,
+        text,
         source,
       });
     } finally {

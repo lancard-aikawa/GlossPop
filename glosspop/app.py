@@ -135,12 +135,6 @@ class ExtractRequest(BaseModel):
     kinds: list[str] = []
 
 
-class ExtractFolderRequest(BaseModel):
-    limit: int = 20
-    max_files: int = 40
-    kinds: list[str] = []
-
-
 class RelationsDraftRequest(BaseModel):
     """登録済みの用語どうしの関係を AI に下書きさせる。"""
 
@@ -960,6 +954,11 @@ async def ai_relations(req: RelationsDraftRequest) -> dict:
         docs = [(req.source or "表示中の文書", req.text)]
         unread: list[str] = []
     else:
+        # **本文を渡さない経路は用語ページの「この語の関係を下書き」だけ。**
+        # あちらには読んでいる文書が無いので、ここでフォルダを読む。
+        # 候補語の抽出と違って**待ち時間には効かない** —— 読むのは
+        # `read_cached` なので実測 17.6 ms（温まれば 3.2 ms）で、AI に渡すのは
+        # そこから選んだ窓だけ。所要時間を決めるのは本数のほう
         docs, unread, base = _read_content_docs(req.max_files)
         if not docs:
             raise HTTPException(400, f"読める文書がありません: {base}")
@@ -1735,34 +1734,24 @@ async def ai_extract(req: ExtractRequest) -> dict:
         raise HTTPException(502, str(exc)) from exc
 
 
-@app.post("/api/ai/extract-folder")
-async def ai_extract_folder(req: ExtractFolderRequest) -> dict:
-    """開いているフォルダ全体から候補語を挙げる。
-
-    ファイル数ぶん claude を呼ぶと数分かかるので、まとめて 1 回で済ませる。
-    読んだファイルと、多すぎて渡せなかったファイルは呼び出し側に返す。
-    """
-    if not ai.available():
-        raise HTTPException(503, "claude CLI が見つかりません。手動入力で登録してください。")
-
-    docs, unread, base = _read_content_docs(req.max_files)
-    if not docs:
-        raise HTTPException(400, f"読める文書がありません: {base}")
-
-    try:
-        result = await ai.extract_terms_from_documents(
-            docs, limit=max(1, min(req.limit, 40)), kinds=req.kinds
-        )
-    except ai.AIError as exc:
-        raise HTTPException(502, str(exc)) from exc
-
-    result["root"] = str(base)
-    result["files_skipped"] = [*result["files_skipped"], *unread]
-    return result
+# **候補語の抽出にフォルダ横断の口は無い**（``/api/ai/extract`` の 1 つだけ）。
+# かつて ``/api/ai/extract-folder`` が全ファイルを読んでいたが、何ファイル
+# まとめても AI に渡せる本文の枠 (``ai.EXTRACT_TEXT_CHARS``) は 1 文書のときと
+# 同じなので、**ファイル数ぶん薄まるだけで待ち時間（実測 100〜260 秒）が積み上がる**。
+# フォルダを丸ごと辞書化したいときは、ファイルごとに ✨ 用語を抽出 を回すこと
+# （そのほうが 1 ファイルあたりの取り分は大きい）。
+# → docs/design-notes.md「フォルダ全体を AI に読ませる道は、抽出からは畳む」
+#
+# 下の ``_read_content_docs()`` は**関係の下書きだけ**が使う。あちらは読んだ本文を
+# そのまま渡すのではなく窓を選んで渡すので、ファイルを読む代金（実測 17.6 ms）は
+# 待ち時間に効かない —— 同じ「フォルダを読む」でも話が違う。
 
 
 def _read_content_docs(max_files: int) -> tuple[list[tuple[str, str]], list[str], Path]:
     """開いているフォルダの文書を読む。返すのは (読めたもの, 読まなかったもの, ルート)。
+
+    **呼ぶのは ``/api/ai/relations`` の 1 か所だけ** —— 用語ページの
+    「✨ この語の関係を下書き」には読んでいる文書が無いので、ここで補う。
 
     読まなかったファイルを返すのは、黙って切らないため（呼び出し側が UI に出す）。
     """

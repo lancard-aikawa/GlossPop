@@ -462,7 +462,8 @@ if (reader) {
   window.addEventListener("pagehide", () => reader.stop());
 }
 
-// 候補を挙げて、選んだ語をまとめて登録する (表示中の文書 / フォルダ全体)
+// 候補を挙げて、選んだ語をまとめて登録する。**読むのは表示中の文書だけ** ——
+// フォルダ全体を読む道は畳んだ（→ docs/design-notes.md）
 async function runExtract(button, options) {
   button.disabled = true;
   try {
@@ -476,10 +477,6 @@ async function runExtract(button, options) {
 $("extract").addEventListener("click", () => {
   if (!source) return;
   runExtract($("extract"), { text: source.text, source: sourceLabel() });
-});
-
-$("extractFolder").addEventListener("click", () => {
-  runExtract($("extractFolder"), { folder: true });
 });
 
 // 登録済みの用語どうしの関係を、**表示中の文書から**探す。
