@@ -364,6 +364,18 @@ def _persona_url(scope: str) -> str:
     return f"/api/persona?scope={scope}&v={stamp}"
 
 
+def _ai_state() -> dict:
+    """画面に返す AI まわり一式（``/api/ai/*`` が返すもの）。
+
+    **顔の URL はここで足す。** 形（更新時刻つきのクエリ）を決めているのは
+    `_persona_url()` なので、`ai.describe_style()` の側に写しを作らない。
+    """
+    data = {**llm.describe(), **ai.describe_style()}
+    for item in data.get("personas", []):
+        item["url"] = _persona_url(item["scope"])
+    return data
+
+
 def _term_card(entry: Entry, *, personas: dict[str, str] | None = None) -> dict:
     # **一覧では 1 回だけ調べて配る。** エントリごとに調べると、3000 語の一覧で
     # 拡張子の数だけ stat が飛ぶ（辞書は 2 つしかないので 1 回で足りる）
@@ -1581,6 +1593,36 @@ def persona(scope: str = GLOBAL_SCOPE) -> FileResponse:
     )
 
 
+@app.post("/api/persona")
+async def put_persona(request: Request, scope: str = GLOBAL_SCOPE) -> dict:
+    """語り手の顔を差し替える。**中身は生のバイト列で受け取る。**
+
+    ``multipart`` にしないのは、送られてくるファイル名を**そもそも受け取らない**
+    ため（保存先は `scope` から引き、拡張子は中身から見分ける）。取り込みの zip
+    (`/api/import-glossary`) と同じ形。
+    """
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > ai.PERSONA_MAX_BYTES:
+        raise HTTPException(413, "画像が大きすぎます")
+    data = await request.body()
+    try:
+        ai.save_persona(scope, data)
+    except ai.AIError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    # 文体と同じで、書いたあとの状態一式を返す（クライアントは描き直すだけでよい）
+    return _ai_state()
+
+
+@app.delete("/api/persona")
+def remove_persona(scope: str = GLOBAL_SCOPE) -> dict:
+    """語り手の顔を消す。**辞書のディレクトリは残す**（中に用語が入っている）。"""
+    try:
+        ai.delete_persona(scope)
+    except ai.AIError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _ai_state()
+
+
 @app.get("/api/ai/settings")
 def ai_settings() -> dict:
     """いまどの AI・モデル・思考の深さで動くか。**キーそのものは返さない。**
@@ -1588,7 +1630,7 @@ def ai_settings() -> dict:
     文体 (`style`) だけは ``ai`` の側が持つ。「何を頼むか」なので ``llm`` の
     仕事ではなく、同じ画面に出るというだけの理由でここが繋いでいる。
     """
-    return {**llm.describe(), **ai.describe_style()}
+    return _ai_state()
 
 
 @app.put("/api/ai/settings")
@@ -1619,7 +1661,7 @@ def put_ai_settings(req: AISettingsRequest) -> dict:
         else:
             settings.pop("gemini_api_key", None)     # 空文字は「消す」
     config.save_settings(settings)
-    return {**llm.describe(), **ai.describe_style()}
+    return _ai_state()
 
 
 @app.put("/api/ai/style")
@@ -1633,7 +1675,7 @@ def put_ai_style(req: AIStyleRequest) -> dict:
         ai.save_style(req.scope, req.style)
     except ai.AIError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {**llm.describe(), **ai.describe_style()}
+    return _ai_state()
 
 
 @app.get("/api/ai/models")

@@ -1117,6 +1117,24 @@ class TestAISettings:
         cleared = client.put("/api/ai/style", json={"style": "  "}).json()
         assert cleared["style"] == "" and cleared["style_source"] == "default"
 
+    def test_the_style_presets_describe_the_writing_not_a_person(self, client):
+        """例は**こちらが出す献立**なので、実在の個人を名指ししない。
+
+        仕事をしているのは「俯瞰した視点から淡々と」の側で、名前ではない
+        （名前だけだと似顔絵のような戯画になりやすい）。**自由記述の欄は残して
+        あるので**、誰かの名前で頼みたい人はそう書ける —— それは書く人の判断。
+        → docs/design-notes.md
+        """
+        presets = client.get("/api/ai/settings").json()["style_presets"]
+        assert presets
+        blob = " ".join(f"{p['label']} {p['value']}" for p in presets)
+        for name in ("司馬遼太郎", "広川太一郎"):
+            assert name not in blob
+        # 「〜風」で人を名指しする形に戻っていないこと（作品・媒体の名前は可）
+        assert "の吹き替え" not in blob
+        # 1 つの作品にしか合わない口調は既定に置かない（voices.md のレシピ側）
+        assert "怪盗" not in blob
+
     def test_rejects_a_style_longer_than_the_limit(self, client):
         from glosspop import ai
         res = client.put("/api/ai/style", json={"style": "あ" * (ai.STYLE_MAX_CHARS + 1)})
@@ -1156,11 +1174,13 @@ class TestAISettings:
         finally:
             config.set_content_dir(None)
 
-    def test_the_persona_places_are_reported_without_an_upload(self, client):
+    def test_the_persona_places_are_reported_even_when_empty(self, client):
         body = client.get("/api/ai/settings").json()
         assert [p["scope"] for p in body["personas"]] == ["global", "local"]
         assert all(p["found"] is False for p in body["personas"])
         assert body["persona_name"].startswith("persona")
+        # **置き場所は顔が無くても返す**（「どこに置かれるか」を画面に出せるように）
+        assert body["personas"][0]["dir"]
 
     def test_each_provider_keeps_its_own_model(self, client):
         client.put("/api/ai/settings", json={"provider": "claude", "model": "opus"})
@@ -1567,3 +1587,70 @@ class TestPersona:
         self._put(config.CATEGORIES_FILE.parent)
         entry = client.get("/api/lookup?term=冪等").json()["entries"][0]
         assert entry["persona_url"].startswith("/api/persona?scope=global")
+
+    # ----------------------------------------------------------------- 差し替え
+
+    GIF = b"GIF89a" + b"\x01\x00\x01\x00\x00\xff\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x00;"
+
+    def _post(self, client, data, scope="global", content_type="image/png"):
+        return client.post(
+            f"/api/persona?scope={scope}",
+            content=data,
+            headers={"Content-Type": content_type},
+        )
+
+    def test_a_face_can_be_replaced_from_the_screen(self, client):
+        res = self._post(client, self.PNG)
+        assert res.status_code == 200
+        # 応答は文体と同じ形（クライアントはこれで描き直すだけでよい）
+        assert res.json()["personas"][0]["found"] is True
+        assert client.get("/api/persona?scope=global").content == self.PNG
+
+    def test_the_suffix_comes_from_the_content_not_the_declared_type(self, client):
+        """**送られてきた名乗りは使わない。** 中身が GIF なら ``persona.gif``。"""
+        self._post(client, self.GIF, content_type="image/png")
+        assert (config.CATEGORIES_FILE.parent / "persona.gif").is_file()
+        assert not (config.CATEGORIES_FILE.parent / "persona.png").exists()
+        assert client.get("/api/persona?scope=global").headers["content-type"].startswith(
+            "image/gif"
+        )
+
+    def test_something_that_is_not_an_image_is_refused(self, client):
+        """`.png` という名前の HTML を置かせない（配る口は中身を検査しない）。"""
+        res = self._post(client, b"<html><script>alert(1)</script></html>")
+        assert res.status_code == 400
+        assert client.get("/api/persona?scope=global").status_code == 404
+
+    def test_svg_is_refused_too(self, client):
+        res = self._post(client, b'<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+        assert res.status_code == 400
+
+    def test_an_oversized_image_is_refused(self, client):
+        from glosspop import ai
+
+        res = self._post(client, self.PNG + b"\0" * ai.PERSONA_MAX_BYTES)
+        assert res.status_code in (400, 413)
+        assert client.get("/api/persona?scope=global").status_code == 404
+
+    def test_replacing_clears_the_other_suffix(self, client):
+        """**探索順で決まる顔を残さない**（「差し替えたのに変わらない」の正体）。"""
+        self._put(config.CATEGORIES_FILE.parent, "persona.jpg")
+        self._post(client, self.PNG)
+        assert not (config.CATEGORIES_FILE.parent / "persona.jpg").exists()
+        assert client.get("/api/persona?scope=global").content == self.PNG
+
+    def test_a_face_can_be_deleted(self, client):
+        self._post(client, self.PNG)
+        res = client.delete("/api/persona?scope=global")
+        assert res.status_code == 200
+        assert res.json()["personas"][0]["found"] is False
+        assert client.get("/api/persona?scope=global").status_code == 404
+        # **ディレクトリは残す**（辞書とカテゴリマスターが入っている）
+        assert config.CATEGORIES_FILE.parent.is_dir()
+
+    def test_deleting_nothing_is_not_an_error(self, client):
+        assert client.delete("/api/persona?scope=global").status_code == 200
+
+    def test_an_unknown_scope_is_refused_on_write(self, client):
+        assert self._post(client, self.PNG, scope="でたらめ").status_code == 400
+        assert client.delete("/api/persona?scope=でたらめ").status_code == 400

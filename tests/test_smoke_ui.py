@@ -17,6 +17,7 @@ import json
 import socket
 import threading
 import time
+from urllib.parse import quote
 
 import pytest
 
@@ -151,6 +152,24 @@ def open_glossary(page, server, query: str = ""):
     """
     page.goto(f"{server}/glossary{query}")
     wait_for_glossary(page)
+
+
+def open_other_source(page):
+    """「その他の開き方」を開く。
+
+    1 つだけのファイルと貼り付けは**ダイアログの中**にある（読み続けるための
+    入口＝フォルダ / URL とは別扱い）。開かずに `#paste` を触ると、隠れている
+    要素への操作としてタイムアウトする。
+    """
+    page.click("#otherSource")
+    page.locator("dialog.sheet[open] #paste").wait_for(timeout=SETTLE_MS)
+
+
+def open_content_search(page):
+    """横断検索を開く。**既定では畳んである**（毎回は使わない）。"""
+    if not page.locator("#searchFold[open]").count():
+        page.click("#searchFold > summary")
+    page.locator("#contentQ").wait_for(state="visible", timeout=SETTLE_MS)
 
 
 def wait_for_glossary(page):
@@ -949,6 +968,7 @@ def test_the_viewer_comes_back_to_what_you_were_reading(page, server, seeded):
     assert "銀河.md" in page.locator("#docMeta").inner_text()
 
     # 貼り付けに切り替えたら忘れる（読み直す道が無いものを覚えると嘘になる）
+    open_other_source(page)
     page.fill("#paste", "ただのメモ。")
     page.click("#showPaste")
     page.locator("#doc:has-text('ただのメモ')").wait_for(timeout=SETTLE_MS)
@@ -1244,6 +1264,7 @@ def test_content_search_opens_the_file_at_the_hit(page, server, isolated_dirs):
     page.goto(f"{server}/")
     page.locator("#files button").first.wait_for(timeout=15000)
 
+    open_content_search(page)
     page.fill("#contentQ", "カムパネルラ")
     page.click("#searchGo")
     page.locator("#searchResults .filelist button").first.wait_for(timeout=15000)
@@ -1260,6 +1281,7 @@ def test_content_search_says_when_nothing_matched(page, server, isolated_dirs):
     page.goto(f"{server}/")
     page.locator("#files button").first.wait_for(timeout=15000)
 
+    open_content_search(page)
     page.fill("#contentQ", "存在しない語")
     page.click("#searchGo")
     page.locator("#searchResults .empty").wait_for(timeout=15000)
@@ -1764,13 +1786,19 @@ def test_the_settings_dialog_moves_the_data_root(page, server, isolated_dirs, tm
     assert (cfg.GLOSSARY_DIR / "プログラミング" / "冪等.md").exists()
 
 
-def _wait_for_status(page, ref, text, timeout=15000):
-    status = page.locator(f"dialog.sheet[open] [data-ref={ref}]")
+def _wait_for_status(page, ref, text, timeout=15000, attr="data-ref"):
+    status = page.locator(f"dialog.sheet[open] [{attr}={ref}]")
     for _ in range(timeout // 100):
         if text in status.inner_text():
             return status.inner_text()
         page.wait_for_timeout(100)
     raise AssertionError(f"{ref} に「{text}」が出ない: {status.inner_text()!r}")
+
+
+#: 文体と顔の部品（`ai-style.js`）の中身。**設定ダイアログとビューアのサイドバーで
+#: 同じもの**なので、印は `data-sref` にしてある（外から `[data-ref]` を集める
+#: 呼ぶ側と衝突させない）
+STYLE = "dialog.sheet[open] [data-sref=%s]"
 
 
 def test_the_settings_dialog_sets_the_writing_style(page, server, isolated_dirs):
@@ -1786,14 +1814,14 @@ def test_the_settings_dialog_sets_the_writing_style(page, server, isolated_dirs)
     page.click("#settings")
     page.click("dialog.sheet[open] [data-tab='ai']")
 
-    presets = page.locator("dialog.sheet[open] [data-ref=aiStylePresets] .chip")
+    presets = page.locator(STYLE % "presets" + " .chip")
     presets.first.wait_for(timeout=15000)
     presets.first.click()
-    typed = page.input_value("dialog.sheet[open] [data-ref=aiStyle]")
+    typed = page.input_value(STYLE % "style")
     assert typed                            # 例を押したら入力欄に入ること
 
-    page.click("dialog.sheet[open] [data-ref=aiStyleSave]")
-    _wait_for_status(page, "aiStyleStatus", "保存しました")
+    page.click(STYLE % "save")
+    _wait_for_status(page, "status", "保存しました", attr="data-sref")
     # **次の下書きからそのまま効く**（再起動を挟まない）
     assert ai.style() == typed
     assert typed in ai.build_prompt("冪等")
@@ -1810,25 +1838,25 @@ def test_the_settings_dialog_keeps_a_style_per_folder(page, server, isolated_dir
     page.locator("#settings").wait_for(timeout=15000)
     page.click("#settings")
     page.click("dialog.sheet[open] [data-tab='ai']")
-    page.locator("dialog.sheet[open] [data-ref=aiStylePresets] .chip").first.wait_for(timeout=15000)
+    page.locator(STYLE % "presets" + " .chip").first.wait_for(timeout=15000)
 
-    page.fill("dialog.sheet[open] [data-ref=aiStyle]", "全体の口調")
-    page.click("dialog.sheet[open] [data-ref=aiStyleSave]")
-    _wait_for_status(page, "aiStyleStatus", "保存しました")
+    page.fill(STYLE % "style", "全体の口調")
+    page.click(STYLE % "save")
+    _wait_for_status(page, "status", "保存しました", attr="data-sref")
 
     # 📁 に切り替えると入力欄も入れ替わる（全体のぶんを引きずらない）
-    page.select_option("dialog.sheet[open] [data-ref=aiStyleScope]", "local")
-    assert page.input_value("dialog.sheet[open] [data-ref=aiStyle]") == ""
-    page.fill("dialog.sheet[open] [data-ref=aiStyle]", "この作品の口調")
-    page.click("dialog.sheet[open] [data-ref=aiStyleSave]")
-    _wait_for_status(page, "aiStyleStatus", "保存しました")
+    page.select_option(STYLE % "scope", "local")
+    assert page.input_value(STYLE % "style") == ""
+    page.fill(STYLE % "style", "この作品の口調")
+    page.click(STYLE % "save")
+    _wait_for_status(page, "status", "保存しました", attr="data-sref")
 
     assert (config.content_dir() / ".glosspop" / "style.md").is_file()
     assert ai.style() == "この作品の口調"
-    note = page.locator("dialog.sheet[open] [data-ref=aiStyleNote]").inner_text()
+    note = page.locator(STYLE % "note").inner_text()
     assert "📁 このフォルダ" in note and "全体にも指定があります" in note
     # どこに置かれたかも出す（祖先のフォルダに書かれることがある）
-    assert ".glosspop" in page.locator("dialog.sheet[open] [data-ref=aiStyleWhere]").inner_text()
+    assert ".glosspop" in page.locator(STYLE % "where").inner_text()
 
 
 def test_the_settings_entry_is_labelled_and_next_to_the_nav(page, server, isolated_dirs):
@@ -2161,3 +2189,106 @@ def test_no_button_label_ever_wraps(page, server, seeded):
         page.locator("dialog.sheet[open] [data-ref='theme']").wait_for(timeout=SETTLE_MS)
         _assert_no_wrapped_labels(page, f"設定 ({width}px)")
         page.keyboard.press("Escape")
+
+
+def test_the_source_tabs_are_exclusive(page, server, seeded):
+    """**フォルダと URL はどちらか一方。**
+
+    `config.set_reading_url()` が立っていれば URL 側の辞書、そうでなければ
+    フォルダの辞書、という不変条件をそのまま画面にしている。両方が同時に
+    見えていると、**下の AI 設定がどちらの辞書の話なのか読めない**。
+    """
+    page.goto(f"{server}/")
+    page.locator("#files button").first.wait_for(timeout=SETTLE_MS)
+
+    # 既定はフォルダ。URL 側は畳まれている
+    assert page.locator("#sourcePanelFolder").is_visible()
+    assert page.locator("#sourcePanelUrl").is_hidden()
+
+    page.click("#sourceTabUrl")
+    assert page.locator("#url").is_visible()
+    assert page.locator("#sourcePanelFolder").is_hidden()
+
+    # 選んだタブは覚える（覆いを何度も開き直すので、毎回選び直させない）
+    page.goto(f"{server}/")
+    page.locator("#url").wait_for(state="visible", timeout=SETTLE_MS)
+
+    # **開いたものに合わせて戻る。** 手で選んだタブのまま置き去りにしない
+    page.click("#sourceTabFolder")
+    page.locator("#files button").first.click()
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+    assert page.locator("#sourcePanelFolder").is_visible()
+
+
+def test_the_face_can_be_replaced_from_the_sidebar(page, server, seeded):
+    """サイドバーの AI 設定から語り手の顔を差し替えて、吹き出しに出るまで。
+
+    **設定ダイアログと同じ部品**（`ai-style.js`）なので、ここが動いていれば
+    両方が動いている。画面から書ける口を作った以上、**中身が画像でないものを
+    弾くところ**まで見ないと、`/api/persona` が配る先に何でも置ける。
+    """
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000a49444154789c630001000005000101"
+        "0d0a2db40000000049454e44ae426082"
+    )
+    good = config.content_dir() / "顔.png"
+    good.write_bytes(png)
+    bad = config.content_dir() / "偽物.png"
+    bad.write_bytes(b"<html><script>alert(1)</script></html>")
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+    # サイドバーは 📁 だけを出す（全体の指定は ⚙ にある）
+    row = page.locator("#sideAi .persona-row").first
+    row.wait_for(timeout=SETTLE_MS)
+    assert "📁" in row.inner_text()
+    # **狭いのでパスは出さない**（全文は ⚙ 側。折り返した長いパスが枠の大半を食う）
+    assert str(config.content_dir()) not in page.locator("#sideAi").inner_text()
+    assert page.locator("#sideAi [data-sref=where]").is_hidden()
+    # 「何を読むか」と「どう書かせるか」は線で切る（見出しの色は薄い）
+    assert page.locator(".side .side-rule").count() == 1
+
+    def choose(path):
+        # ボタン → ファイル選択、という本物の経路で通す（隠した input へ直接
+        # 入れると、どのスコープに入れるのかを決めている行が素通りする）
+        with page.expect_file_chooser() as chooser:
+            page.locator("#sideAi .persona-row button").first.click()
+        chooser.value.set_files(str(path))
+
+    # 画像でないものは弾かれ、顔は付かない。**結果は顔の側の行に出る**
+    # （文体の保存ボタンの隣に出すと、そちらを押した結果に見える）
+    face_status = page.locator("#sideAi [data-sref=faceStatus]")
+    choose(bad)
+    page.locator("#sideAi [data-sref=faceStatus].error").wait_for(timeout=SETTLE_MS)
+    assert "画像として読めません" in face_status.inner_text()
+    assert page.locator("#sideAi img.persona-face").count() == 0
+
+    choose(good)
+    page.locator("#sideAi img.persona-face").wait_for(timeout=SETTLE_MS)
+    assert (config.content_dir() / ".glosspop" / "persona.png").is_file()
+
+
+def test_the_first_only_option_moved_to_the_settings_and_still_works(page, server, seeded):
+    """表示オプションは ⚙ にある。**押した瞬間に本文へ効く。**
+
+    設定ダイアログはビューアの上に開くので、保存や再読み込みを挟まずに
+    描き直せること（テーマと同じ扱い）まで見る。
+    """
+    doc = config.content_dir() / "繰り返し.md"
+    doc.write_text("ジョバンニ。\n\nジョバンニ。\n", encoding="utf-8")
+
+    page.goto(f"{server}/?open={quote('繰り返し.md')}")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+    assert page.locator("#doc a.gloss-link").count() == 2
+
+    page.click("#settings")
+    box = page.locator("dialog.sheet[open] [data-ref=firstOnly]")
+    box.wait_for(timeout=SETTLE_MS)
+    box.check()
+    page.keyboard.press("Escape")
+
+    page.wait_for_function(
+        "() => document.querySelectorAll('#doc a.gloss-link').length === 1",
+        timeout=SETTLE_MS,
+    )

@@ -1366,3 +1366,103 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .update-notice:hover { background: var(--accent); color: var(--accent-fg); }
 .setting-row-plain { margin-left: 0; }
 .field-inline { font-size: 13px; color: var(--fg-dim); }
+
+/* Windows のパスは `\` で折り返せないので、そのままだと入れ物ごと横に伸びる
+   （サイドバーに横スクロールが出た）。**どこでも割ってよい**行に付ける */
+.path-line { overflow-wrap: anywhere; }
+
+/* 語り手の顔。**設定ダイアログとサイドバーで同じものを出す**（`ai-style.js`）ので、
+   狭い側（サイドバー 240px）に収まる形にしてある */
+.persona-list { display: flex; flex-direction: column; gap: 8px; }
+.persona-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;                      /* ボタンは縮まないので行のほうを折り返す */
+}
+.persona-face {
+  width: 36px; height: 36px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.persona-face.empty {
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  filter: grayscale(1);
+  opacity: .5;
+}
+/* 隣にボタンが並ぶので、名前とパスの側が縮んで吸収する（基準幅を持たせないと
+   1 文字ずつ縦に割れる） */
+.persona-main { display: flex; flex-direction: column; min-width: 0; flex: 1 1 120px; }
+.persona-label { font-size: 13px; }
+.persona-main .issue-detail {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* `.rel-sub` は uppercase の小見出し用。日本語しか入らない小見出しはこちら */
+.rel-sub-plain {
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin: 16px 0 4px;
+  font-weight: 600;
+}
+
+/* サイドバーの「読むもの」タブ。設定ダイアログの `.sheet-tabs` と同じ考え方だが、
+   幅いっぱいに 2 つ並べる（狭いので、選ばれていないほうも押せると分かる大きさに） */
+.side-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.side-tabs button {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--fg-dim);
+  font-size: 12px;
+  padding: 6px 4px;
+  cursor: pointer;
+}
+.side-tabs button:hover { color: var(--fg); }
+.side-tabs button[aria-selected="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ファイル一覧の見出し行（見出し＋再読み込み）。`.side h2` ほど目立たせない */
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--fg-faint);
+  margin: 14px 0 6px;
+}
+.side-head > span:first-child { flex: 1; min-width: 0; }
+
+/* サイドバーの中の区切り。上は「何を読むか」、下は「どう書かせるか」で役割が違う
+   （見出しの色は薄いので、見出しだけでは段が変わったことが読み取れない） */
+.side-rule {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 20px 0 0;
+}
+
+/* 畳んである入口（横断検索）。閉じているときは 1 行しか占めない */
+.side-fold { margin-top: 10px; }
+.side-fold > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-dim);
+  padding: 4px 0;
+}
+.side-fold > summary:hover { color: var(--fg); }
+.side-fold[open] > summary { margin-bottom: 6px; }

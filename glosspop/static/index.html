@@ -31,68 +31,80 @@ try {
 <div class="layout">
 
   <aside class="side">
-    <h2>ソース</h2>
-    <button type="button" id="pick" class="wide">📂 ファイルを開く…</button>
-    <input type="file" id="file"
-           accept=".md,.markdown,.mdown,.txt,.html,.htm,text/plain,text/markdown,text/html" hidden>
-    <p class="hint">.md / .txt / .html をウィンドウにドロップしても開けます。</p>
-
-    <h2>URL を開く</h2>
-    <form id="urlForm" class="check-row">
-      <input type="url" id="url" placeholder="https://example.com/doc" autocomplete="off"
-             title="開く URL" aria-label="開く URL">
-      <button type="submit" id="urlGo">開く</button>
-    </form>
-    <p class="hint" id="urlStatus"></p>
-    <p class="hint" id="urlDict" hidden></p>
-    <form id="urlDictForm" class="check-row gap-top" hidden>
-      <input type="text" id="urlPrefix" placeholder="example.com/docs" autocomplete="off"
-             title="辞書を効かせる範囲 (ドメイン + パス)" aria-label="辞書を効かせる範囲">
-      <button type="submit" id="urlDictGo">作る</button>
-    </form>
-
-    <h2>フォルダを開く
-      <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"
-              aria-label="ファイル一覧を再読み込み">↻</button>
-    </h2>
-    <div class="check-row">
-      <button type="button" id="pickFolder" class="wide">📁 フォルダを選ぶ…</button>
-      <button type="button" id="favToggle" class="ghost icon"
-              title="このフォルダをお気に入りに入れる" aria-label="お気に入りに入れる">☆</button>
-    </div>
-    <select id="recent" class="gap-top" title="最近開いたフォルダ"
-            aria-label="最近開いたフォルダ"></select>
-    <form id="rootForm" class="check-row gap-top">
-      <input type="text" id="root" placeholder="パスを直接入力" autocomplete="off"
-             title="開くフォルダのパス" aria-label="開くフォルダのパス">
-      <button type="submit" id="rootGo">開く</button>
-    </form>
-    <p class="hint" id="rootStatus"></p>
-    <form id="searchForm" class="check-row gap-top">
-      <input type="search" id="contentQ" placeholder="本文を横断検索" autocomplete="off"
-             title="このフォルダの本文を横断して探す" aria-label="このフォルダの本文を横断して探す">
-      <button type="submit" id="searchGo">探す</button>
-    </form>
-    <p class="hint" id="searchStatus"></p>
-    <div class="search-results" id="searchResults" hidden></div>
-    <ul class="filelist" id="files"></ul>
-    <button type="button" id="extractFolder" class="wide gap-top"
-            title="このフォルダの文書をまとめて読んで辞書候補を挙げる">✨ フォルダから用語を抽出</button>
-
-    <h2>テキストを貼り付け</h2>
-    <textarea id="paste" rows="6" placeholder="ここにテキストを貼り付け"></textarea>
-    <div class="check-row gap-top">
-      <button type="button" id="showPaste" class="primary">表示</button>
-      <select id="kind" class="auto-width" title="貼り付けたテキストの種類" aria-label="貼り付けたテキストの種類">
-        <option value="auto">自動判定</option>
-        <option value="markdown">Markdown</option>
-        <option value="text">プレーンテキスト</option>
-        <option value="html">HTML</option>
-      </select>
+    <!-- **「いま読んでいるもの」はフォルダか URL のどちらか一方**（config 側の
+         不変条件）。UI もそのとおり排他にしてある —— 両方を並べると、URL を
+         読んでいる最中にフォルダのファイル一覧が居座って、どちらが効いている
+         辞書なのか画面から読めない -->
+    <h2>読むもの</h2>
+    <div class="side-tabs" role="tablist" id="sourceTabs">
+      <button type="button" role="tab" data-source-tab="folder" aria-selected="true"
+              aria-controls="sourcePanelFolder" id="sourceTabFolder">📁 フォルダ</button>
+      <button type="button" role="tab" data-source-tab="url" aria-selected="false"
+              aria-controls="sourcePanelUrl" id="sourceTabUrl">🔗 URL</button>
     </div>
 
-    <h2>表示オプション</h2>
-    <label class="check"><input type="checkbox" id="firstOnly"> 各用語の最初の 1 回だけリンク</label>
+    <div id="sourcePanelFolder" role="tabpanel" aria-labelledby="sourceTabFolder">
+      <div class="check-row">
+        <button type="button" id="pickFolder" class="wide">📁 フォルダを選ぶ…</button>
+        <button type="button" id="favToggle" class="ghost icon"
+                title="このフォルダをお気に入りに入れる" aria-label="お気に入りに入れる">☆</button>
+      </div>
+      <select id="recent" class="gap-top" title="最近開いたフォルダ"
+              aria-label="最近開いたフォルダ"></select>
+      <form id="rootForm" class="check-row gap-top">
+        <input type="text" id="root" placeholder="パスを直接入力" autocomplete="off"
+               title="開くフォルダのパス" aria-label="開くフォルダのパス">
+        <button type="submit" id="rootGo">開く</button>
+      </form>
+      <p class="hint" id="rootStatus"></p>
+      <div class="side-head">
+        <span>ファイル</span>
+        <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"
+                aria-label="ファイル一覧を再読み込み">↻</button>
+      </div>
+      <ul class="filelist" id="files"></ul>
+      <!-- 検索は畳んでおく（毎回は使わない）。開閉は覚えるので、よく使う人には
+           開いたままになる -->
+      <details class="side-fold" id="searchFold">
+        <summary>🔍 本文を横断検索</summary>
+        <form id="searchForm" class="check-row">
+          <input type="search" id="contentQ" placeholder="このフォルダの本文を探す" autocomplete="off"
+                 title="このフォルダの本文を横断して探す" aria-label="このフォルダの本文を横断して探す">
+          <button type="submit" id="searchGo">探す</button>
+        </form>
+        <p class="hint" id="searchStatus"></p>
+        <div class="search-results" id="searchResults" hidden></div>
+      </details>
+      <button type="button" id="extractFolder" class="wide gap-top"
+              title="このフォルダの文書をまとめて読んで辞書候補を挙げる">✨ フォルダから用語を抽出</button>
+    </div>
+
+    <div id="sourcePanelUrl" role="tabpanel" aria-labelledby="sourceTabUrl" hidden>
+      <form id="urlForm" class="check-row">
+        <input type="url" id="url" placeholder="https://example.com/doc" autocomplete="off"
+               title="開く URL" aria-label="開く URL">
+        <button type="submit" id="urlGo">開く</button>
+      </form>
+      <p class="hint" id="urlStatus"></p>
+      <p class="hint" id="urlDict" hidden></p>
+      <form id="urlDictForm" class="check-row gap-top" hidden>
+        <input type="text" id="urlPrefix" placeholder="example.com/docs" autocomplete="off"
+               title="辞書を効かせる範囲 (ドメイン + パス)" aria-label="辞書を効かせる範囲">
+        <button type="submit" id="urlDictGo">作る</button>
+      </form>
+    </div>
+
+    <button type="button" id="otherSource" class="wide gap-top"
+            title="1 つだけのファイル、貼り付けたテキスト">＋ その他の開き方…</button>
+
+    <!-- **AI 設定は「読むもの」の直後。** 文体も顔も、いま読んでいるものの
+         辞書に置かれるので、フォルダ / URL を選ぶ場所の続きにある。中身は
+         ai-style.js が作る（設定ダイアログと同じ部品）。
+         ここから上は「何を読むか」、ここから下は「どう書かせるか」なので、
+         見出しだけでは足りず線で切る -->
+    <hr class="side-rule">
+    <h2 id="sideAiHead">📁 いま読んでいるものの AI 設定</h2>
+    <div id="sideAi"></div>
   </aside>
 
   <main class="doc-wrap">

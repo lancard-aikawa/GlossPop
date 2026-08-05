@@ -648,3 +648,34 @@ class TestPersonaFollowsTheDictionary:
         config.set_content_dir(second)
         store.invalidate()
         assert client.get("/api/persona?scope=local").status_code == 404
+
+    def test_writing_one_lands_next_to_the_folder_dictionary(self, client, tmp_path):
+        """置き場所は文体 (`style.md`) と同じ。フォルダごとコピーすればついていく。"""
+        config.set_content_dir(tmp_path)
+        res = client.post(
+            "/api/persona?scope=local",
+            content=self.PNG,
+            headers={"Content-Type": "image/png"},
+        )
+        assert res.status_code == 200
+        assert (tmp_path / config.LOCAL_DIR_NAME / "persona.png").read_bytes() == self.PNG
+        assert client.get("/api/persona?scope=local").status_code == 200
+        # 全体のほうは触っていない（基準が違う）
+        assert client.get("/api/persona?scope=global").status_code == 404
+
+    def test_a_url_without_a_dictionary_cannot_take_one(self, client, tmp_path):
+        """**置けない場所は押させない。** URL 側は辞書を勝手に作らない。"""
+        config.set_content_dir(tmp_path)
+        config.set_reading_url("https://example.com/docs/a")
+        try:
+            body = client.get("/api/ai/settings").json()
+            local = next(p for p in body["personas"] if p["scope"] == "local")
+            assert local["dir"] == ""
+            res = client.post(
+                "/api/persona?scope=local",
+                content=self.PNG,
+                headers={"Content-Type": "image/png"},
+            )
+            assert res.status_code == 400
+        finally:
+            config.set_reading_url(None)

@@ -277,7 +277,9 @@ def local_style_file() -> Path | None:
 #: ペルソナ（語り手）の顔。**文体と同じ場所に、決め打ちの名前で置く。**
 #:
 #: 名前を設定で変えられるようにしないのは、**外から来た文字列でパスを組み立てない**
-#: ため（控えの `_backup_path` と同じ考え方）。拡張子だけを順に探す。
+#: ため（控えの `_backup_path` と同じ考え方）。拡張子だけを順に探す。画面から
+#: 差し替えられるようになった後も**この規則は変えていない** —— 拡張子は送られて
+#: きたファイル名ではなく、**中身から見分けたもの**を使う（`ai.save_persona()`）。
 #: **SVG は入れない** —— スクリプトを持てるので、`htmlclean` を許可制にしているのと
 #: 同じ理由。ここは中身を検査せずにそのまま配る口になる
 PERSONA_NAME = "persona"
@@ -298,15 +300,29 @@ def find_persona(directory: Path | None) -> Path | None:
     return None
 
 
+def local_persona_dir() -> Path | None:
+    """いま読んでいるものの顔の**置き場所**。文体 (`style.md`) と同じディレクトリ。
+
+    **在るかどうかは見ない**（無ければ書くときに作る）。「見つける」側と分けて
+    あるのは、置き場所が決まっていても顔がまだ無い、という状態が普通にあるため。
+    """
+    root = local_root()
+    return None if root is None else root / LOCAL_DIR_NAME
+
+
+def global_persona_dir() -> Path:
+    """全体の辞書の顔の置き場所。**カテゴリマスターの隣**（ローカルと同じ並び）。"""
+    return CATEGORIES_FILE.parent
+
+
 def local_persona_file() -> Path | None:
     """いま読んでいるものに効くペルソナ画像。**文体 (`style.md`) の隣。**"""
-    root = local_root()
-    return find_persona(None if root is None else root / LOCAL_DIR_NAME)
+    return find_persona(local_persona_dir())
 
 
 def global_persona_file() -> Path | None:
     """全体の辞書のペルソナ画像。**カテゴリマスターの隣**（ローカルと同じ並び）。"""
-    return find_persona(CATEGORIES_FILE.parent)
+    return find_persona(global_persona_dir())
 
 
 def ensure_dirs() -> None:

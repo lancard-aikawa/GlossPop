@@ -80,6 +80,45 @@ export function applyTheme(value) {
   return theme;
 }
 
+// ------------------------------------------------------------- 表示オプション
+//
+// 本文の見せ方の設定。**設定ダイアログに置いてあるが、効くのはビューアの本文。**
+// ページをまたいで持つ必要があるので localStorage に入れ、変わったことは
+// `subscribe` で伝える（`storage` イベントは**別のタブ**でしか飛ばないので、
+// 同じページに居るビューアには届かない）。テーマと同じで、押した瞬間に効かせる。
+
+export const FIRST_ONLY_KEY = "glosspop.firstOnly";
+
+const firstOnlyWatchers = new Set();
+
+/** 各用語の最初の 1 回だけリンクするか。既定は偽（全部リンクする）。 */
+export function firstOnly() {
+  try {
+    return localStorage.getItem(FIRST_ONLY_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** 設定を書き換えて、見ている画面に知らせる。 */
+export function setFirstOnly(value) {
+  const on = Boolean(value);
+  try {
+    if (on) localStorage.setItem(FIRST_ONLY_KEY, "1");
+    else localStorage.removeItem(FIRST_ONLY_KEY);
+  } catch {
+    /* 保存できなくてもその画面では効く */
+  }
+  for (const fn of firstOnlyWatchers) fn(on);
+  return on;
+}
+
+/** 変わったら呼ぶ。戻り値を呼ぶと外れる。 */
+export function watchFirstOnly(fn) {
+  firstOnlyWatchers.add(fn);
+  return () => firstOnlyWatchers.delete(fn);
+}
+
 // 関係の上下。**値は `models.RANKS` と同じ文字列**でないとサーバが弾く。
 // 用語ページ・関係の下書き・相関図の 3 つが同じ表示をするので、正はここ 1 つ。
 // **すべて「自分から見て相手がどうか」** の向きで読む（向きの基準は 1 つに固定）

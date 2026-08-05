@@ -1,5 +1,16 @@
 // ビューア: ソース読み込み → レンダリング → テキスト選択で辞書登録。
-import { api, el, esc, externalLink, paintEntryCount, setStatus } from "./base.js";
+import {
+  api,
+  el,
+  esc,
+  externalLink,
+  firstOnly,
+  paintEntryCount,
+  setStatus,
+  watchFirstOnly,
+} from "./base.js";
+// 文体と顔は設定ダイアログと同じ部品。**サイドバーでは 📁 だけを出す**
+import { mountStyleEditor } from "./ai-style.js";
 import { openExtractDialog } from "./extract.js";
 import { installGlossPopup } from "./popup.js";
 import { createTracker, keyFor } from "./progress.js";
@@ -44,7 +55,8 @@ async function renderCurrent() {
         filename: source.filename || null,
         base_url: source.url || "",
         title: source.title || "",
-        first_only: $("firstOnly").checked,
+        // 表示オプションは設定ダイアログにある（効くのはここ）
+        first_only: firstOnly(),
       },
     });
     doc.innerHTML = res.html || '<p class="empty">(空のドキュメント)</p>';
@@ -312,6 +324,51 @@ doc.addEventListener("click", (ev) => {
 });
 
 // ------------------------------------------------------------- ソース選択
+//
+// **1 つだけのファイルと貼り付けはダイアログの中。** どちらも「たまたま手元に
+// あるものを 1 回見る」ための入口で、読み続けるための入口（フォルダ / URL）と
+// 並べておくとサイドバーの大半をそちらが占める。**開き方は減らしていない**
+// —— ドロップは今までどおりウィンドウのどこでも効く。
+
+const otherDialog = el("dialog", { class: "sheet" });
+otherDialog.innerHTML = `
+  <form method="dialog" novalidate>
+    <header>
+      <h2>その他の開き方</h2>
+      <div class="spacer"></div>
+      <button type="button" class="ghost" id="otherClose" aria-label="閉じる">✕</button>
+    </header>
+    <div class="body">
+      <section class="entry-section">
+        <h2>ファイルを 1 つ開く</h2>
+        <button type="button" id="pick" class="wide">📂 ファイルを開く…</button>
+        <input type="file" id="file"
+               accept=".md,.markdown,.mdown,.txt,.html,.htm,text/plain,text/markdown,text/html" hidden>
+        <p class="hint">
+          .md / .txt / .html をウィンドウにドロップしても開けます（このダイアログは要りません）。
+          <strong>隣のファイルへのリンクは辿れません</strong>ので、続けて読むならフォルダを開いてください。
+        </p>
+      </section>
+      <section class="entry-section">
+        <h2>テキストを貼り付け</h2>
+        <textarea id="paste" rows="8" placeholder="ここにテキストを貼り付け"></textarea>
+        <div class="check-row gap-top">
+          <button type="button" id="showPaste" class="primary">表示</button>
+          <select id="kind" class="auto-width" title="貼り付けたテキストの種類"
+                  aria-label="貼り付けたテキストの種類">
+            <option value="auto">自動判定</option>
+            <option value="markdown">Markdown</option>
+            <option value="text">プレーンテキスト</option>
+            <option value="html">HTML</option>
+          </select>
+        </div>
+      </section>
+    </div>
+  </form>`;
+document.body.append(otherDialog);
+
+$("otherSource").addEventListener("click", () => otherDialog.showModal());
+$("otherClose").addEventListener("click", () => otherDialog.close());
 
 $("pick").addEventListener("click", () => $("file").click());
 
@@ -329,6 +386,7 @@ async function openLocalFile(file) {
     return;
   }
   await paintUrlDictionary("");   // URL ではないのでフォルダ側の辞書に戻す
+  otherDialog.close();            // 読めたら閉じる（本文が覆いの裏に出ても分からない）
   await setSource({ text: await file.text(), kind: "auto", filename: file.name });
   markCurrentFile(null);
 }
@@ -347,11 +405,13 @@ $("showPaste").addEventListener("click", async () => {
     return;
   }
   await paintUrlDictionary("");
+  otherDialog.close();
   setSource({ text, kind: $("kind").value, filename: null });
   markCurrentFile(null);
 });
 
-$("firstOnly").addEventListener("change", renderCurrent);
+// 表示オプションは設定ダイアログにある。押した瞬間に本文へ効かせる
+watchFirstOnly(() => renderCurrent());
 
 // ------------------------------------------------------------- 読み上げ
 
@@ -472,12 +532,102 @@ $("urlForm").addEventListener("submit", (ev) => {
   openUrl(url);
 });
 
+// ----------------------------------------------------- 読むもの（タブ）
+//
+// **フォルダと URL は排他。** `config.set_reading_url()` が立っていれば
+// `sites/` の辞書、そうでなければフォルダの辞書、という不変条件をそのまま
+// 画面にしている。**開いたものに合わせて自動で切り替える** —— 手で選んだ
+// タブと実際に読んでいるものが食い違うと、下の AI 設定がどちらの辞書の話なのか
+// 分からなくなる。
+
+const SOURCE_TAB_KEY = "glosspop.sourceTab";
+
+function showSourceTab(name, { remember = true } = {}) {
+  const tab = name === "url" ? "url" : "folder";
+  for (const button of $("sourceTabs").querySelectorAll("[data-source-tab]")) {
+    button.setAttribute("aria-selected", String(button.dataset.sourceTab === tab));
+  }
+  $("sourcePanelFolder").hidden = tab !== "folder";
+  $("sourcePanelUrl").hidden = tab !== "url";
+  if (!remember) return;
+  try {
+    localStorage.setItem(SOURCE_TAB_KEY, tab);
+  } catch { /* 覚えられなくてもその場では切り替わる */ }
+}
+
+$("sourceTabs").addEventListener("click", (ev) => {
+  const button = ev.target.closest("[data-source-tab]");
+  if (button) showSourceTab(button.dataset.sourceTab);
+});
+
+/** 矢印キーでもタブを移れるようにする（tablist の作法。設定ダイアログと同じ）。 */
+$("sourceTabs").addEventListener("keydown", (ev) => {
+  if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+  const buttons = [...$("sourceTabs").querySelectorAll("[data-source-tab]")];
+  const at = buttons.findIndex((b) => b.getAttribute("aria-selected") === "true");
+  const next = buttons[(at + (ev.key === "ArrowRight" ? 1 : buttons.length - 1)) % buttons.length];
+  showSourceTab(next.dataset.sourceTab);
+  next.focus();
+  ev.preventDefault();
+});
+
+try {
+  showSourceTab(localStorage.getItem(SOURCE_TAB_KEY) || "folder", { remember: false });
+} catch {
+  showSourceTab("folder", { remember: false });
+}
+
+// 検索の開閉も覚える。毎回使う人には開いたままになる（既定は閉じたまま）
+const SEARCH_FOLD_KEY = "glosspop.searchOpen";
+try {
+  $("searchFold").open = localStorage.getItem(SEARCH_FOLD_KEY) === "1";
+} catch { /* 読めなければ閉じたまま */ }
+$("searchFold").addEventListener("toggle", () => {
+  try {
+    if ($("searchFold").open) localStorage.setItem(SEARCH_FOLD_KEY, "1");
+    else localStorage.removeItem(SEARCH_FOLD_KEY);
+  } catch { /* 覚えられなくても開閉はできる */ }
+});
+
+// -------------------------------------------- サイドバーの AI 設定（文体・顔）
+//
+// **設定ダイアログと同じ部品**（`ai-style.js`）を、📁 だけに絞って出す。
+// 全体の指定は ⚙ にある —— こちらは「いま開いているもの」の話をする場所なので、
+// 並べると押し間違える（フォルダごとの口調を書いたつもりで全体を書き換える）。
+
+const sideStyle = mountStyleEditor($("sideAi"), {
+  scopes: ["local"],
+  // **置き場所のパスは出さない**（狭いので、折り返した長いパスが枠の大半を食う）。
+  // 全文は ⚙ 側に出る。祖先のものが効いていることと、置けない理由だけは残る
+  showPaths: false,
+});
+
+/**
+ * サイドバーの AI 設定を読み直す。
+ *
+ * **読むものが変わるたびに引き直すこと。** 文体も顔も「いま読んでいるもの」の
+ * 辞書から引くので、フォルダや URL を切り替えたら中身が変わる（覚え込むと、
+ * 前のフォルダの口調を出したまま保存させることになる）。
+ */
+function refreshSideStyle() {
+  return sideStyle.reload();
+}
+
 // ------------------------------------------------- URL ごとのローカル辞書
 
-/** いま読んでいる URL をサーバに伝え、効いている辞書を表示する。 */
+/**
+ * いま読んでいる URL をサーバに伝え、効いている辞書を表示する。
+ *
+ * **「読むもの」が変わる唯一の関所**（フォルダのファイル・貼り付け・ローカル
+ * ファイルは空文字で呼ぶ）なので、タブとサイドバーの AI 設定もここで合わせる。
+ * 呼ぶ側それぞれに書くと、必ずどれかで抜ける。
+ */
 async function paintUrlDictionary(url) {
   const line = $("urlDict");
   const form = $("urlDictForm");
+  showSourceTab(url ? "url" : "folder");
+  // 文体も顔も「いま読んでいるもの」の辞書から引くので、切り替えたら引き直す
+  refreshSideStyle();
   try {
     const info = await api("/api/url-context", { method: "POST", body: { url: url || "" } });
     if (!url) {
@@ -683,7 +833,9 @@ function paintFolderMenu() {
     groups.push(el("optgroup", { label: "最近開いた" }, rest.map(option)));
   }
   select.replaceChildren(
-    el("option", { value: "", text: groups.length ? "フォルダを選ぶ…" : "（履歴なし）" }),
+    // 真上のボタンと同じ文言にしないこと（「フォルダを選ぶ…」が 2 つ並んで、
+    // どちらが OS のダイアログなのか分からなくなる）
+    el("option", { value: "", text: groups.length ? "最近開いた / お気に入り…" : "（履歴なし）" }),
     ...groups
   );
   select.value = "";
@@ -704,6 +856,8 @@ async function openRoot(path) {
     markCurrentFile(null);
     if (!res.is_default) rememberFolder(res.root);
     paintFolderMenu();
+    // 辞書ごと変わるので、文体と顔も引き直す（前のフォルダのものを出さない）
+    refreshSideStyle();
   } catch (err) {
     setStatus($("rootStatus"), err.message, "error");
   } finally {
@@ -892,6 +1046,7 @@ installOverlay({
 });
 
 paintEntryCount($("count"));
+refreshSideStyle();
 loadFileList().then(async (listing) => {
   if (await openFromQuery()) return;   // URL の指定が最優先
   if (await openOverlayFromLocation()) return;

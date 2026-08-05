@@ -154,6 +154,18 @@ def persona_file(scope: str = GLOBAL_SCOPE) -> Path | None:
     return config.global_persona_file()
 
 
+def persona_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
+    """スコープに対応する顔の**置き場所**。まだ顔が無くても返る。
+
+    ``persona_file()`` と対で、こちらは書き込む側が使う。ローカルは
+    「いま読んでいるもの」に辞書が無ければ ``None``（URL を読んでいて、その
+    辞書をまだ作っていないとき）。
+    """
+    if scope == LOCAL_SCOPE:
+        return config.local_persona_dir()
+    return config.global_persona_dir()
+
+
 def local_available() -> bool:
     """ローカル辞書を使えるか。
 

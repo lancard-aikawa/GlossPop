@@ -12,6 +12,7 @@ import json
 import os
 import re
 from functools import partial
+from pathlib import Path
 
 from anyio import to_thread
 
@@ -189,7 +190,7 @@ def build_scope_block(folder: str, kind: str = "") -> str:
 # --------------------------------------------------------------------------- #
 # 文体（口調）
 #
-# 「広川太一郎風」「司馬遼太郎風」「TRPG のルールブック風」のように、作品や卓に
+# 「講談調で」「史伝の筆致で」「TRPG のルールブック風に」のように、作品や卓に
 # 寄せた書き方をさせるための指定。**設定の解決も節の組み立てもここに置く** ——
 # 文体は「何を頼むか」であって「誰にどう頼むか」ではないので ``llm.py`` の仕事では
 # ない（提供元・モデル・思考の深さと同じ画面に出るだけ）。
@@ -206,13 +207,25 @@ STYLE_MAX_CHARS = 400
 STYLE_ENV = "GLOSSPOP_AI_STYLE"
 STYLE_SETTING = "ai_style"
 
-#: 画面に出す例。**値そのもの**なので、押せばそのまま入力欄に入る
+#: 画面に出す例。**値そのもの**なので、押せばそのまま入力欄に入る。
+#:
+#: 選ぶ基準が 2 つある:
+#:
+#: - **実在の個人の名前を出さない。** 特徴を「〇〇風」で名指しするより、その人の
+#:   文章の**何が効いているか**を書いたほうが AI にも通る（実際、名前を外しても
+#:   値の中身はほとんど変わっていない —— 仕事をしていたのは「俯瞰した視点から
+#:   淡々と」の側）。ここは配るアプリの既定なので、名前を挙げると「この人を
+#:   真似ろ」という献立をこちらが出すことになる。**自由記述の欄は残してある**ので、
+#:   誰かの名前で頼みたい人はそう書けばよい（それは書く人の判断）
+#:   → docs/design-notes.md
+#: - **どれか 1 つの作品にしか合わないものを既定に置かない。** 押す前に何が起きるか
+#:   分からない献立なので、大半の辞書で外れるものが混ざると「例が使えない」に見える。
+#:   作品に噛み合う狭い口調は docs/voices.md にレシピとして置く（そこは作品ごとの話）
 STYLE_PRESETS: list[dict[str, str]] = [
     {"label": "講談調", "value": "講談・軍記物のような語り口で。歯切れよく、体言止めを混ぜる。"},
-    {"label": "司馬遼太郎風", "value": "司馬遼太郎のような史伝の筆致で。俯瞰した視点から、断定を避けずに淡々と書く。"},
-    {"label": "広川太一郎風", "value": "広川太一郎の吹き替えのような軽妙な口調で。"
-                                      "茶々を入れるような言い回しや語尾の遊びを少し混ぜる。"},
-    {"label": "怪盗の予告状風", "value": "怪盗の予告状のように、もったいぶった芝居がかった調子で。"},
+    {"label": "史伝調", "value": "史伝・評伝のような筆致で。俯瞰した視点から、断定を避けずに淡々と書く。"},
+    {"label": "軽妙な話し言葉", "value": "軽妙な話し言葉で。茶々を入れるような言い回しや"
+                                        "語尾の遊びを少し混ぜる。"},
     {"label": "TRPG のルールブック風", "value": "TRPG のルールブックの記述のように、"
                                                 "卓上でそのまま読み上げられる調子で。世界観の語り口を保つ。"},
     {"label": "です・ます", "value": "です・ます調の、落ち着いた説明文で。"},
@@ -290,21 +303,120 @@ def describe_style() -> dict:
         ),
         "style_presets": STYLE_PRESETS,
         "style_max": STYLE_MAX_CHARS,
-        # 語り手の顔。**画面から登録させない**ので、置き場所と有無だけを返す
+        # 語り手の顔。**置き場所も返す** —— 画面から差し替えられるようになっても
+        # 「どこに置かれるか」は隠さない（エディタやエクスプローラから差し替える
+        # 道を残してあるので、片方だけ知っていても困る）
         "persona_name": f"{config.PERSONA_NAME}{config.PERSONA_SUFFIXES[0]}",
+        "persona_max": PERSONA_MAX_BYTES,
+        "persona_types": sorted({name for name in _PERSONA_SNIFF.values()}),
         "personas": [
             {
                 "scope": scope,
                 "label": "📁 このフォルダ" if scope == LOCAL_SCOPE else "全体",
                 "found": found is not None,
                 "path": str(found) if found is not None else "",
+                # 置き場所が無いスコープには書けない（URL を読んでいて、その辞書を
+                # まだ作っていないとき）。押せないことを画面で説明させる
+                "dir": str(directory) if directory is not None else "",
             }
-            for scope, found in (
-                (GLOBAL_SCOPE, config.global_persona_file()),
-                (LOCAL_SCOPE, config.local_persona_file()),
+            for scope, found, directory in (
+                (GLOBAL_SCOPE, config.global_persona_file(), config.global_persona_dir()),
+                (LOCAL_SCOPE, config.local_persona_file(), config.local_persona_dir()),
             )
         ],
     }
+
+
+# --------------------------------------------------------------------------- #
+# 語り手の顔
+# --------------------------------------------------------------------------- #
+
+#: 顔の上限。吹き出しに出す小さな絵なので、これで足りないことはまず無い。
+#: 上限を持つのは、**受け取ったものをそのまま書く口**だから（辞書のフォルダを
+#: 巨大なファイルで埋めさせない）
+PERSONA_MAX_BYTES = 2 * 1024 * 1024
+
+#: 中身の先頭から見分ける。**送られてきたファイル名は使わない** ——
+#: 拡張子は名乗りでしかなく、`.png` という名前の HTML を置かれると、
+#: `/api/persona` が中身を検査せずに配る口である以上そのまま配ってしまう。
+#: **SVG はここに無い**（スクリプトを持てる。`config.PERSONA_SUFFIXES` と同じ線）
+_PERSONA_SNIFF: dict[bytes, str] = {
+    b"\x89PNG\r\n\x1a\n": ".png",
+    b"\xff\xd8\xff": ".jpg",
+    b"GIF87a": ".gif",
+    b"GIF89a": ".gif",
+}
+
+
+def _sniff_persona(data: bytes) -> str:
+    """中身から拡張子を決める。画像に見えなければ ``AIError``。"""
+    for magic, suffix in _PERSONA_SNIFF.items():
+        if data.startswith(magic):
+            return suffix
+    # WebP だけは RIFF コンテナなので、先頭 4 バイトだけでは他と区別できない
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    raise AIError("画像として読めませんでした（PNG / JPEG / GIF / WebP を選んでください）")
+
+
+def save_persona(scope: str, data: bytes) -> str:
+    """語り手の顔を差し替える。返すのは書いたファイルのパス。
+
+    **パスは中身から組み立てる。** 場所は ``scope``、名前は決め打ち、拡張子は
+    ``_sniff_persona()`` が中身を見て決めたもの —— 送られてきたファイル名は
+    どこにも使わない（外から来た文字列でパスを作らない、という控えの取り出しと
+    同じ規則）。
+
+    **保存を押したときだけディレクトリを作る**（``save_style()`` と同じ約束）。
+    書いたあとに**別の拡張子の顔を片付ける** —— 残すと `find_persona()` の
+    探索順で決まる顔が出て、「差し替えたのに変わらない」になる。
+    """
+    if scope not in SCOPES:
+        raise AIError(f"不明な保存先です: {scope}")
+    if not data:
+        raise AIError("画像が空です")
+    if len(data) > PERSONA_MAX_BYTES:
+        raise AIError(f"画像は {PERSONA_MAX_BYTES // 1024 // 1024} MB までです")
+
+    directory = store.persona_dir(scope)
+    if directory is None:
+        raise AIError("いま読んでいるものに辞書がありません（フォルダを開いてください）")
+
+    suffix = _sniff_persona(data)
+    path = directory / f"{config.PERSONA_NAME}{suffix}"
+    directory.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    _clear_personas(directory, keep=path)
+    return str(path)
+
+
+def delete_persona(scope: str) -> bool:
+    """顔を消す。消したものがあれば真。**ディレクトリは残す**（辞書が入っている）。"""
+    if scope not in SCOPES:
+        raise AIError(f"不明な保存先です: {scope}")
+    directory = store.persona_dir(scope)
+    if directory is None:
+        return False
+    return _clear_personas(directory)
+
+
+def _clear_personas(directory: Path, *, keep: Path | None = None) -> bool:
+    """そのディレクトリの顔を片付ける。``keep`` だけは残す。"""
+    removed = False
+    for suffix in config.PERSONA_SUFFIXES:
+        path = directory / f"{config.PERSONA_NAME}{suffix}"
+        if keep is not None and path == keep:
+            continue
+        try:
+            path.unlink()
+            removed = True
+        except FileNotFoundError:
+            continue
+        except OSError as exc:                      # 掴まれていて消せない等
+            raise AIError(f"顔を消せませんでした: {exc}") from exc
+    return removed
 
 
 def save_style(scope: str, text: str) -> None:
