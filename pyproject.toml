@@ -37,3 +37,9 @@ packages = ["glosspop"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 全件は Chrome を何度も起動するぶんリニアに伸びる。日常の反復では外せるように
+# 印を付けてある（`check.cmd fast` = `-m "not smoke"`）。**登録しないと
+# `--strict-markers` の無い今でも警告になるので、印を足したらここにも足すこと。**
+markers = [
+    "smoke: ブラウザを立ち上げる通しテスト (tests/test_smoke_ui.py)",
+]

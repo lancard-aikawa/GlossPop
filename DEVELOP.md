@@ -28,7 +28,8 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen |
 よく使う操作は [`check.cmd`](check.cmd) にまとめてある（引数なしで実行するとメニュー）。
 
 ```powershell
-.\check.cmd test       # テスト
+.\check.cmd test       # テスト（後ろに書いたものはそのまま pytest へ渡る）
+.\check.cmd fast       # ブラウザテスト抜き（-m "not smoke"）
 .\check.cmd app        # ソースから起動（専用ウィンドウ）
 .\check.cmd build      # exe をビルド（キャッシュを使う。約 21 秒）
 .\check.cmd rebuild    # キャッシュを消してビルド（約 48 秒）
@@ -194,6 +195,32 @@ artifact に zip を置くだけなので、リリース前の確認に使える
 uv run pytest
 uv run pytest tests/test_smoke_ui.py     # ブラウザで実際に動かす通しテストだけ
 ```
+
+### 全部走らせない
+
+全件はブラウザテストのぶんリニアに伸びる（`tests/test_smoke_ui.py` は 1 テストごとに
+Chrome を起動する）。直しながら回すときは範囲を絞ること。
+
+```powershell
+.\check.cmd fast                              # smoke 以外（-m "not smoke"）
+.\check.cmd test tests\test_linker.py         # 1 ファイル
+.\check.cmd test tests\test_linker.py::test_longest_match_wins
+.\check.cmd fast -k trie                      # 名前で絞る
+uv run pytest --durations=10                  # どこが重いか
+```
+
+`test` / `fast` の後ろに書いたものは**そのまま pytest へ渡る**。印は
+`tests/test_smoke_ui.py` の `pytestmark` 1 か所で、`pyproject.toml` の `markers` に
+登録してある（**印を足したら両方**）。
+
+**絞れるのは編集中だけ。** `check.cmd all` と `check.cmd ci` は今までどおり全件で、
+ここを `fast` に置き換えないこと —— HTML は正しいのに JS が落ちている、という壊れ方は
+smoke でしか捕まらない。
+
+VSCode から回すなら [`.vscode/settings.json`](.vscode/settings.json) がテストパネルを
+有効にしてある。▶ が通常実行（出力は「Python」出力チャネル）、🐞 がデバッグ実行
+（出力はデバッグコンソール、ブレークポイントも止まる）。**収集は全件のまま**にして
+あるので、smoke もパネルには出る（1 件だけ押せることのほうが大事）。
 
 `tests/test_smoke_ui.py` は本物のサーバを立てて Chrome で操作する。「登録 → 本文で
 リンクになる → 吹き出しが出る → 関係が図になる → 点検が黙る」まで通す —— この

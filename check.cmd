@@ -7,9 +7,10 @@ rem  (CP932 on Japanese Windows), so UTF-8 Japanese turns into mojibake, and
 rem  CP932 characters whose trail byte is 0x5C ("\") break parsing outright.
 rem  Keep every line in this file 7-bit ASCII.
 rem
-rem  Usage:  check.cmd [command]
+rem  Usage:  check.cmd [command] [extra pytest args]
 rem          check.cmd            show the menu
-rem          check.cmd test       run the test suite
+rem          check.cmd test       run the whole test suite
+rem          check.cmd fast       the same without the browser tests
 rem          check.cmd app        run from source, opens the app window
 rem          check.cmd serve      run from source, no window
 rem          check.cmd build      build the exe, reusing the cache (fast)
@@ -18,6 +19,12 @@ rem          check.cmd exe        start the built exe and check it answers
 rem          check.cmd kill       free the port (kills the owner, not the parent)
 rem          check.cmd all        test + build + exe
 rem          check.cmd ci         release dry run (CI conditions, no tag)
+rem
+rem  Anything after "test" or "fast" is handed straight to pytest, so the whole
+rem  suite is not the only thing you can run:
+rem          check.cmd test tests\test_linker.py
+rem          check.cmd test tests\test_linker.py::test_longest_match_wins
+rem          check.cmd fast -k trie
 rem
 rem  Set PORT to use another port:  set PORT=9000 && check.cmd serve
 rem ===========================================================================
@@ -34,6 +41,14 @@ set PS=pwsh -NoProfile -ExecutionPolicy Bypass -Command
 where pwsh >nul 2>&1 || set PS=powershell -NoProfile -ExecutionPolicy Bypass -Command
 
 set CMD=%~1
+
+rem Everything after the command name goes straight to pytest. Without this the
+rem only way to run one file or one test was to type the uv line by hand, so in
+rem practice every check ran all of it - and the browser tests make that grow
+rem linearly. Keep the pass-through: a check that is too slow to run is not run.
+set ARGS=
+for /f "tokens=1,*" %%a in ("%*") do set ARGS=%%b
+
 if "%CMD%"=="" goto :menu
 goto :run
 
@@ -41,30 +56,33 @@ goto :run
 echo.
 echo   GlossPop check   (port %PORT%)
 echo.
-echo    1  test      run the test suite
-echo    2  app       run from source, opens the app window
-echo    3  serve     run from source, no window
-echo    4  build     build the exe, reusing the cache (fast)
-echo    5  rebuild   build the exe from scratch
-echo    6  exe       start the built exe and check it answers
-echo    7  kill      free port %PORT%
-echo    8  all       test + build + exe
-echo    9  ci        release dry run (CI conditions, no tag)
+echo    1  test      run the whole test suite
+echo    2  fast      the same without the browser tests (-m "not smoke")
+echo    3  app       run from source, opens the app window
+echo    4  serve     run from source, no window
+echo    5  build     build the exe, reusing the cache (fast)
+echo    6  rebuild   build the exe from scratch
+echo    7  exe       start the built exe and check it answers
+echo    8  kill      free port %PORT%
+echo    9  all       test + build + exe
+echo   10  ci        release dry run (CI conditions, no tag)
 echo.
 set /p CMD=" select (or q to quit): "
 if /i "%CMD%"=="q" goto :eof
 if "%CMD%"=="1" set CMD=test
-if "%CMD%"=="2" set CMD=app
-if "%CMD%"=="3" set CMD=serve
-if "%CMD%"=="4" set CMD=build
-if "%CMD%"=="5" set CMD=rebuild
-if "%CMD%"=="6" set CMD=exe
-if "%CMD%"=="7" set CMD=kill
-if "%CMD%"=="8" set CMD=all
-if "%CMD%"=="9" set CMD=ci
+if "%CMD%"=="2" set CMD=fast
+if "%CMD%"=="3" set CMD=app
+if "%CMD%"=="4" set CMD=serve
+if "%CMD%"=="5" set CMD=build
+if "%CMD%"=="6" set CMD=rebuild
+if "%CMD%"=="7" set CMD=exe
+if "%CMD%"=="8" set CMD=kill
+if "%CMD%"=="9" set CMD=all
+if "%CMD%"=="10" set CMD=ci
 
 :run
 if /i "%CMD%"=="test"    goto :do_test
+if /i "%CMD%"=="fast"    goto :do_fast
 if /i "%CMD%"=="app"     goto :do_app
 if /i "%CMD%"=="serve"   goto :do_serve
 if /i "%CMD%"=="build"   goto :do_build
@@ -78,8 +96,17 @@ exit /b 2
 
 rem ---------------------------------------------------------------- test
 :do_test
-echo [test] uv run pytest -q
-uv run pytest -q
+echo [test] uv run pytest -q %ARGS%
+uv run pytest -q %ARGS%
+exit /b %ERRORLEVEL%
+
+rem Drops the browser tests (tests\test_smoke_ui.py carries the "smoke" mark).
+rem They launch Chrome once per test, which is where the wall clock goes. This
+rem is for the edit-run loop only: "all" and "ci" still run everything, because
+rem HTML that is right while the JS is dead is only caught over there.
+:do_fast
+echo [fast] uv run pytest -q -m "not smoke" %ARGS%
+uv run pytest -q -m "not smoke" %ARGS%
 exit /b %ERRORLEVEL%
 
 rem ---------------------------------------------------------------- source

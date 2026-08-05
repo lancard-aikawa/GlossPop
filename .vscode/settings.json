@@ -1,0 +1,18 @@
+{
+  // uv が作る venv。ここを指しておかないと拡張が別の python を掴み、
+  // 「pytest が見つからない」「import が赤い」になる（`uv sync --all-groups` が前提）。
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+
+  // テストパネルから 1 件ずつ実行できるようにする。**これが「部分テスト」の入口**で、
+  // ▶ が通常実行（出力は「Python」出力チャネル）、🐞 がデバッグ実行
+  // （出力はデバッグコンソール、ブレークポイントも止まる）。
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+
+  // **ここに `-m "not smoke"` を書かないこと。** 除外したテストは収集の時点で
+  // 消えるのでパネルに出てこなくなり、1 件だけ動かす道まで塞がる。ブラウザテストを
+  // 外したいのはコマンドライン側の話（`check.cmd fast`）で、パネルでは
+  // 「全部見えていて、押したものだけ動く」ほうが目的に合う。
+  // ただし「Run All Tests」は smoke も回すので、Chrome が何度も開く。
+  "python.testing.pytestArgs": ["tests"]
+}

@@ -26,6 +26,11 @@ sync_api = pytest.importorskip("playwright.sync_api", reason="playwright が入�
 from glosspop import config, store, updates  # noqa: E402
 from glosspop.models import EntryDraft  # noqa: E402
 
+#: このファイルは丸ごと `smoke`。日常の反復から外せるようにするための印で、
+#: **リリース前 (`check.cmd ci`) は外さない**（外れると JS の壊れが素通りする）。
+#: 印は pyproject.toml の `markers` にも登録してある。
+pytestmark = pytest.mark.smoke
+
 
 def _free_port() -> int:
     with socket.socket() as s:
