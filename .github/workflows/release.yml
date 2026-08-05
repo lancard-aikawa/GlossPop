@@ -123,7 +123,12 @@ jobs:
             exit 0
           }
           $zip = "GlossPop-samples-${{ steps.version.outputs.version }}.zip"
-          Compress-Archive -Path $folders.FullName, samples/README.md -DestinationPath "dist/$zip"
+          # **平らな配列にしてから渡す。** `-Path $folders.FullName, samples/README.md`
+          # と書くと、samples/ が 2 つ以上あるときだけ入れ子の配列になり、[String[]] への
+          # 変換で「パス1 パス2」という 1 本の文字列に潰れて落ちる。**1 つのときは通る**
+          # ので、作品を 1 つしか置いていない間は気付けない (v0.9.0 で実際に踏んだ)
+          $paths = @($folders.FullName) + 'samples/README.md'
+          Compress-Archive -Path $paths -DestinationPath "dist/$zip"
           # **辞書が入っているか必ず確かめる。** .glosspop はドットで始まるので、
           # 圧縮の実装によっては黙って落ちる (中身の無いサンプルが配られる)
           Add-Type -AssemblyName System.IO.Compression.FileSystem
