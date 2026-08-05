@@ -228,6 +228,7 @@ function build() {
           <div class="chips" data-ref="aiStylePresets"></div>
           <p class="hint" data-ref="aiStyleNote"></p>
           <p class="hint" data-ref="aiStyleWhere"></p>
+          <p class="hint" data-ref="aiPersona"></p>
           <div class="setting-row setting-row-plain">
             <button type="button" data-ref="aiStyleSave">文体を保存</button>
             <span class="status" data-ref="aiStyleStatus"></span>
@@ -486,6 +487,14 @@ function paintStyle(info) {
         ? `（親フォルダ「${info.style_folder_label}」のものを使っています）` : "")
     : "いま読んでいるものには辞書がないので、📁 の指定は置けません"
       + "（URL を読んでいて、その辞書をまだ作っていないときです）。";
+
+  // **顔は画面から登録させない。** 置き場所を案内するだけにしてある ——
+  // アップロードの口を作ると、受け取ったファイルを検査して保存する経路が要る
+  const found = (info.personas || []).filter((p) => p.found);
+  refs.aiPersona.textContent = found.length
+    ? `語り手の顔: ${found.map((p) => `${p.label} ${p.path}`).join(" / ")}`
+    : "語り手の顔（吹き出しと用語ページに出ます）は、"
+      + `文体と同じ場所に ${info.persona_name || "persona.png"} という名前で置くと出ます。`;
 }
 
 /** 選べるモデルを datalist に入れる。取れなければ理由を出して手入力に任せる。 */

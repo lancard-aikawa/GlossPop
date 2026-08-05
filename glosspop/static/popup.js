@@ -138,6 +138,19 @@ function closeButton() {
   return `<button type="button" class="ghost" data-pop-close>閉じる</button>`;
 }
 
+/**
+ * ペルソナ（語り手）の顔。**エントリごとに、その辞書のものを出す。**
+ *
+ * 同じ表記が複数の辞書にあると吹き出しに並ぶので、1 枚を上に置くと
+ * どれの語り手なのか分からなくなる（📁 の印と同じ理由で、行ごとに付ける）。
+ * 画像が無ければ何も出さない（枠だけ出して欠けて見せない）。
+ */
+function faceOf(entry) {
+  if (!entry.persona_url) return "";
+  return `<img class="pop-face" src="${esc(entry.persona_url)}" alt=""`
+    + ` title="${esc(entry.path_label || "")} の語り手" loading="lazy">`;
+}
+
 function bodyOf(entry) {
   const parts = [];
   if (entry.aliases?.length) {
@@ -170,10 +183,11 @@ function renderMissing(term) {
 /** 1 件だけのとき: 従来どおりの見た目。 */
 function renderSingle(entry) {
   const main =
-    `<span class="pop-cat">${esc(entry.path_label)}</span>` +
+    `<div class="pop-head${entry.persona_url ? " has-face" : ""}">${faceOf(entry)}` +
+    `<div><span class="pop-cat">${esc(entry.path_label)}</span>` +
     `<p class="pop-term">${esc(entry.term)}` +
     (entry.reading ? `<span class="pop-reading">${esc(entry.reading)}</span>` : "") +
-    `</p>` +
+    `</p></div></div>` +
     bodyOf(entry);
   const foot =
     `<div class="pop-foot">` +
@@ -188,7 +202,7 @@ function renderMultiple(term, entries) {
     `<span class="pop-count">${entries.length} 件</span></p>`;
   const items = entries.map((entry, i) => (
     `<details class="pop-item"${i === 0 ? " open" : ""}>` +
-    `<summary><span class="pop-cat">${esc(entry.path_label)}</span>` +
+    `<summary>${faceOf(entry)}<span class="pop-cat">${esc(entry.path_label)}</span>` +
     (entry.reading ? `<span class="pop-reading">${esc(entry.reading)}</span>` : "") +
     `</summary>` +
     `<div class="pop-item-body">${bodyOf(entry)}` +

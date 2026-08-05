@@ -36,6 +36,7 @@ from .linker import Linker, entry_url
 from .models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
+    SCOPES,
     CategoryNameError,
     Entry,
     EntryDraft,
@@ -337,7 +338,38 @@ def _linker() -> Linker:
     return linker
 
 
-def _term_card(entry: Entry) -> dict:
+#: 画像の拡張子 → Content-Type。**推測に任せない**（間違えるとブラウザが出さない）
+PERSONA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
+def _persona_url(scope: str) -> str:
+    """その辞書のペルソナ画像の URL。無ければ空文字。
+
+    **差し替えたときに古い顔が出ないよう、更新時刻を付ける**（`/static` に
+    `no-cache` を付けているのと同じ話。こちらは URL 自体を変える）。
+    """
+    path = store.persona_file(scope)
+    if path is None:
+        return ""
+    try:
+        stamp = int(path.stat().st_mtime)
+    except OSError:
+        return ""
+    return f"/api/persona?scope={scope}&v={stamp}"
+
+
+def _term_card(entry: Entry, *, personas: dict[str, str] | None = None) -> dict:
+    # **一覧では 1 回だけ調べて配る。** エントリごとに調べると、3000 語の一覧で
+    # 拡張子の数だけ stat が飛ぶ（辞書は 2 つしかないので 1 回で足りる）
+    persona = (personas or {}).get(entry.scope)
+    if persona is None:
+        persona = _persona_url(entry.scope)
     return {
         "ref": entry.ref,
         "slug": entry.slug,
@@ -349,6 +381,7 @@ def _term_card(entry: Entry) -> dict:
         "scope": entry.scope,
         "path_label": entry.path_label,
         "url": entry_url(entry),
+        "persona_url": persona,
     }
 
 
@@ -375,6 +408,10 @@ def _entry_payload(entry: Entry, *, linker: Linker | None = None) -> dict:
     data["ref"] = entry.ref
     data["url"] = entry_url(entry)
     data["path_label"] = entry.path_label
+    # **画像はエントリの居場所につく**（文体は「いま読んでいるフォルダ」だが、
+    # こちらは「すでに書かれたものの出どころ」なので基準が違う）。揃えると、
+    # 小説のフォルダを開いている間だけ全体辞書の用語にもその顔が付く
+    data["persona_url"] = _persona_url(entry.scope)
     # 実際の保存先。グローバルとローカルでルートが違うので、組み立てを UI に任せない
     data["path"] = str(store.path_for_ref(entry.ref))
     data["definition_html"] = definition_html
@@ -1047,6 +1084,7 @@ def list_entries(
     tag: str | None = None,
 ) -> list[dict]:
     needle = q.strip().casefold()
+    personas = {s: _persona_url(s) for s in SCOPES}
     out = []
     for e in store.load_all():
         if scope is not None and e.scope != scope:
@@ -1063,7 +1101,7 @@ def list_entries(
             haystack = " ".join([e.term, e.reading, e.summary, e.definition, *e.aliases, *e.tags]).casefold()
             if needle not in haystack:
                 continue
-        card = _term_card(e)
+        card = _term_card(e, personas=personas)
         card["aliases"] = e.aliases
         card["tags"] = e.tags
         card["updated_at"] = e.updated_at
@@ -1520,6 +1558,28 @@ async def fetch_url(req: FetchRequest) -> dict:
 # --------------------------------------------------------------------------- #
 # API: AI 下書き
 # --------------------------------------------------------------------------- #
+
+@app.get("/api/persona")
+def persona(scope: str = GLOBAL_SCOPE) -> FileResponse:
+    """ペルソナ（語り手）の顔を返す。無ければ 404。
+
+    **パスは受け取らない。** 名前も拡張子も決め打ちで、`scope` から場所を引くだけ
+    （外から来た文字列で組み立てないのは、控えの取り出しと同じ規則）。
+    **SVG は配らない** —— スクリプトを持てるうえ、ここは中身を検査せずにそのまま
+    返す口なので、`htmlclean` の許可制と同じ線を引いておく。
+    """
+    if scope not in SCOPES:
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    path = store.persona_file(scope)
+    if path is None:
+        raise HTTPException(404, "ペルソナの画像がありません")
+    return FileResponse(
+        path,
+        media_type=PERSONA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        # URL に更新時刻を入れてあるので、こちらは長く持たせてよい
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
 
 @app.get("/api/ai/settings")
 def ai_settings() -> dict:

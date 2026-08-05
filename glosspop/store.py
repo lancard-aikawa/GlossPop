@@ -143,6 +143,17 @@ def glossary_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
     return config.GLOSSARY_DIR
 
 
+def persona_file(scope: str = GLOBAL_SCOPE) -> Path | None:
+    """スコープに対応するペルソナ画像。無ければ ``None``。
+
+    ``glossary_dir()`` と同じで、**``config`` を直接見ずにここを通すこと**。
+    ローカルは「いま読んでいるもの」に追従するので、参照のたびに解決し直す。
+    """
+    if scope == LOCAL_SCOPE:
+        return config.local_persona_file()
+    return config.global_persona_file()
+
+
 def local_available() -> bool:
     """ローカル辞書を使えるか。
 

@@ -17,7 +17,15 @@ from anyio import to_thread
 
 from . import config, llm, relations, store
 from .linker import entry_url
-from .models import GLOBAL_SCOPE, SCOPES, UNCATEGORIZED, Entry, EntryDraft, Relation
+from .models import (
+    GLOBAL_SCOPE,
+    LOCAL_SCOPE,
+    SCOPES,
+    UNCATEGORIZED,
+    Entry,
+    EntryDraft,
+    Relation,
+)
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
@@ -282,6 +290,20 @@ def describe_style() -> dict:
         ),
         "style_presets": STYLE_PRESETS,
         "style_max": STYLE_MAX_CHARS,
+        # 語り手の顔。**画面から登録させない**ので、置き場所と有無だけを返す
+        "persona_name": f"{config.PERSONA_NAME}{config.PERSONA_SUFFIXES[0]}",
+        "personas": [
+            {
+                "scope": scope,
+                "label": "📁 このフォルダ" if scope == LOCAL_SCOPE else "全体",
+                "found": found is not None,
+                "path": str(found) if found is not None else "",
+            }
+            for scope, found in (
+                (GLOBAL_SCOPE, config.global_persona_file()),
+                (LOCAL_SCOPE, config.local_persona_file()),
+            )
+        ],
     }
 
 

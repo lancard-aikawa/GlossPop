@@ -79,6 +79,9 @@ function hasSelection() {
  */
 function card(e) {
   const node = el("div", { class: "card" }, [
+    // **ペルソナの顔は一覧には出さない。** 顔は辞書に 1 枚なので、同じ辞書の
+    // カードが並ぶと同じ絵が何十個も繰り返されるだけで、何も区別できない
+    // （出す価値があるのは、複数の辞書が並ぶ吹き出しと、1 件を見る用語ページ）
     el("a", {
       class: "t", href: e.url,
       html: esc(e.term) + (e.reading ? `<span class="r">${esc(e.reading)}</span>` : ""),

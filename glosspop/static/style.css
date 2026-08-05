@@ -557,6 +557,22 @@ a.gloss-link.gloss-split { padding: 0; }
   text-overflow: ellipsis;
   display: block;
 }
+/* ペルソナ（語り手）の顔。**行ごとに付ける** —— 同じ表記が複数の辞書にあると
+   吹き出しに並ぶので、1 枚を上に置くとどれの語り手か分からない。
+   `object-fit: cover` で縦横比を保つ（画像は利用者が用意するので寸法は不定） */
+.gloss-pop .pop-head { display: flex; align-items: flex-start; gap: 9px; }
+.gloss-pop .pop-head > div { min-width: 0; }
+.gloss-pop .pop-face {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+/* アコーディオンの行は既に flex（上で定義済み）。ここでは大きさだけ小さくする */
+.gloss-pop .pop-item > summary .pop-face { width: 20px; height: 20px; }
 .gloss-pop .pop-alias { font-size: 11px; color: var(--fg-faint); }
 .gloss-pop .pop-loading { color: var(--fg-faint); }
 
@@ -806,6 +822,19 @@ body.overlaid .layout { pointer-events: none; }
 .entry-head .crumb a { text-decoration: none; }
 .entry-head h1 { font-size: 1.8em; margin: 0; }
 .entry-head .reading { font-size: 13px; color: var(--fg-faint); font-weight: 400; margin-left: 8px; }
+/* ペルソナ（語り手）の顔。**float を含めるために flow-root にする** ——
+   しないと親が高さを持たず、下の罫線を顔がはみ出す */
+.entry-head.has-face { display: flow-root; }
+.entry-head .entry-face {
+  float: right;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin: 0 0 8px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
 .entry-head .aliases { font-size: 12px; color: var(--fg-dim); margin: 6px 0 0; }
 .entry-head .summary { margin: 10px 0 0; font-size: 15px; }
 

@@ -197,6 +197,30 @@ def test_registered_terms_become_links_with_a_popup(page, server, seeded):
     assert "活版所で働く少年" in popup.inner_text()
 
 
+def test_the_persona_face_shows_in_the_popup(page, server, seeded):
+    """語り手の顔が吹き出しに出ること。**画像は実際に配信されるところまで見る。**
+
+    HTML に `<img>` が出ていても、配る口が無ければ壊れた画像が並ぶだけになる。
+    """
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000a49444154789c630001000005000101"
+        "0d0a2db40000000049454e44ae426082"
+    )
+    (config.CATEGORIES_FILE.parent).mkdir(parents=True, exist_ok=True)
+    (config.CATEGORIES_FILE.parent / "persona.png").write_bytes(png)
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    link = page.locator("a.gloss-link", has_text="ジョバンニ").first
+    link.wait_for(timeout=15000)
+    link.hover()
+
+    face = page.locator(".gloss-pop img.pop-face")
+    face.wait_for(timeout=10000)
+    # 実際に読めた画像かどうか（壊れていれば naturalWidth が 0）
+    assert face.evaluate("img => img.complete && img.naturalWidth > 0")
+
+
 def test_a_term_inside_the_popup_is_followed_in_place(page, server, isolated_dirs):
     """**吹き出しの中の用語は、その吹き出しの中で辿る。**
 

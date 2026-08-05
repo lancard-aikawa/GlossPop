@@ -274,6 +274,41 @@ def local_style_file() -> Path | None:
     return None if root is None else root / LOCAL_DIR_NAME / "style.md"
 
 
+#: ペルソナ（語り手）の顔。**文体と同じ場所に、決め打ちの名前で置く。**
+#:
+#: 名前を設定で変えられるようにしないのは、**外から来た文字列でパスを組み立てない**
+#: ため（控えの `_backup_path` と同じ考え方）。拡張子だけを順に探す。
+#: **SVG は入れない** —— スクリプトを持てるので、`htmlclean` を許可制にしているのと
+#: 同じ理由。ここは中身を検査せずにそのまま配る口になる
+PERSONA_NAME = "persona"
+PERSONA_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+
+def find_persona(directory: Path | None) -> Path | None:
+    """そのディレクトリにあるペルソナ画像。無ければ ``None``。"""
+    if directory is None:
+        return None
+    for suffix in PERSONA_SUFFIXES:
+        path = directory / f"{PERSONA_NAME}{suffix}"
+        try:
+            if path.is_file():
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def local_persona_file() -> Path | None:
+    """いま読んでいるものに効くペルソナ画像。**文体 (`style.md`) の隣。**"""
+    root = local_root()
+    return find_persona(None if root is None else root / LOCAL_DIR_NAME)
+
+
+def global_persona_file() -> Path | None:
+    """全体の辞書のペルソナ画像。**カテゴリマスターの隣**（ローカルと同じ並び）。"""
+    return find_persona(CATEGORIES_FILE.parent)
+
+
 def ensure_dirs() -> None:
     GLOSSARY_DIR.mkdir(parents=True, exist_ok=True)
     CONTENT_DIR.mkdir(parents=True, exist_ok=True)

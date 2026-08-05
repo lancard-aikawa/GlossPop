@@ -357,6 +357,14 @@ function render(entry) {
     }),
     el("h1", { html: esc(entry.term) + (entry.reading ? `<span class="reading">${esc(entry.reading)}</span>` : "") }),
   ]);
+  // ペルソナ（語り手）の顔。この辞書のもの（→ docs/voices.md）
+  if (entry.persona_url) {
+    head.classList.add("has-face");
+    head.prepend(el("img", {
+      class: "entry-face", src: entry.persona_url, alt: "",
+      title: `${entry.path_label} の語り手`,
+    }));
+  }
   if (entry.aliases?.length) {
     head.append(el("p", { class: "aliases", text: `別名: ${entry.aliases.join(" / ")}` }));
   }

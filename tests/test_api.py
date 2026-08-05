@@ -1156,6 +1156,12 @@ class TestAISettings:
         finally:
             config.set_content_dir(None)
 
+    def test_the_persona_places_are_reported_without_an_upload(self, client):
+        body = client.get("/api/ai/settings").json()
+        assert [p["scope"] for p in body["personas"]] == ["global", "local"]
+        assert all(p["found"] is False for p in body["personas"])
+        assert body["persona_name"].startswith("persona")
+
     def test_each_provider_keeps_its_own_model(self, client):
         client.put("/api/ai/settings", json={"provider": "claude", "model": "opus"})
         client.put("/api/ai/settings", json={"provider": "gemini", "model": "gemini-3.5-flash"})
@@ -1513,3 +1519,51 @@ def test_content_search_sees_a_file_edited_outside(client):
     doc.write_text("ジョバンニは活版所にいた。カムパネルラも来た。\n", encoding="utf-8")
     second = client.get("/api/content-search", params={"q": "カムパネルラ"}).json()
     assert [r["path"] for r in second["results"]] == ["銀河.md"]
+
+
+class TestPersona:
+    """ペルソナ（語り手）の顔。**辞書に 1 枚**で、エントリの居場所につく。"""
+
+    PNG = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000a49444154789c6300010000050001"
+        "0d0a2db40000000049454e44ae426082"
+    )
+
+    def _put(self, directory, name="persona.png"):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_bytes(self.PNG)
+
+    def test_missing_is_a_404_not_an_error(self, client):
+        assert client.get("/api/persona").status_code == 404
+
+    def test_rejects_an_unknown_scope(self, client):
+        assert client.get("/api/persona?scope=でたらめ").status_code == 400
+
+    def test_the_global_face_sits_next_to_the_category_master(self, client):
+        self._put(config.CATEGORIES_FILE.parent)
+        res = client.get("/api/persona?scope=global")
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("image/png")
+        assert res.content == self.PNG
+
+    def test_svg_is_not_served(self, client):
+        """**中身を検査せずに配る口**なので、スクリプトを持てる形式は入れない。"""
+        self._put(config.CATEGORIES_FILE.parent, "persona.svg")
+        assert client.get("/api/persona?scope=global").status_code == 404
+
+    def test_the_entry_carries_the_url_of_its_own_dictionary(self, client, add_entry):
+        add_entry("冪等", category="プログラミング")
+        ref = store.load_all()[0].ref
+        assert client.get(f"/api/entries/{ref}").json()["persona_url"] == ""
+        self._put(config.CATEGORIES_FILE.parent)
+        url = client.get(f"/api/entries/{ref}").json()["persona_url"]
+        assert url.startswith("/api/persona?scope=global")
+        # **差し替えたら URL が変わること**（古い顔が残らない）
+        assert "&v=" in url
+
+    def test_the_lookup_carries_it_too(self, client, add_entry):
+        add_entry("冪等", category="プログラミング")
+        self._put(config.CATEGORIES_FILE.parent)
+        entry = client.get("/api/lookup?term=冪等").json()["entries"][0]
+        assert entry["persona_url"].startswith("/api/persona?scope=global")

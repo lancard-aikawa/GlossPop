@@ -597,3 +597,54 @@ class TestAutoScope:
         monkeypatch.setattr(cfg, "CLAUDE_BIN", "")
         res = client.post("/api/ai/draft", json={"term": "ザネリ", "spoiler": "position"}).json()
         assert res["draft"]["scope"] == "global"   # 判断材料が無いので全体に置く
+
+
+class TestPersonaFollowsTheDictionary:
+    """語り手の顔は**エントリの居場所**につく（文体は「読んでいるフォルダ」）。
+
+    揃えてしまうと、小説のフォルダを開いている間だけ、全体の辞書の用語にまで
+    その作品の語り手の顔が付く。
+    """
+
+    PNG = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000a49444154789c630001000005000101"
+        "0d0a2db40000000049454e44ae426082"
+    )
+
+    def _put(self, directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "persona.png").write_bytes(self.PNG)
+
+    def test_each_scope_has_its_own(self, client, tmp_path):
+        config.set_content_dir(tmp_path)
+        self._put(config.CATEGORIES_FILE.parent)                       # 全体
+        self._put(tmp_path / config.LOCAL_DIR_NAME)                    # フォルダ
+
+        add("冪等", scope="global", category="プログラミング")
+        add("ジョバンニ", scope="local", category="登場人物")
+        by_term = {e["term"]: e for e in client.get("/api/entries").json()}
+        assert "scope=global" in by_term["冪等"]["persona_url"]
+        assert "scope=local" in by_term["ジョバンニ"]["persona_url"]
+
+    def test_a_folder_without_one_falls_back_to_nothing_not_to_global(self, client, tmp_path):
+        """**全体の顔をフォルダの語に流用しない。** 別の辞書のものなので嘘になる。"""
+        config.set_content_dir(tmp_path)
+        self._put(config.CATEGORIES_FILE.parent)
+        add("ジョバンニ", scope="local", category="登場人物")
+        entry = client.get("/api/lookup?term=ジョバンニ").json()["entries"][0]
+        assert entry["persona_url"] == ""
+
+    def test_it_follows_the_folder_being_read(self, client, tmp_path):
+        first, second = tmp_path / "一巻", tmp_path / "二巻"
+        for d in (first, second):
+            (d / config.LOCAL_DIR_NAME / "glossary").mkdir(parents=True)
+        self._put(first / config.LOCAL_DIR_NAME)
+
+        config.set_content_dir(first)
+        add("ジョバンニ", scope="local", category="登場人物")
+        assert client.get("/api/persona?scope=local").status_code == 200
+
+        config.set_content_dir(second)
+        store.invalidate()
+        assert client.get("/api/persona?scope=local").status_code == 404
