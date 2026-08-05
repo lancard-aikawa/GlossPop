@@ -106,17 +106,57 @@ jobs:
           # (Windows PowerShell 5.1 だと化けるので shell: pwsh を外さないこと)
           Compress-Archive -Path dist/GlossPop -DestinationPath 'dist/${{ steps.version.outputs.zip }}'
 
+      # サンプル辞書は本体の zip に入れない (22 MB をこれ以上増やさない。
+      # フォルダの辞書は配布物に持ち出さない、という build.ps1 の方針とも揃える)。
+      # **正はリポジトリの samples/ で、zip はここで作る生成物**。git に zip を
+      # 置くと差分が取れず、更新のたびに履歴が二重に膨らむ。
+      # 作品名が日本語なのでアセット名は ASCII 1 本にまとめる (書き出しで
+      # 「カテゴリ名をファイル名に入れない」としているのと同じ理由)
+      - name: サンプル辞書を zip にする
+        id: samples
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $folders = Get-ChildItem samples -Directory -ErrorAction SilentlyContinue
+          if (-not $folders) {
+            Write-Host 'samples/ が無いので飛ばします'
+            "zip=" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $zip = "GlossPop-samples-${{ steps.version.outputs.version }}.zip"
+          Compress-Archive -Path $folders.FullName, samples/README.md -DestinationPath "dist/$zip"
+          # **辞書が入っているか必ず確かめる。** .glosspop はドットで始まるので、
+          # 圧縮の実装によっては黙って落ちる (中身の無いサンプルが配られる)
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "dist/$zip"))
+          try {
+            $entries = @($archive.Entries.FullName | Where-Object { $_ -like '*.glosspop/glossary/*.md' })
+            Write-Host "辞書のファイル: $($entries.Count) 件"
+            if ($entries.Count -lt 1) { throw "$zip に辞書 (.glosspop) が入っていません" }
+          }
+          finally { $archive.Dispose() }
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.version.outputs.zip }}
           path: dist/${{ steps.version.outputs.zip }}
+
+      - uses: actions/upload-artifact@v7
+        if: steps.samples.outputs.zip != ''
+        with:
+          name: ${{ steps.samples.outputs.zip }}
+          path: dist/${{ steps.samples.outputs.zip }}
 
       - name: Release を作る (ドラフト)
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create '${{ github.ref_name }}' 'dist/${{ steps.version.outputs.zip }}' `
+          $assets = @("dist/${{ steps.version.outputs.zip }}")
+          if ('${{ steps.samples.outputs.zip }}') {
+            $assets += "dist/${{ steps.samples.outputs.zip }}"
+          }
+          gh release create '${{ github.ref_name }}' @assets `
             --title 'GlossPop ${{ steps.version.outputs.version }}' `
             --notes-file packaging/release-notes.md `
             --draft

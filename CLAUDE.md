@@ -1214,7 +1214,7 @@ Playwright を動かして確かめる。
 | 抽出の種別 (`EXTRACT_KINDS`) | MANUAL の「まとめて登録する」の表 |
 | 統合で選ばせる項目 (`merge.CONFLICT_FIELDS`) | `merge.js` の `FIELD_LABELS`（載っていない項目は英語の名前のまま画面に出る） |
 | 設定に足した項目 | MANUAL の「設定」、`packaging/release-notes.md` の「できること」、`settings.js` の `PATH_LABELS`（場所を足したとき） |
-| 文体 (`ai.STYLE_PRESETS` / 効く範囲 / 置き場所) | MANUAL の「文体（口調）」の 2 つの表、`packaging/release-notes.md`（「できること」と「AI 下書きについて」）。**例は `ai.py` が正**（`settings.js` に写しを置かない） |
+| 文体 (`ai.STYLE_PRESETS` / 効く範囲 / 置き場所) | MANUAL の「文体（口調）」の 2 つの表、`docs/voices.md`（効く範囲の表を載せている）、`packaging/release-notes.md`（「できること」と「AI 下書きについて」）。**例は `ai.py` が正**（`settings.js` に写しを置かない） |
 | AI の提供元・モデル・思考の深さ | `llm.py`（`PROVIDERS` / `EFFORTS` / `CLAUDE_MODELS`）、MANUAL の「使う AI」と環境変数の表、`settings.js` の「AI」節、`packaging/release-notes.md` の「AI 下書きについて」（**同じ表が載っている**）、README の「AI について」 |
 | 更新まわりの挙動 | MANUAL の「更新のしかた」、`packaging/release-notes.md` の「更新するとき」 |
 | 自動リンクの規則 | MANUAL.md の「自動リンクの規則」、`content/ようこそ.md` |
@@ -1224,6 +1224,7 @@ Playwright を動かして確かめる。
 | 相関図の見せ方を足した | `graph.js` の `MODES` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 5 つある」、CLAUDE.md のこの節 |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
 | 画面の見た目（ビューア・一覧・用語ページ・相関図・抽出ダイアログ） | `docs/images/` の該当スクショ（README と MANUAL が貼っている。撮り直しは content/ を開いて 1280×820 のライトで撮る） |
+| 辞書のスキーマ / 文体 / 点検の判定 | `samples/` は**動く実物**として公開しているので、`tests/test_samples.py` が落ちていないか見る（落ちたらサンプルを直す。README の「置いて開くだけ」が嘘になる） |
 | 機能を足した / 設計の判断をした | `docs/open-questions.md`（**片付いた宿題は消す** —— 残ると「まだ無いもの」に見える）、`docs/design-notes.md`（決めたことと、その代償を書く） |
 | 使い方の説明を増やした | `MANUAL.md`（**README には移さない** —— README は入口だけに保つ。目次も一緒に直す） |
 | ビルド・リリースの手順 | `DEVELOP.md` |
