@@ -187,6 +187,14 @@ class TestTimeouts:
         assert ai.extract_timeout(40) > config.CLAUDE_TIMEOUT
 
     def test_the_timeout_is_reported_in_the_error(self, monkeypatch):
+        """**言われた秒数がそのまま文言に出る**（1 回目は残り時間を計り直さない）。
+
+        `llm.generate()` が deadline から引き直していたころは、ここまでの経過ぶんが
+        `int()` で落ちて 500 秒の指定が 499 秒になった。手元では丸め込まれて表面化
+        せず、**負荷の高い CI でだけ**落ちる（実際に v0.9.0 のリリースを止めた）。
+        **数字を緩めて直さないこと** —— ずれているのは文言ではなく持ち時間のほうで、
+        頼んだ側の指定と実際に待つ時間が食い違っている。
+        """
         import subprocess
 
         monkeypatch.setattr(config, "CLAUDE_BIN", "claude")

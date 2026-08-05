@@ -282,7 +282,12 @@ def generate(prompt: str, *, timeout: int, system: str = "") -> str:
     deadline = time.monotonic() + timeout
     last: TransientError | None = None
     for attempt in range(RETRY_ATTEMPTS):
-        left = int(deadline - time.monotonic())
+        # **1 回目は言われた持ち時間をそのまま使う。** deadline から引き直すと、
+        # ここまでの経過ぶんが `int()` で落ちて 500 秒の指定が 499 秒になる。
+        # 手元では丸め込まれて表面化せず、**負荷の高い CI でだけ**タイムアウトの
+        # 文言が 1 秒ずれてテストが落ちた（実際にリリースを止めた）。
+        # 残りを配り直すのは引き直すときだけでよい
+        left = timeout if attempt == 0 else int(deadline - time.monotonic())
         if attempt and left < MIN_ATTEMPT_SECONDS:
             break
         try:
