@@ -109,16 +109,23 @@ class Document:
 # テキスト / 青空文庫
 # --------------------------------------------------------------------------- #
 
-def decode(data: bytes) -> str:
-    """日本語のテキストファイルを読む。UTF-8 が第一候補、次に Shift_JIS。
+def decode(data: bytes, declared: str | None = None) -> str:
+    """日本語のテキストを読む。UTF-8 が第一候補、次に Shift_JIS。
 
     青空文庫からそのまま落としたファイルは cp932 なので、UTF-8 決め打ちだと
     まるごと文字化けする（``errors="replace"`` で読めてしまうぶん気付きにくい）。
+
+    ``declared`` は **外から宣言された文字コード**（HTTP ヘッダの charset や
+    HTML の meta charset）。あれば最優先で試すが、**信じ切らない** ——
+    名前が無効なら ``LookupError``、中身と食い違えば ``UnicodeDecodeError`` に
+    なるので、どちらも黙って下の連鎖に戻す。**ここを ``errors="replace"`` 付きで
+    決め打ちにしないこと**（化けたまま「読めてしまう」のがこの関数の存在理由）。
     """
-    for encoding in FALLBACK_ENCODINGS:
+    candidates = (declared, *FALLBACK_ENCODINGS) if declared else FALLBACK_ENCODINGS
+    for encoding in candidates:
         try:
             return _normalize_newlines(data.decode(encoding))
-        except UnicodeDecodeError:
+        except (LookupError, UnicodeDecodeError):
             continue
     return _normalize_newlines(data.decode("utf-8", errors="replace"))
 
