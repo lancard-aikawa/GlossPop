@@ -1210,6 +1210,19 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-map-pin circle { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
 .rel-map-pin a:hover circle { fill: var(--fg); }
 .rel-map-pin text { font: 600 12px var(--sans); }
+/* 形は 3 つ。**領域は必ず半透明**にする —— 塗りつぶすと、重なった側とその下の
+   地形が両方読めなくなる（重ねる順は 領域 → 線 → 点。JS 側で層を分けてある）。
+   線は細くて押せないので、透明な太い線を下に重ねて当たり判定にする（辺と同じ作法）。 */
+.rel-map-area { fill: var(--accent); fill-opacity: 0.18; stroke: var(--accent); stroke-width: 2; }
+.rel-map-pin a:hover .rel-map-area { fill-opacity: 0.32; }
+.rel-map-path { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
+.rel-map-pin a:hover .rel-map-path { stroke: var(--fg); }
+.rel-map-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 16;
+  vector-effect: non-scaling-stroke;
+}
 .rel-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.5; }
 .rel-edge.missing { stroke: var(--danger); stroke-dasharray: 4 3; }
 .rel-edge.reveal { stroke: var(--warn); stroke-dasharray: 6 3; }

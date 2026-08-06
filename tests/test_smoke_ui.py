@@ -555,7 +555,7 @@ def test_the_graph_has_a_map_mode(page, server, seeded):
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.wait_for_timeout(200)
 
-    # 座標を書いた 2 語だけが点になる（ザネリは出ない）
+    # 形を書いた 2 語だけが出る（ザネリは出ない）
     assert page.locator("svg.rel-map .rel-map-pin").count() == 2
     assert page.locator("svg.rel-map .rel-edge-group").count() == 1
     # 絵は `<image>` の中（CSS の背景にすると viewBox で一緒に動かせない）
@@ -579,6 +579,51 @@ def test_the_graph_has_a_map_mode(page, server, seeded):
     page.click("svg.rel-map .rel-edge-group")
     page.locator("#edgeDialog[open]").wait_for(timeout=10000)
     page.keyboard.press("Escape")
+
+
+def test_the_map_draws_points_lines_and_areas(page, server, seeded):
+    """形は 3 つ（点・線・領域）。**重ねる順は 領域 → 線 → 点。**
+
+    領域を後に描くと点を塗りつぶす。3 つとも同じ入れ物に混ぜると、描いた順で
+    見え方が変わる（絵は出るので、画面を見るまで気付けない類）。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition,
+        map="てすと図", path=[[0.1, 0.1], [0.5, 0.2], [0.9, 0.1]],
+    ), ref=b.ref)
+    store.save(EntryDraft(
+        term="ザネリ", category="登場人物", definition="級友。",
+        map="てすと図", area=[[0.1, 0.35], [0.6, 0.35], [0.35, 0.6]],
+    ))
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    assert page.locator("svg.rel-map .rel-map-point circle").count() == 1
+    assert page.locator("svg.rel-map .rel-map-path polyline.rel-map-path").count() == 1
+    assert page.locator("svg.rel-map .rel-map-area polygon").count() == 1
+    # 内訳も凡例に出す（何を出したのかを黙らない）
+    assert "点 1 / 線 1 / 領域 1" in (page.text_content("#legend") or "")
+
+    # **重ねる順**。領域がいちばん下、点がいちばん上
+    order = page.evaluate(
+        "() => [...document.querySelector('svg.rel-map').children]"
+        ".map((g) => g.querySelector('.rel-node')?.classList.contains('rel-map-area') ? 'area'"
+        "  : g.querySelector('.rel-node')?.classList.contains('rel-map-path') ? 'path'"
+        "  : g.querySelector('.rel-node')?.classList.contains('rel-map-point') ? 'point' : '')"
+        ".filter(Boolean)"
+    )
+    assert order == ["area", "path", "point"], order
 
 
 def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded):

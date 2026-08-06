@@ -159,6 +159,20 @@ class Relation(BaseModel):
         return bool(self.back)
 
 
+def _point(value: object) -> list[float] | None:
+    """``[x, y]`` として読める点だけを返す。読めなければ ``None``。
+
+    **勝手に 0 へ寄せない** —— 寄せると絵の左上に点が湧いて「座標を書いたのに
+    違う場所」になる。落とせば地図に出ないだけで済み、数は図が数えて返す。
+    """
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    try:
+        return [float(value[0]), float(value[1])]
+    except (TypeError, ValueError):
+        return None
+
+
 class EntryBase(BaseModel):
     term: str
     reading: str = ""
@@ -188,8 +202,15 @@ class EntryBase(BaseModel):
     #: **``at`` という名前は使えない。** 相関図のノードでは `timeline.annotate()` が
     #: ``at``（本文中の文字位置）を入れており、``?doc=`` のときに**上書きされる**
     #: —— 地図を開く主な経路でちょうど壊れる（実際に踏んだ）。
+    #:
+    #: **形は 3 つ。書き方が種別の宣言そのもの**なので、フラグを別に持たない
+    #: （持つと二重になって必ずずれる）。「最初と最後が同じなら領域」で推測する
+    #: 手もあるが、**一周して戻る経路が書けなくなる** —— 日記の往復がそのまま
+    #: 領域に化けるので採らない。
     map: str = ""               # <辞書>/maps/<名前>.<拡張子> の <名前>
-    pin: list[float] = Field(default_factory=list)   # [x, y]
+    pin: list[float] = Field(default_factory=list)          # 点 [x, y]
+    path: list[list[float]] = Field(default_factory=list)   # 線 [[x, y], …]
+    area: list[list[float]] = Field(default_factory=list)   # 領域 [[x, y], …]
 
     @field_validator("pin", mode="before")
     @classmethod
@@ -199,12 +220,43 @@ class EntryBase(BaseModel):
         0 に寄せると、絵の左上に点が湧いて「座標を書いたのに違う場所」になる。
         空なら地図に出ないだけで済むし、出せなかった数は図が数えて返す。
         """
-        if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return _point(value) or []
+
+    @field_validator("path", "area", mode="before")
+    @classmethod
+    def _clean_points(cls, value: object, info) -> list[list[float]]:
+        """点の並び。**読めない点は落とし、足りなければ丸ごと空にする。**
+
+        線は 2 点、領域は 3 点から。**閉じるのは描く側の仕事**なので、
+        最後にもう一度最初の点を書く必要はない（書いても害はない）。
+        """
+        if not isinstance(value, (list, tuple)):
             return []
-        try:
-            return [float(value[0]), float(value[1])]
-        except (TypeError, ValueError):
-            return []
+        points = [p for p in (_point(v) for v in value) if p]
+        least = 3 if info.field_name == "area" else 2
+        return points if len(points) >= least else []
+
+    @property
+    def map_shape(self) -> dict | None:
+        """地図に置く形を ``{"kind", "points"}`` に畳む。無ければ ``None``。
+
+        **書き方は 3 つ、内部は 1 つ。** 旧 ``related`` を ``relations`` に畳むのと
+        同じで、読む側が 3 通りを場合分けせずに済むようにする。
+
+        複数書いてあるときは細かいほう（領域 → 線 → 点）を採るが、**黙って
+        選んでいるわけではない** —— 点検が「地図の形が 2 つ」として挙げる。
+        """
+        for kind, value in (("area", self.area), ("path", self.path)):
+            if value:
+                return {"kind": kind, "points": [list(p) for p in value]}
+        if self.pin:
+            return {"kind": "point", "points": [list(self.pin)]}
+        return None
+
+    @property
+    def map_shape_count(self) -> int:
+        """``pin`` / ``path`` / ``area`` のうち幾つ書かれているか（点検が見る）。"""
+        return sum(1 for v in (self.pin, self.path, self.area) if v)
 
     @model_validator(mode="before")
     @classmethod

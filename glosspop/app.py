@@ -940,7 +940,7 @@ def _graph_maps(nodes: list[dict]) -> list[dict]:
     seen: dict[tuple[str, str], dict] = {}
     for node in nodes:
         name, scope = node.get("map"), node.get("scope") or GLOBAL_SCOPE
-        if not name or len(node.get("pin") or []) != 2:
+        if not name or not node.get("shape"):
             continue                      # 両方書いてあるものだけが地図に出る
         key = (scope, name)
         if key in seen:

@@ -50,18 +50,43 @@ function arrowMarker() {
   ]);
 }
 
-/** その絵に置けるノードだけを拾う。**両方書いてあるものだけ**が地図に出る。 */
+/** 点の並びの真ん中あたり。線は中ほど、領域は頂点の平均（名前と辺の付け根）。 */
+function anchorOf(kind, pts) {
+  if (kind === "point") return pts[0];
+  if (kind === "area") {
+    const n = pts.length;
+    return {
+      x: pts.reduce((s, q) => s + q.x, 0) / n,
+      y: pts.reduce((s, q) => s + q.y, 0) / n,
+    };
+  }
+  const mid = (pts.length - 1) / 2;
+  const a = pts[Math.floor(mid)];
+  const b = pts[Math.ceil(mid)];
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+/**
+ * その絵に置けるノードだけを拾う。**形が書いてあるものだけ**が地図に出る。
+ *
+ * 種別は `map_shape` がサーバ側で 1 つに畳んである（点・線・領域）ので、
+ * ここでは**場合分けを持たない** —— 3 通りを描く側でもう一度分けると、
+ * 足したときに片方だけ直し忘れる。
+ */
 function placed(nodes, chosen) {
   const pos = new Map();
   for (const node of nodes) {
     if (!node.map || node.map !== chosen.name) continue;
     if ((node.scope || "global") !== chosen.scope) continue;
-    const pin = node.pin || [];
-    if (pin.length !== 2) continue;
-    pos.set(node.ref, { x: pin[0] * W, y: pin[1] * W, node });
+    const shape = node.shape;
+    if (!shape || !shape.points?.length) continue;
+    const pts = shape.points.map(([x, y]) => ({ x: x * W, y: y * W }));
+    pos.set(node.ref, { kind: shape.kind, pts, ...anchorOf(shape.kind, pts), node });
   }
   return pos;
 }
+
+const asPoints = (pts) => pts.map((q) => `${q.x},${q.y}`).join(" ");
 
 /**
  * 地図を描く。戻り値は他の見せ方と同じ ``{ root, box, ... }``。
@@ -194,29 +219,43 @@ export function buildMap(graph, opts = {}) {
   }
   root.append(lines, labels);
 
-  // **点は丸と名前。箱にしない** —— 箱で地形を覆うと、位置で置いた意味が減る
+  // **形は 3 つ、名前の出し方は 1 つ。** 点は丸、線は折れ線、領域は多角形で、
+  // どれも名前は真ん中あたりに板を敷いて置く（箱で地形を覆わない）。
+  // **重ねる順は 領域 → 線 → 点** —— 領域を後に描くと点を塗りつぶす
   const nodeGroups = new Map();
+  const layers = { area: svg("g"), path: svg("g"), point: svg("g") };
   for (const [ref, p] of pos) {
     const node = p.node;
     const term = node.term || ref;
     const label = clip(term, NAME_MAX);
+    const body = [];
+    if (p.kind === "area") {
+      body.push(svg("polygon", { class: "rel-map-area", points: asPoints(p.pts) }));
+    } else if (p.kind === "path") {
+      // 線は細くて押せない。透明な太い線を重ねて当たり判定にする（辺と同じ作法）
+      body.push(
+        svg("polyline", { class: "rel-map-hit", points: asPoints(p.pts) }),
+        svg("polyline", { class: "rel-map-path", points: asPoints(p.pts) }),
+      );
+    } else {
+      body.push(svg("circle", { cx: p.x, cy: p.y, r: DOT_R }));
+    }
+    // 名前の板。点だけは丸の下へ逃がす（丸に重ねると点が読めない）
+    const top = p.kind === "point" ? p.y + DOT_R + 3 : p.y - (FONT + 7) / 2;
+    const width = estTextWidth(label, FONT) + 10;
     const group = svg("g", {
-      class: ["rel-node", "rel-map-pin", node.missing ? "missing" : ""].filter(Boolean).join(" "),
+      class: ["rel-node", "rel-map-pin", `rel-map-${p.kind}`, node.missing ? "missing" : ""]
+        .filter(Boolean).join(" "),
       "data-detail": describeNode(node),
     }, [
       svg("a", { href: node.url || `/glossary?q=${encodeURIComponent(term)}` }, [
-        svg("circle", { cx: p.x, cy: p.y, r: DOT_R }),
-        // 名前は点の下。**背の板を敷く**（地形の上だと文字が読めない）
+        ...body,
         svg("rect", {
           class: "rel-map-plate",
-          x: p.x - estTextWidth(label, FONT) / 2 - 5,
-          y: p.y + DOT_R + 3,
-          width: estTextWidth(label, FONT) + 10,
-          height: FONT + 7,
-          rx: 4,
+          x: p.x - width / 2, y: top, width, height: FONT + 7, rx: 4,
         }),
         svg("text", {
-          x: p.x, y: p.y + DOT_R + 3 + (FONT + 7) / 2,
+          x: p.x, y: top + (FONT + 7) / 2,
           "text-anchor": "middle", "dominant-baseline": "central",
           text: label,
         }),
@@ -225,18 +264,22 @@ export function buildMap(graph, opts = {}) {
         }),
       ]),
     ]);
-    root.append(group);
+    layers[p.kind].append(group);
     nodeGroups.set(ref, group);
   }
+  root.append(layers.area, layers.path, layers.point);
 
   installFocus(root, nodeGroups, touching);
 
   // **出していないものは全部数える。** どの絵を出しているかも必ず書く
+  const kinds = { point: 0, path: 0, area: 0 };
+  for (const p of pos.values()) kinds[p.kind]++;
   const others = maps.filter((m) => m !== chosen);
-  const noCoords = nodes.filter((n) => !n.map || (n.pin || []).length !== 2).length;
+  const noCoords = nodes.filter((n) => !n.map || !n.shape).length;
   const elsewhere = nodes.length - pos.size - noCoords;
   const note = [
-    `「${chosen.name}」の上に ${pos.size} 語を置いています。`,
+    `「${chosen.name}」の上に ${pos.size} 語を置いています`
+    + `（点 ${kinds.point} / 線 ${kinds.path} / 領域 ${kinds.area}）。`,
     noCoords ? `座標が書かれていない ${noCoords} 語は出していません。` : "",
     elsewhere ? `別の絵にいる ${elsewhere} 語は出していません。` : "",
     offEdges ? `片端が地図に無い関係を ${offEdges} 本伏せています。` : "",

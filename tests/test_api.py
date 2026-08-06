@@ -1729,8 +1729,8 @@ class TestTheMapImage:
         assert [m["name"] for m in body["maps"]] == ["ほんの図"]
         assert body["maps"][0]["count"] == 1
         assert "v=" in body["maps"][0]["url"]     # 差し替えても古い絵が出ないように
-        spots = {n["term"]: n["pin"] for n in body["nodes"]}
-        assert spots == {"港": [0.25, 0.5], "丘": []}
+        spots = {n["term"]: n["shape"] for n in body["nodes"]}
+        assert spots == {"港": {"kind": "point", "points": [[0.25, 0.5]]}, "丘": None}
 
     def test_a_map_with_no_picture_is_not_offered(self, client):
         """座標は書いてあるが絵が無い、は候補に出さない（押しても 404 になる）。"""
@@ -1740,10 +1740,42 @@ class TestTheMapImage:
         })
         assert client.get("/api/graph").json()["maps"] == []
 
+    def test_a_line_and_an_area_are_folded_into_one_shape(self, client):
+        """**書き方は 3 つ、内部は 1 つ。** 描く側に場合分けを持ち込まない。"""
+        self._put()
+        client.post("/api/entries", json={
+            "term": "街道", "category": "場所", "definition": "道。",
+            "map": "ほんの図", "path": [[0.1, 0.2], [0.4, 0.5], [0.8, 0.3]],
+        })
+        client.post("/api/entries", json={
+            "term": "国", "category": "場所", "definition": "領域。",
+            "map": "ほんの図", "area": [[0, 0], [1, 0], [0.5, 1]],
+        })
+        shapes = {n["term"]: n["shape"]["kind"] for n in client.get("/api/graph").json()["nodes"]}
+        assert shapes == {"街道": "path", "国": "area"}
+
+    def test_too_few_points_is_emptied(self, client):
+        """線は 2 点、領域は 3 点から。足りなければ**丸ごと空**（半端を描かない）。"""
+        client.post("/api/entries", json={
+            "term": "街道", "category": "場所", "definition": "道。",
+            "map": "ほんの図", "path": [[0.1, 0.2]],
+        })
+        assert client.get("/api/graph").json()["nodes"][0]["shape"] is None
+
+    def test_writing_two_shapes_is_reported_by_the_doctor(self, client):
+        """**黙って片方を選ばない。** 描くために細かいほうを採るが、点検が挙げる。"""
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25, 0.5], "area": [[0, 0], [1, 0], [0.5, 1]],
+        })
+        assert client.get("/api/graph").json()["nodes"][0]["shape"]["kind"] == "area"
+        kinds = [i["kind"] for i in client.get("/api/doctor").json()["issues"]]
+        assert "two_map_shapes" in kinds
+
     def test_a_broken_coordinate_is_emptied_not_guessed(self, client):
         """読めない座標は**空にする**。0 に寄せると絵の左上に点が湧く。"""
         client.post("/api/entries", json={
             "term": "港", "category": "場所", "definition": "船着き場。",
             "map": "ほんの図", "pin": [0.25],
         })
-        assert client.get("/api/graph").json()["nodes"][0]["pin"] == []
+        assert client.get("/api/graph").json()["nodes"][0]["shape"] is None

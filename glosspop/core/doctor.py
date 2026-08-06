@@ -41,6 +41,11 @@ CHECKS: dict[str, dict[str, str]] = {
         "label": "本文が空",
         "hint": "辞書ページに出す説明がありません。",
     },
+    "two_map_shapes": {
+        "label": "地図の形が 2 つ以上",
+        "hint": "pin（点）・path（線）・area（領域）は 1 つだけ書いてください。"
+                "いまは細かいほう（領域 → 線 → 点）が使われています。",
+    },
 }
 
 
@@ -97,6 +102,16 @@ def check(entries: list[Entry]) -> dict:
             issues.append(_issue("no_summary", WARN, entry, "summary が空です"))
         if not entry.definition.strip():
             issues.append(_issue("empty_definition", WARN, entry, "本文が空です"))
+        # **黙って片方を選ばない。** `map_shape` は細かいほうを採るが、それは
+        # 描くために決めているだけで、書いた人には見えない（＝ここで挙げる）
+        if entry.map_shape_count > 1:
+            written = "・".join(
+                name for name, value in
+                (("pin", entry.pin), ("path", entry.path), ("area", entry.area)) if value
+            )
+            issues.append(_issue(
+                "two_map_shapes", WARN, entry, f"{written} が同時に書かれています",
+            ))
 
     order = {ERROR: 0, WARN: 1}
     issues.sort(key=lambda i: order.get(i["severity"], 9))
