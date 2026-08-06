@@ -39,6 +39,8 @@ FM_KEYS = (
     "source",
     "first_file",
     "first_locator",
+    "map",
+    "pin",
     "former_refs",
     "created_at",
     "updated_at",

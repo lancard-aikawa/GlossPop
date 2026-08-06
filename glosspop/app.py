@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -919,9 +920,46 @@ def graph(
     )
     if document is not None:
         timeline.annotate(result, document, _linker())
+    # 地図の見せ方が使える絵。**出てくる語から候補を出す**（別に一覧の口を作らない）
+    result["maps"] = _graph_maps(result["nodes"])
     # 何に絞ったのかは画面に出す（絞っていないときは「辞書全体」と言わせる）
     result["doc"] = doc or ""
     return result
+
+
+def _graph_maps(nodes: list[dict]) -> list[dict]:
+    """図に出ているノードが指している地図の一覧。
+
+    **URL に更新時刻を入れるのはここ 1 か所**（顔の `_persona_url()` と同じ約束）。
+    入れないと絵を差し替えても古いものが出る。
+
+    候補を**ノードから作る**のは、絵を並べる別の口を持たないため —— 「置いてある絵」
+    ではなく「いま図に出ている語が指している絵」が欲しい（`?doc=` で絞ったときに、
+    その文書と関係の無い地方の図を選ばせない）。
+    """
+    seen: dict[tuple[str, str], dict] = {}
+    for node in nodes:
+        name, scope = node.get("map"), node.get("scope") or GLOBAL_SCOPE
+        if not name or len(node.get("pin") or []) != 2:
+            continue                      # 両方書いてあるものだけが地図に出る
+        key = (scope, name)
+        if key in seen:
+            seen[key]["count"] += 1
+            continue
+        path = store.map_file(scope, name)
+        if path is None:
+            continue                      # 絵が無い（数は下の places で分かる）
+        try:
+            stamp = int(path.stat().st_mtime)
+        except OSError:
+            stamp = 0
+        seen[key] = {
+            "name": name,
+            "scope": scope,
+            "url": f"/api/map?scope={scope}&name={quote(name)}&v={stamp}",
+            "count": 1,
+        }
+    return sorted(seen.values(), key=lambda m: (m["scope"], m["name"]))
 
 
 def _relation_scope(category: str, scope: str) -> list[Entry]:
@@ -1599,6 +1637,53 @@ def persona(scope: str = GLOBAL_SCOPE) -> FileResponse:
         media_type=PERSONA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
         # URL に更新時刻を入れてあるので、こちらは長く持たせてよい
         headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+#: 地図の Content-Type。`store.MAP_SUFFIXES` と対で持つ
+MAP_TYPES = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+}
+
+
+@app.get("/api/map")
+def map_image(name: str, scope: str = GLOBAL_SCOPE) -> FileResponse:
+    """相関図の「地図」で背景に敷く絵を返す。無ければ 404。
+
+    **顔と違って SVG を通す。** 地図は線画で拡大が本題なので、ラスタだと背景だけ
+    ボケる（「にじむと SVG の意味が無い」と決めてある側と食い違う）。**通せる根拠は
+    形式ではなく出し方**で、2 つで担保している:
+
+    - **`<image>` に埋め込む。** ブラウザは `<img>` / `<image>` 経由で読んだ SVG を
+      **secure static mode** で描くので、中の `<script>` も `onload` も外部参照も
+      動かない（仕様レベルの保証で、サニタイズより堅い）
+    - **`CSP: sandbox`。** 埋め込みだけだと **URL を直接開かれたとき**に文書として
+      扱われ、スクリプトがこちらのオリジンで動く。ヘッダ 1 行でそこも opaque origin
+      に落ちる（`nosniff` も一緒に）
+
+    **名前は検査する。** 顔は決め打ちの名前で逃げられたが、地図は辞書に数枚あるので
+    逃げられない —— 組み立てた結果が置き場所の中にあることを `store.map_file()` が
+    最後に確かめる。
+    """
+    if scope not in SCOPES:
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    path = store.map_file(scope, name)
+    if path is None:
+        raise HTTPException(404, "その地図がありません")
+    return FileResponse(
+        path,
+        media_type=MAP_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        headers={
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            # URL に更新時刻を入れるので、こちらは長く持たせてよい
+            "Cache-Control": "public, max-age=3600",
+        },
     )
 
 

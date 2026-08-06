@@ -507,6 +507,94 @@ def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
     page.locator("svg.rel-graph:not(.rel-fabric)").wait_for(timeout=10000)
 
 
+#: 地図に使う絵。**寸法を書いておく** —— `map.js` は縦横比が届いてから高さを直すので、
+#: 内在サイズの無い SVG では実際の高さが決まらない
+TEST_MAP = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" '
+    'width="1000" height="500"><rect width="1000" height="500" fill="#dcd8cc"/></svg>'
+)
+
+
+def _put_test_map(name: str = "てすと図") -> None:
+    directory = store.maps_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.svg").write_text(TEST_MAP, encoding="utf-8")
+
+
+def test_the_graph_has_a_map_mode(page, server, seeded):
+    """座標を書いた語を絵の上に置く見せ方。
+
+    **座標が書いてあるものだけが出る**（種別やタグで「どれが地名か」を決めない）。
+    出していないものは必ず数えて凡例に出す —— ここが緩むと、絵に写っていない語を
+    黙って落とした図になる。線を押せば他の見せ方と同じ編集ダイアログが開く。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    # ザネリには座標を書かない —— **数えて凡例に出ること**を見るため
+    store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+    store.save(
+        EntryDraft(
+            term=b.term, category=b.category, summary=b.summary, definition=b.definition,
+            map="てすと図", pin=[0.62, 0.44],
+        ),
+        ref=b.ref,
+    )
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            map="てすと図", pin=[0.24, 0.30],
+            relations=[{"to": b.ref, "label": "並んで歩く"}],
+        ),
+        ref=a.ref,
+    )
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # 座標を書いた 2 語だけが点になる（ザネリは出ない）
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+    assert page.locator("svg.rel-map .rel-edge-group").count() == 1
+    # 絵は `<image>` の中（CSS の背景にすると viewBox で一緒に動かせない）
+    href = page.get_attribute("svg.rel-map image.rel-map-bg", "href")
+    assert href and href.startswith("/api/map?"), href
+
+    # **出していないものを黙らない。** どの絵かも書く
+    legend = page.text_content("#legend") or ""
+    assert "てすと図" in legend and "1 語" in legend, legend
+
+    # **点は絵の幅を 1 とした比で置かれる**（幅 1000 の絵なので 0.24 → 240）。
+    # 縦横それぞれに 0〜1 を割り当てる形に戻すと、縦横比の違う絵で点が歪む ——
+    # ここは絵の高さ (500) ではなく**幅**で割っていることを見ている
+    spots = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-map .rel-map-pin circle')]"
+        ".map((c) => [Math.round(+c.getAttribute('cx')), Math.round(+c.getAttribute('cy'))])"
+    )
+    assert sorted(map(tuple, spots)) == [(240, 300), (620, 440)], spots
+
+    # 線を押せば同じ編集ダイアログ（見せ方が変わっても直し方は 1 つ）
+    page.click("svg.rel-map .rel-edge-group")
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+    page.keyboard.press("Escape")
+
+
+def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded):
+    """座標が 1 つも無ければ段の図に落とすが、**黙って差し替えない。**
+
+    時系列が `?doc=` 無しで選べないときと同じ扱い（注意書きを出し、覚えている
+    選択のほうは書き換えない）。
+    """
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
+    assert "地図に置ける語" in (page.text_content("#notes") or "")
+    assert page.locator("#mode").input_value() == "map"
+
+
 def test_the_graph_explains_what_you_point_at_in_a_fixed_box(page, server, seeded):
     """図の下の枠。**高さは常に同じ**で、乗せたもの／焦点が当たったものを説明する。
 

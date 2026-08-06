@@ -179,6 +179,32 @@ class EntryBase(BaseModel):
     #: 初出の位置。小説の人物辞書などで「どこで出てきた語か」を残すために使う
     first_file: str = ""        # content ルートからの相対パス
     first_locator: str = ""     # 表示用の位置 ("L.42" / "p.42" / "第3章" など)
+    #: 地図の見せ方で使う。**どちらも省略可**で、**両方書いてあるものだけが地図に出る**
+    #: （種別やタグで「どれが地名か」を推測しない —— 分類の漏れがそのまま図の欠落に
+    #: なる。書いた＝出したいという意思表示なので、機械が推測する余地がない）。
+    #: ``pin`` は**絵の幅を 1 とした比**。縦横それぞれに 0〜1 を割り当てると、
+    #: 縦横比の違う絵へ差し替えたときに点が歪む。
+    #:
+    #: **``at`` という名前は使えない。** 相関図のノードでは `timeline.annotate()` が
+    #: ``at``（本文中の文字位置）を入れており、``?doc=`` のときに**上書きされる**
+    #: —— 地図を開く主な経路でちょうど壊れる（実際に踏んだ）。
+    map: str = ""               # <辞書>/maps/<名前>.<拡張子> の <名前>
+    pin: list[float] = Field(default_factory=list)   # [x, y]
+
+    @field_validator("pin", mode="before")
+    @classmethod
+    def _clean_pin(cls, value: object) -> list[float]:
+        """読めない座標は**空にする**（勝手に 0 へ寄せない）。
+
+        0 に寄せると、絵の左上に点が湧いて「座標を書いたのに違う場所」になる。
+        空なら地図に出ないだけで済むし、出せなかった数は図が数えて返す。
+        """
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return []
+        try:
+            return [float(value[0]), float(value[1])]
+        except (TypeError, ValueError):
+            return []
 
     @model_validator(mode="before")
     @classmethod

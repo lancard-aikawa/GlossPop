@@ -84,6 +84,49 @@ def persona_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
     return config.global_persona_dir()
 
 
+#: 地図に使える拡張子。探す順でもある。
+#:
+#: **SVG を通すのは地図だけ**（顔は通さない）。地図は線画で、`viewBox` を動かして
+#: 寄るのが本題なので、ラスタだと**背景だけボケる** —— 「にじむと SVG の意味が無い」
+#: と決めてある側と正面から食い違う。通せる根拠は配る口のほうにある
+#: （`<image>` 埋め込みは secure static mode、直接開かれても `CSP: sandbox`）→ `app`。
+MAP_SUFFIXES = (".svg", ".png", ".webp", ".jpg", ".jpeg", ".gif")
+
+
+def maps_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
+    """スコープに対応する地図の置き場所。まだ 1 枚も無くても返る。
+
+    **顔や文体と同じ親**（辞書ルートの 1 つ上）に置く。フォルダごとコピーすれば
+    絵も付いてくる、という性質を辞書・文体・顔と揃えるため。
+    """
+    parent = persona_dir(scope)
+    return None if parent is None else parent / "maps"
+
+
+def map_file(scope: str, name: str) -> Path | None:
+    """名前から地図のファイルを引く。**置き場所の外に出る名前は通さない。**
+
+    名前は画面（とエントリの frontmatter）から来る文字列なので、組み立てた結果が
+    置き場所の中にあることを最後に必ず確かめる（控えの `_backup_path` と同じ規則）。
+    顔と違って**名前を決め打ちにできない**のは、地図が辞書に数枚あるため。
+    """
+    directory = maps_dir(scope)
+    if directory is None or not name or name != Path(name).name:
+        return None
+    try:
+        root = directory.resolve()
+    except OSError:
+        return None
+    for suffix in MAP_SUFFIXES:
+        try:
+            found = (directory / f"{name}{suffix}").resolve()
+        except OSError:
+            continue
+        if root in found.parents and found.is_file():
+            return found
+    return None
+
+
 def local_available() -> bool:
     """ローカル辞書を使えるか。
 

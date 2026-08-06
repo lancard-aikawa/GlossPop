@@ -865,11 +865,11 @@ renderer / gpu）も数に入るので、ブラウザ本体だけを見ること
   古いまま**になる。登録・編集・削除・統合はすべて `invalidatePopupCache()` を
   通るので、そこを数えている
 
-**相関図には見せ方が 5 つある。足すものであって、置き換えではない。**
+**相関図には見せ方が 6 つある。足すものであって、置き換えではない。**
 `graph.js` の段の図（既定）、`fabric.js` の交差しない図（用語が横線、関係が縦線で、
 **関係 1 本ごとに独立した列**を持つ）、`matrix.js` の行列（行が「から」、列が「へ」）、
 `ego.js` の中心の図（1 語のまわり 2 つ先まで）、`timeline.js` の時系列（上から順に
-**関係が読めるようになる順**）。
+**関係が読めるようになる順**）、`map.js` の地図（**座標を書いた語を絵の上に置く**）。
 分岐は `draw()` の 1 か所だけで、どれも
 `{ root, box }` を返す —— 見せ方ごとに別の道を作らないこと（片方だけ拡大できない、
 片方だけ伏せた本数を出さない、が起きる）。守ること:
@@ -1433,7 +1433,7 @@ Playwright を動かして確かめる。
 | カテゴリ名の制約 | `models.normalize_category()`、MANUAL、SKILL.md、`ai.build_prompt()` |
 | 画面 (`glossary` / `entry` / `graph` / `doctor`) の中身 | そのモジュールの `TEMPLATE`（**HTML 側には写しを置かない**）。新しい画面を足したら `overlay.js` の `ROUTES` |
 | 相関図の形の規則（段・孤立語・並び・帯の折り返し） | `graph-model.js`（**1 つの見せ方だけに写しを作らない** —— `graph.js` / `fabric.js` / `matrix.js` / `ego.js` / `timeline.js` が同じものを読む） |
-| 相関図の見せ方を足した | `graph.js` の `MODES` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 5 つある」、CLAUDE.md のこの節 |
+| 相関図の見せ方を足した | `graph.js` の `MODES` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 6 つある」、CLAUDE.md のこの節 |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
 | exe のアイコン | `packaging/icons/*.svg` を直して `uv run python packaging/make-icons.py`。**`.ico` も一緒にコミットする**（ビルド時には作らない）。アプリ側は `static/favicon.svg` と揃える |
 | 画面の見た目（ビューア・一覧・用語ページ・相関図・抽出ダイアログ） | `docs/images/` の該当スクショ（README と MANUAL が貼っている。撮り直しは content/ を開いて 1280×820 のライトで撮る） |

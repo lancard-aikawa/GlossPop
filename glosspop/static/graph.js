@@ -19,6 +19,7 @@ import { buildFabric } from "./fabric.js";
 import { buildMatrix } from "./matrix.js";
 import { buildTimeline } from "./timeline.js";
 import { buildEgo } from "./ego.js";
+import { buildMap } from "./map.js";
 import { encodePath } from "./editor.js";
 
 //: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
@@ -41,7 +42,13 @@ const TEMPLATE = `
     <!-- 時系列は「読むもの」が決まっていないと定義できないので、辞書全体の図では
          選べない（文書を絞っているときだけ。→ timeline.js） -->
     <option value="timeline">時系列（文書を開いているとき）</option>
+    <!-- 地図。**座標を書いた語があるときだけ**出せる（分類ではなく、書いてある
+         ものだけが出る。→ map.js） -->
+    <option value="map">地図（座標のある語）</option>
   </select>
+  <!-- どの絵を出すか。**辞書に数枚ある**ので選べないと「ほかに 〇〇 があります」と
+       書いておきながら行けない。地図のとき、絵が 2 枚以上あるときだけ出す -->
+  <select id="mapPick" class="auto-width" aria-label="地図" hidden></select>
   <select id="category" class="auto-width" aria-label="カテゴリ"></select>
   <label class="check">
     <input type="checkbox" id="spoilers">
@@ -117,14 +124,16 @@ const TEMPLATE = `
 `;
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
+let mapPick;
 let detailNode;
 let modeSelect;
 
 //: 見せ方。layered = 段の図（既定） / fabric = 交差しない図 / matrix = 行列 /
-//: ego = 1 語を中心にした図 / timeline = 時系列（文書を開いているときだけ）。
+//: ego = 1 語を中心にした図 / timeline = 時系列（文書を開いているときだけ）/
+//: map = 地図（座標を書いた語があるときだけ）。
 //: **覚えておく** —— 覆いは何度でも開き直されるので、毎回選び直させない
 const MODE_KEY = "glosspop.graphMode";
-const MODES = ["layered", "fabric", "matrix", "ego", "timeline"];
+const MODES = ["layered", "fabric", "matrix", "ego", "timeline", "map"];
 //: 読むものが決まっているときしか出せない見せ方。時系列は「その文書のどこで
 //: 読めるようになるか」を軸にするので、辞書全体では定義できない（`?doc=` と同じ話）
 const DOC_ONLY_MODES = ["timeline"];
@@ -1080,15 +1089,30 @@ function draw(graph) {
     return { lonely: 0 };
   }
 
+  // 地図は**座標を書いた語がある辞書でしか出せない**。時系列と同じ扱いで、
+  // 選べないときも**黙って別の図に差し替えない**（注意書きを出し、覚えている
+  // 選択のほうは書き換えない）
+  mapFellBack = mode === "map" && !(graph.maps || []).length;
   const build = {
     fabric: buildFabric, matrix: buildMatrix, timeline: buildTimeline, ego: buildEgo,
+    map: mapFellBack ? null : buildMap,
   }[mode];
   const drawn = build
-    ? build(graph, { onEdge: openEdgeEditor, center: egoCenter, onCenter: moveCenter })
+    ? build(graph, {
+      onEdge: openEdgeEditor,
+      center: egoCenter,
+      onCenter: moveCenter,
+      mapName,
+      // 絵の縦横比は読み込むまで分からない。届いたら入れ物に合わせ直す
+      onResize: () => fitView(),
+    })
     : buildLayered(nodes, edges);
   // 中心は図が決めることもある（指した語が範囲の外なら、いちばん多く繋がっている
   // 語に落ちる）。押した先が同じ語のままにならないよう、決まった値を控えておく
   if (drawn.center) egoCenter = drawn.center;
+  // 出す絵は図が決めることもある（覚えている絵がこの範囲に無ければ、いちばん
+  // 多く点が乗るものに落ちる）。押した先が同じにならないよう控えておく
+  if (drawn.map) mapName = drawn.map;
   canvas.classList.remove("is-empty");
   canvas.replaceChildren(drawn.root);
   svgRoot = drawn.root;
@@ -1386,6 +1410,13 @@ function paintNotes(graph) {
       "（ビューアの「🕸 この文書の相関図」から開くと出せます）。"
     );
   }
+  if (mapFellBack) {
+    // 同上。**「座標が無い」と言うところまでが約束**（黙って別の図にしない）
+    lines.push(
+      "地図に置ける語がこの範囲にないので、いまは段の図にしています" +
+      "（エントリに map と pin を書くと出せます）。"
+    );
+  }
   for (const b of graph.broken) {
     lines.push(`「${b.from_term}」→「${b.to}」が解決できません: ${b.reason}`);
   }
@@ -1421,6 +1452,15 @@ function installDetail() {
   canvas.addEventListener("focusout", () => showDetail(""));
 }
 
+/** 覚えている絵。**読めなくても困らない** —— いちばん多く点が乗るものに落ちる。 */
+function rememberedMap() {
+  try {
+    return localStorage.getItem(MAP_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
 /** 覚えている見せ方。読めない値なら段の図へ落ちる（起動できなくならないこと）。 */
 function rememberedMode() {
   try {
@@ -1434,6 +1474,15 @@ function rememberedMode() {
 //: 覚えていた見せ方が「文書を開いているときだけ」のもので、いまは出せなかったか。
 //: **黙って別の図を出さない**（何が起きたのかは注意書きに出す）
 let modeFellBack = false;
+
+//: 地図を選んでいたが、座標を書いた語が 1 つも無かったので落としたか。
+//: 時系列の `modeFellBack` と同じ扱い（黙って差し替えない）
+let mapFellBack = false;
+
+//: どの絵を出しているか（``<scope>/<名前>``）。見せ方と同じで**覚えておく**
+//: —— 覆いは何度でも開き直されるので、毎回選び直させない
+const MAP_KEY = "glosspop.graphMap";
+let mapName = "";
 
 //: URL で語を名指しされたので、覚えている見せ方を押しのけて中心の図で開いたか。
 //: これも黙ってやらない（同じ理由）
@@ -1472,10 +1521,22 @@ function moveCenter(ref) {
 }
 
 /** 受け取ったグラフを描いて、凡例と注意書きを添える。 */
+/** 絵の選択肢を作る。**地図のとき、絵が 2 枚以上あるときだけ出す。** */
+function paintMapOptions(graph) {
+  const maps = graph.maps || [];
+  mapPick.hidden = mode !== "map" || maps.length < 2;
+  if (mapPick.hidden) return;
+  mapPick.replaceChildren(
+    ...maps.map((m) => el("option", { value: `${m.scope}/${m.name}`, text: m.name }))
+  );
+  mapPick.value = mapName;
+}
+
 function paintGraph(graph) {
   lastGraph = graph;
   showDetail("");
   const drawn = draw(graph);
+  paintMapOptions(graph);
   paintNotes(graph);
   setStatus(statusNode, `${graph.nodes.length} 語 / ${graph.edges.length} 本の関係`);
   const common =
@@ -1511,6 +1572,13 @@ function paintGraph(graph) {
       + "左の見出しは、両方の語が出そろう位置（章・ページ・行）。"
       + "位置は開くたびに本文から数えていて保存はしないので、本文を直せば次に開いたときに追いつきます。"
       + "「判明: …」は人が書いた判明位置で、並べ替えには使っていません。",
+    // 「どこ」が見えるのがこの見せ方の役目。**分類していない**と書いておかないと、
+    // 「地名なのに出てこない」を機械の取りこぼしだと読まれる
+    map:
+      "座標を書いた語を絵の上に置いています。"
+      + "どれが地名かは決めていません —— 座標を書いた語が出るだけなので、"
+      + "出したい語には map と pin を書いてください。"
+      + "線は、両端がこの絵に置かれている関係だけです。",
   }[mode] || "▲▼ の代わりに上下の関係は段で表しています。";
   legend.textContent =
     shape + common
@@ -1560,6 +1628,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   canvas = host.querySelector("#canvas");
   zoomBar = host.querySelector("#zoom");
   modeSelect = host.querySelector("#mode");
+  mapPick = host.querySelector("#mapPick");
   detailNode = host.querySelector("#detail");
   notes = host.querySelector("#notes");
   legend = host.querySelector("#legend");
@@ -1586,10 +1655,22 @@ export async function mount(host, { search = "", embed = false } = {}) {
   centeredByUrl = Boolean(egoCenter) && mode !== "ego";
   if (egoCenter) mode = "ego";
   syncModeOptions();
+  mapName = rememberedMap();
+  mapPick.addEventListener("change", () => {
+    mapName = mapPick.value;
+    try {
+      localStorage.setItem(MAP_KEY, mapName);
+    } catch {
+      /* 使えない環境でも選べること自体は動く */
+    }
+    // 絵を変えるだけならサーバへ行き直さない（同じデータを描き替えるだけ）
+    if (lastGraph) paintGraph(lastGraph);
+  });
   modeSelect.addEventListener("change", () => {
     mode = MODES.includes(modeSelect.value) ? modeSelect.value : "layered";
     // 自分で選び直したなら、落とした / 押しのけたときの断り書きはもう要らない
     modeFellBack = false;
+    mapFellBack = false;
     centeredByUrl = false;
     try {
       localStorage.setItem(MODE_KEY, mode);

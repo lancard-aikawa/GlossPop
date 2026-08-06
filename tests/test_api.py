@@ -1669,3 +1669,81 @@ class TestPersona:
     def test_an_unknown_scope_is_refused_on_write(self, client):
         assert self._post(client, self.PNG, scope="でたらめ").status_code == 400
         assert client.delete("/api/persona?scope=でたらめ").status_code == 400
+
+
+class TestTheMapImage:
+    """相関図の「地図」で敷く絵を配る口 (`/api/map`)。
+
+    **顔と違って SVG を通す。** 地図は線画で拡大が本題なので、ラスタだと背景だけ
+    ボケる（「にじむと SVG の意味が無い」と決めてある側と食い違う）。**通せる根拠は
+    形式ではなく出し方**なので、そのヘッダをここで見張る —— 落とすと、直接開かれた
+    ときにスクリプトがこちらのオリジンで動く。
+
+    **名前は決め打ちにできない**（地図は辞書に数枚ある）ので、組み立てた結果が
+    置き場所の中にあることも見る。
+    """
+
+    SVG = b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>'
+
+    def _put(self, name="ほんの図"):
+        directory = store.maps_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{name}.svg").write_bytes(self.SVG)
+
+    def test_a_missing_map_is_404(self, client):
+        assert client.get("/api/map", params={"name": "ない図"}).status_code == 404
+
+    def test_an_unknown_scope_is_refused(self, client):
+        assert client.get(
+            "/api/map", params={"name": "ほんの図", "scope": "でたらめ"}
+        ).status_code == 400
+
+    def test_a_map_is_served_with_the_headers_that_make_svg_safe(self, client):
+        self._put()
+        res = client.get("/api/map", params={"name": "ほんの図"})
+        assert res.status_code == 200
+        assert res.content == self.SVG
+        assert res.headers["content-type"].startswith("image/svg+xml")
+        # **直接開かれたときの穴を塞ぐのはこの 1 行**（埋め込みだけでは足りない）
+        assert res.headers["content-security-policy"] == "sandbox"
+        assert res.headers["x-content-type-options"] == "nosniff"
+
+    @pytest.mark.parametrize(
+        "name", ["../categories", r"..\..\pyproject", "ほんの図/../../x", ""]
+    )
+    def test_a_name_that_escapes_the_folder_is_refused(self, client, name):
+        self._put()
+        assert client.get("/api/map", params={"name": name}).status_code == 404
+
+    def test_the_graph_lists_the_maps_its_nodes_point_at(self, client):
+        """候補は**出ている語から**作る（置いてある絵を並べる口は持たない）。"""
+        self._put()
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25, 0.5],
+        })
+        client.post("/api/entries", json={
+            "term": "丘", "category": "場所", "definition": "小高いところ。",
+        })
+        body = client.get("/api/graph").json()
+        assert [m["name"] for m in body["maps"]] == ["ほんの図"]
+        assert body["maps"][0]["count"] == 1
+        assert "v=" in body["maps"][0]["url"]     # 差し替えても古い絵が出ないように
+        spots = {n["term"]: n["pin"] for n in body["nodes"]}
+        assert spots == {"港": [0.25, 0.5], "丘": []}
+
+    def test_a_map_with_no_picture_is_not_offered(self, client):
+        """座標は書いてあるが絵が無い、は候補に出さない（押しても 404 になる）。"""
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "無い図", "pin": [0.25, 0.5],
+        })
+        assert client.get("/api/graph").json()["maps"] == []
+
+    def test_a_broken_coordinate_is_emptied_not_guessed(self, client):
+        """読めない座標は**空にする**。0 に寄せると絵の左上に点が湧く。"""
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25],
+        })
+        assert client.get("/api/graph").json()["nodes"][0]["pin"] == []

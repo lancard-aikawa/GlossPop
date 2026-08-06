@@ -1202,6 +1202,14 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-node.outside rect { fill: transparent; stroke-dasharray: 2 3; }
 .rel-node.missing rect { stroke: var(--danger); stroke-dasharray: 4 3; fill: transparent; }
 .rel-node.missing text { fill: var(--danger); }
+/* 地図（`map.js`）。**絵は `<image>` の中**に置いてあるので、`viewBox` を動かせば
+   画像も線も語も一緒に動く（CSS の背景にすると 2 つを別々に動かすことになる）。
+   点は丸と名前で、**箱にしない** —— 箱で地形を覆うと位置で置いた意味が減る。
+   名前の板は `.rel-node rect` の見た目をそのまま借りる（**写しを作らない**）。 */
+.rel-map-bg { pointer-events: none; }
+.rel-map-pin circle { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
+.rel-map-pin a:hover circle { fill: var(--fg); }
+.rel-map-pin text { font: 600 12px var(--sans); }
 .rel-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.5; }
 .rel-edge.missing { stroke: var(--danger); stroke-dasharray: 4 3; }
 .rel-edge.reveal { stroke: var(--warn); stroke-dasharray: 6 3; }
