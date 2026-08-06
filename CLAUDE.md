@@ -52,8 +52,9 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen |
 ### `glosspop/core/` は「どのマシンか」を知らない
 
 `models` `htmlclean` `render` `linker` `relations` `documents` `timeline` `doctor`
-の 8 つは `glosspop/core/` にある。**入力から出力を作るだけ**で、辞書の置き場所
-(`store`)・開いているフォルダ・設定ファイル (`config`) を一切知らない。
+`entryfile`（エントリのファイル形式）`archivefmt`（zip の形と安全規則）の 10 個は
+`glosspop/core/` にある。**入力から出力を作るだけ**で、辞書の置き場所 (`store`)・
+開いているフォルダ・設定ファイル (`config`) を一切知らない。
 
 **この層だけが GlossPopApp（携帯・共有版）と共有される**（→ docs/design-notes.md）。
 共有するものが 2 か所に分かれると、片方で直してもう片方で直し忘れて**同じ辞書なのに
@@ -67,7 +68,26 @@ import 時の副作用の 3 方向）。**人が気を付ける形にすると�
 その形）。逆向き（`core` の外から `core` を使う）は自由。
 
 **物理的に別パッケージへ分けていない**のは、リリースの結合を増やす理由がまだ
-無いから。GlossPopApp が実際に動き出すまではこのまま。
+無いから（GlossPopApp は `uv` の path 依存でこのフォルダを直接見ている）。
+
+**「形」を見つけたら core へ寄せる。** `entryfile` と `archivefmt` は最初
+`store.py` / `archive.py` の中にあった。**照合が 2 か所にあると違う語がリンクになり、
+書式が 2 か所にあると zip が「読めるのに一部だけ落ちる」** —— 後者のほうが例外に
+ならないぶん気付きにくい。フロントも同じで、相関図の**形の規則**
+（`static/graph-model.js`）は GlossPopApp が `/shared/` からそのまま読んでいる
+（**写しを作らないこと**）。
+
+### GlossPopApp（携帯・共有版）
+
+`../GlossPopApp` にある別リポジトリ。**こちらを直すと即座に向こうへ効く**ので、
+`core` に触るときは向こうのテストも通すこと:
+
+```powershell
+cd ..\GlossPopApp; uv run pytest
+```
+
+向こうの決めごとは [そちらの CLAUDE.md](../GlossPopApp/CLAUDE.md)、
+なぜ別プロジェクトにしたかは [docs/mobile-rethink.md](docs/mobile-rethink.md)。
 
 ### 壊しやすい不変条件
 

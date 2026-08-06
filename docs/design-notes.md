@@ -1457,7 +1457,8 @@ Windows の実行ファイルは console / GUI のどちらかのサブシステ
 - **ネタバレ抑止・時系列・読み上げ・広い画面の相関図**は向こうでは主役でなくなる
   （コンシューマ向けなのでネタバレ抑止は残るが、社内共有路線なら丸ごと消えていた）
 - 向こうでは `packaging/` 一式・`appwindow` / `watchdog` / `picker` / `installer` /
-  `updates` が要らない。**こちらの資産の 2 割（純粋な層 2,113 行）だけが渡る**
+  `updates` が要らない。**こちらの資産の 3 割（純粋な層 2,426 行 / 全体 7,800 行）
+  だけが渡る**
 
 **捨てた案**:
 
@@ -1471,9 +1472,18 @@ Windows の実行ファイルは console / GUI のどちらかのサブシステ
 
 ## 純粋な層を `glosspop/core/` に分ける
 
-**採用**: `config` にも `store` にも触れない 8 モジュール
-（`models` `htmlclean` `render` `linker` `relations` `documents` `timeline` `doctor`。
-2,113 行）を `glosspop/core/` にまとめ、**境界をテストで守る**。
+**採用**: `config` にも `store` にも触れないモジュールを `glosspop/core/` にまとめ、
+**境界をテストで守る**。最初は 8 つ（`models` `htmlclean` `render` `linker`
+`relations` `documents` `timeline` `doctor`）で、そのあと GlossPopApp を作りながら
+2 つ増えた —— **どちらも「形」で、放っておくと 2 か所に分かれるものだった**:
+
+- `entryfile` … エントリのファイル形式（frontmatter + 本文）。`store.py` にあった
+- `archivefmt` … 辞書 zip の並べ方と、外から来た書庫を開くときの安全規則。
+  `archive.py` と `installer.py` にあった
+
+合わせて 2,426 行（全体 7,800 行の 3 割）。**「形」を見つけたら core へ寄せる**、が
+そのあとの判断基準になった —— 照合が 2 か所にあると違う語がリンクになり、書式が
+2 か所にあると **zip が「読めるのに一部だけ落ちる」**。後者のほうが気付きにくい。
 
 **理由**: GlossPopApp と共有するのはここだけで、しかも**依存がもともと閉じていた** ——
 境界はコードの中に既にあって、名前が付いていなかっただけ。名前を付けておかないと、
