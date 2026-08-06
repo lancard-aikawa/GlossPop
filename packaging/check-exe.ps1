@@ -96,3 +96,41 @@ finally {
     Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
         ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 }
+
+# --------------------------------------------------------------------------- #
+# 窓なしの exe (glosspopw.exe) も動くか
+#
+# **標準入出力をリダイレクトしないこと。** 窓なしの exe は、リダイレクトされていれば
+# 普通に動くが、**素で起動すると `sys.stdout` / `sys.stderr` が `None` になる**。
+# そのままだと uvicorn のログが書けずにサーバが立ち上がらない（`entry.py` の
+# `_ensure_streams()` がそこを塞いでいる）。上と同じようにリダイレクトして確かめると、
+# **この不具合はすり抜ける** —— 実際にそれで見落とした。
+#
+# しかも窓なしなので、落ちても画面には何も出ない（PyInstaller の例外ダイアログが
+# 裏で開いて止まるだけ）。**ここで見ておかないと配ってから分かる。**
+# --------------------------------------------------------------------------- #
+$wExe = Join-Path (Split-Path -Parent $Exe) 'glosspopw.exe'
+Write-Host ''
+Write-Host "== 窓なしの exe ($([IO.Path]::GetFileName($wExe)))"
+if (-not (Test-Path $wExe)) { throw "$wExe がありません (spec の EXE を 2 本にしたか確認)" }
+
+$wPort = $Port + 1
+$wProc = Start-Process $wExe -ArgumentList 'serve', '--port', $wPort -PassThru
+try {
+    $wHealth = $null
+    foreach ($i in 1..40) {
+        try { $wHealth = Invoke-RestMethod "http://127.0.0.1:$wPort/api/health" -TimeoutSec 2; break }
+        catch { Start-Sleep -Milliseconds 500 }
+    }
+    if (-not $wHealth) {
+        throw "窓なしの exe が応答しませんでした (port $wPort)。標準入出力が無い状態で落ちている可能性"
+    }
+    Write-Host ("  version     : {0}" -f $wHealth.version)
+    Write-Host '  serve       : ok (標準入出力なしでも立ち上がる)'
+}
+finally {
+    Stop-Process -Id $wProc.Id -Force -ErrorAction SilentlyContinue
+    Get-NetTCPConnection -LocalPort $wPort -State Listen -ErrorAction SilentlyContinue |
+        ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+}
+Write-Host '[exe] ok (2 本とも)'

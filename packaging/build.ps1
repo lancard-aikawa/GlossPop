@@ -3,7 +3,7 @@
   GlossPop を Windows 向けに onedir ビルドする。
 
 .DESCRIPTION
-  dist/GlossPop/ に glosspop.exe と _internal/ を作り、その隣へ
+  dist/GlossPop/ に glosspop.exe (CLI) / glosspopw.exe (窓なし) と _internal/ を作り、その隣へ
   content/ と data/ を配置する (辞書は exe の隣に読み書きされる)。
   そのフォルダごと配布・移動できる。
 
@@ -29,12 +29,24 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-# 動いているサーバが dist や .venv のファイルを掴んでいるとビルドが失敗する
+# 動いているサーバが dist や .venv のファイルを掴んでいるとビルドが失敗する。
+#
+# **止めるのは「このリポジトリのもの」だけ。** ポートを見ただけで断ると、
+# 別の場所に入れた GlossPop（配布版を普段使いしている、など）が動いているだけで
+# ビルドできなくなる —— あちらはこのリポジトリの dist も .venv も掴んでいないので、
+# 止める理由が無い（実際にこれで詰まった）。
 $busy = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
-if ($busy) {
-    Write-Warning "ポート 8765 で GlossPop が動いています。先に止めてください:"
-    Write-Warning "  Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Stop-Process -Id `$_.OwningProcess -Force }"
-    exit 1
+foreach ($conn in @($busy)) {
+    $path = (Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue).Path
+    if ($path -and $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Warning "ポート 8765 でこのリポジトリの GlossPop が動いています。先に止めてください:"
+        Write-Warning "  Get-NetTCPConnection -LocalPort 8765 -State Listen | ForEach-Object { Stop-Process -Id `$_.OwningProcess -Force }"
+        Write-Warning "  (掴んでいるもの: $path)"
+        exit 1
+    }
+    if ($path) {
+        Write-Host "  ポート 8765 は別の GlossPop が使っています（このビルドには影響しません）: $path"
+    }
 }
 
 uv sync --group build
@@ -76,5 +88,6 @@ if ($Seed -eq 'dist') {
 
 Write-Host ""
 Write-Host "ビルド完了: $out"
-Write-Host "  起動: .\dist\GlossPop\glosspop.exe          (= app / 専用ウィンドウが開く)"
+Write-Host "  起動: .\dist\GlossPop\glosspopw.exe         (= app / 専用ウィンドウが開く。窓なし)"
+Write-Host "  CLI : .\dist\GlossPop\glosspop.exe list     (コンソール版)"
 Write-Host "  辞書: .\dist\GlossPop\data\glossary\"

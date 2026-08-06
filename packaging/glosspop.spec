@@ -46,30 +46,46 @@ a = Analysis(  # noqa: F821
 
 pyz = PYZ(a.pure)  # noqa: F821
 
-exe = EXE(  # noqa: F821
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name="glosspop",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    # **CLI をそのまま使えるようにするため console=True。** `console=False` にすると
-    # `glosspop.exe list` が何も出さなくなる。ダブルクリックで付いてくるコンソール窓は
-    # アプリの窓が開けた時点で隠す（`appwindow.hide_own_console`）ので、
-    # ここを windowed に倒す必要は無い
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
+# **実行ファイルは 2 本。** Windows の実行ファイルは console / GUI のどちらかの
+# サブシステムで作るしかなく、1 本でどちらも満たすことはできない。`python.exe` /
+# `pythonw.exe`、`java.exe` / `javaw.exe` と同じ形にしてある。
+#
+#   glosspop.exe   … console=True。CLI (`glosspop.exe list` など) 用
+#   glosspopw.exe  … console=False。ダブルクリックで開く用（窓が付いてこない）
+#
+# **大文字小文字だけで分けないこと**（`GlossPop.exe` と `glosspop.exe`）。Windows の
+# ファイル名は大文字小文字を区別しないので**同じ名前**になり、zip の展開や更新の
+# 入れ替えで片方が黙って消える。だから `w` を足す —— 上の 2 例がそうしているのと同じ。
+#
+# 以前は 1 本 (console=True) にして、窓が開いた時点で `FreeConsole` で離脱していた。
+# **子プロセスの窓が露出する**という副作用があり（親にコンソールが無いので claude が
+# 自分の窓を作った。しかもそれを閉じると下書きが失敗する）、変則をやめてこの形にした。
+def _exe(name: str, console: bool):
+    return EXE(  # noqa: F821
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name=name,
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=console,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+
+
+exe_cli = _exe("glosspop", True)
+exe_app = _exe("glosspopw", False)
 
 coll = COLLECT(  # noqa: F821
-    exe,
+    exe_cli,
+    exe_app,
     a.binaries,
     a.datas,
     strip=False,

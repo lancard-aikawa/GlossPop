@@ -69,6 +69,39 @@ class TestAvailability:
         assert "秘密の鍵" not in repr(info)
 
 
+class TestClaudeOpensNoConsoleWindow:
+    """**下書きのたびに黒い窓を出さない。**
+
+    claude はコンソールアプリなので、親にコンソールが無い状態（専用ウィンドウで
+    開いたとき）で起こすと**自分の窓を新しく作る**。しかもそれを閉じると claude
+    ごと落ちて下書きが失敗する（実際に報告された）。親のコンソールを間借りして
+    いたぶんは、これまで見えていなかっただけ。`picker.py` `appwindow.py` と同じ
+    指定を渡すこと。
+    """
+
+    def _flags(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"result": "ok"}', stderr="")
+
+        monkeypatch.setattr(config, "CLAUDE_BIN", "claude")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert llm.generate("お願い", timeout=30) == "ok"
+        return seen
+
+    def test_windows_gets_create_no_window(self, monkeypatch):
+        monkeypatch.setattr(llm.sys, "platform", "win32")
+        flags = self._flags(monkeypatch).get("creationflags")
+        assert flags == subprocess.CREATE_NO_WINDOW, "コンソール窓を抑えていない"
+
+    def test_other_platforms_get_nothing(self, monkeypatch):
+        """Windows 以外には渡さない（そもそも属性が無い）。"""
+        monkeypatch.setattr(llm.sys, "platform", "linux")
+        assert "creationflags" not in self._flags(monkeypatch)
+
+
 class TestClaudeCommand:
     """モデルと思考の深さがコマンドに乗るか。**二重指定しない**ことも見る。"""
 

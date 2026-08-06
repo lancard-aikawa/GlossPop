@@ -163,27 +163,16 @@ class TestOpeningTheWindowWaitsForOurOwnServer:
         assert cli._wait_started(self.FakeServer(), timeout=0.2, sleep=lambda _: None) is False
 
 
-def test_hiding_the_console_never_touches_a_shared_one(monkeypatch):
-    """**呼び出し元と共有しているコンソールは隠さない。**
+def test_the_console_hack_is_gone():
+    """**`FreeConsole` の細工を戻さないこと。**
 
-    `glosspop.exe list` を端末から叩いたときのコンソールは呼んだ人のもので、
-    隠すとその端末ごと消える。判定だけを見る（隠す側を呼ぶと、テストを走らせて
-    いる人のコンソールが消えかねない）。
+    以前は exe を 1 本 (`console=True`) にして、窓が開いた時点でコンソールから
+    離脱していた。**親にコンソールが無くなると子が自分の窓を作る**ので、AI の
+    下書きのたびに黒い窓が開き、それを閉じると下書きごと落ちた
+    （`[WinError 6] ハンドルが無効です` も同じ原因）。
+
+    いまは `glosspopw.exe` を `console=False` で作って正攻法にしてある。
+    戻すなら、まず子プロセス側の窓（`CREATE_NO_WINDOW`）から考えること。
     """
-    monkeypatch.setattr(appwindow.sys, "platform", "linux")
-    assert appwindow.console_is_ours() is False
-    assert appwindow.hide_own_console() is False
-
-
-def test_hiding_the_console_is_decided_by_the_process_list():
-    """Windows では「繋がっているプロセスが自分だけか」で決める。
-
-    テストは端末（か CI のシェル）から走るので**共有している側**になるはず。
-    ここが真になるなら判定が壊れている。
-    """
-    import sys
-
-    if sys.platform != "win32":
-        pytest.skip("Windows でだけ意味がある")
-    # pytest はシェルから起動されるので、コンソールは共有か、そもそも無い
-    assert appwindow.console_is_ours() is False
+    assert not hasattr(appwindow, "hide_own_console")
+    assert not hasattr(appwindow, "console_is_ours")

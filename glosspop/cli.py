@@ -125,8 +125,10 @@ def _open_window_later(args: argparse.Namespace, url: str, server=None) -> None:
     作った）。追えるのは**ページの側からの合図**だけなので、そちらは
     ``watchdog.py`` が引き受ける。
 
-    **コンソールを隠すのは窓が開けたあと。** 先に隠すと、窓が開けなかったときに
-    何も残らない（既定のブラウザに落ちた旨も、失敗の理由も読めない）。
+    **コンソール窓は `glosspopw.exe` の側で無い**（`console=False` で作ってある）ので、
+    ここで隠す細工は要らない。以前は `console=True` の 1 本きりで、窓が開いた時点で
+    `FreeConsole` して離脱していたが、**親にコンソールが無くなると子（claude）が
+    自分の窓を作る**という副作用があり、変則をやめて 2 本立てにした。
     """
     import threading
 
@@ -146,8 +148,6 @@ def _open_window_later(args: argparse.Namespace, url: str, server=None) -> None:
             return
         if appwindow.open_window(url) is None:
             print("アプリモードで開けるブラウザが無いので既定のブラウザで開きました。", file=sys.stderr)
-            return
-        appwindow.hide_own_console()
 
     threading.Thread(target=run, daemon=True).start()
 

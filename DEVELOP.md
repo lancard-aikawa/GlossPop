@@ -102,19 +102,24 @@ Python も uv も入っていない PC で動かすなら、PyInstaller で oned
 .\packaging\build.ps1
 ```
 
-`dist\GlossPop\` ができる。**このフォルダごと**コピーすれば動く（`glosspop.exe` 単体では
+`dist\GlossPop\` ができる。**このフォルダごと**コピーすれば動く（exe 単体では
 動かない。`_internal\` に依存関係が入っている）。
 
 ```
 dist\GlossPop\
-  glosspop.exe    引数なしで起動 = app (専用ウィンドウが開く)
+  glosspopw.exe   引数なしで起動 = app (専用ウィンドウが開く)。**ダブルクリック用**
+  glosspop.exe    同じ中身のコンソール版。CLI 用 (黒い窓が出る)
   _internal\      Python ランタイムと依存 (触らない)
   data\glossary\  辞書        ← exe の隣に読み書きされる
   data\window\    専用ウィンドウのブラウザプロファイル (消しても支障はない)
   content\        既定で開くフォルダ (.md / .txt / .html)
 ```
 
+**実行ファイルは 2 本ある。** Windows の実行ファイルは console / GUI のどちらかの
+サブシステムで作るしかないので、`python.exe` / `pythonw.exe` と同じ形にしてある。
 `glosspop.exe` は CLI もそのまま使える（`glosspop.exe list`、`glosspop.exe add --json -` など）。
+**大文字小文字だけで分けないこと** —— Windows では `GlossPop.exe` と `glosspop.exe` が
+同じ名前になり、展開や入れ替えで片方が黙って消える。
 辞書と content の場所は環境変数で変えられる（[環境変数](MANUAL.md#環境変数)）。既定は exe の隣なので、
 `Program Files` のような書き込めない場所に置く場合は `GLOSSPOP_GLOSSARY_DIR` を指定すること。
 

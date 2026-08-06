@@ -350,23 +350,25 @@ Windows の禁止文字を潰したうえで、組み立てた結果が `SITES_D
 - **止める先を持つために `uvicorn.run()` ではなく `Server` を自分で作る**
   （`cmd_serve`）。`uvicorn.run()` は掴む手段をくれない
 
-**コンソールから離れるのは「自分専用のとき」だけ**（`appwindow.console_is_ours()`）。
-exe は `console=True`（CLI をそのまま使えるように）なので、ダブルクリックすると
-必ずコンソール窓が付いてきて、**そちらを閉じるとサーバだけ死んでアプリの窓が残る**
-（＝以後どこを押しても接続エラー。報告された不具合そのもの）。守ること 4 つ:
+**実行ファイルは 2 本ある。**`glosspop.exe`（`console=True`。CLI 用）と
+`glosspopw.exe`（`console=False`。ダブルクリック用）。Windows の実行ファイルは
+console / GUI のどちらかのサブシステムで作るしかないので、1 本では両立できない
+（`python.exe` / `pythonw.exe` と同じ形）。守ること 4 つ:
 
-- **`GetConsoleProcessList` が 1 のときだけ。** **2 以上は呼び出し元と共有して
-  いる**ので、離れると `glosspop.exe list` を叩いた人の出力が消える
-- **判定 (`console_is_ours`) と実行 (`hide_own_console`) を分ける。** 一緒にすると
-  **テストで踏んだ瞬間に走らせた人のコンソールが消える**
-- **`ShowWindow` で隠す形にしないこと。** Windows 11 の既定のホスト
-  （Windows Terminal / ConPTY）では `GetConsoleWindow()` が返すのは**見えない
-  ダミーの窓**で、隠しても端末はそのまま残る（実際に踏んだ）。`FreeConsole` で
-  客をやめれば、端末は客がいなくなったので閉じる。**離れる前に fd 0/1/2 を
-  devnull へ付け替える** —— 先に離すとハンドルが無効になり、次に uvicorn が
-  ログを書いた瞬間に落ちる（`sys.stderr` は既に掴まれているので、Python 側の
-  オブジェクトを差し替えても間に合わない）
-- **離れるのは窓が開けたあと。** 先に離れると、開けなかったときに理由が読めない
+- **大文字小文字だけで分けないこと。** Windows では `GlossPop.exe` と `glosspop.exe` が
+  **同じ名前**なので、zip の展開や更新の入れ替えで片方が黙って消える。だから `w` を足す
+- **`FreeConsole` で離脱する形に戻さないこと。** 一時期そうしていたが、**親に
+  コンソールが無くなると子（claude）が自分の窓を作る** —— AI の下書きのたびに黒い窓が
+  開き、閉じると下書きごと落ちた（`[WinError 6] ハンドルが無効です` も同じ原因）。
+  `ShowWindow` で隠す案も駄目で、Windows 11 の既定のホスト（Windows Terminal /
+  ConPTY）では `GetConsoleWindow()` が**見えないダミーの窓**を返す（実際に踏んだ）
+- **子プロセスには `CREATE_NO_WINDOW` を渡す**（`llm.py` `picker.py` `appwindow.py`）。
+  窓なしの親から起こしたコンソールアプリは、**指定しないと自分の窓を作る**。
+  親のコンソールを間借りしていたぶんは、それまで見えていなかっただけ
+- **窓なしでは `sys.stdout` / `sys.stderr` が `None` になる**（`entry.py` の
+  `_ensure_streams()`）。`print()` は黙って読み飛ばすが **uvicorn のログはそうではない**
+  ので、塞がないとサーバが立ち上がらない。**リダイレクトすると再現しない**ので、
+  確かめるときは素で起動すること（`check-exe.ps1` がそうしている）
 
 **窓を出す合図は「自分のサーバが listen したか」**（`cli._wait_started`）。
 ポートが開いたかで見ると、**閉じた直後に開き直したとき**（前のサーバが生存確認で

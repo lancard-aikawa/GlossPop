@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -356,6 +357,15 @@ def _run_claude(prompt: str, model: str, effort: str, timeout: int, system: str)
         cmd += ["--effort", effort]
     cmd += extra
 
+    # **子のコンソール窓を出さない。** claude はコンソールアプリなので、親に
+    # コンソールが無い状態（＝専用ウィンドウで開いたとき。`appwindow.
+    # hide_own_console`）で起こすと**下書きのたびに黒い窓が開く**。しかも
+    # それを閉じると claude ごと落ちて下書きが失敗する（実際に報告された）。
+    # 親のコンソールを間借りしていたぶんは、これまで見えていなかっただけ。
+    # `picker.py` と `appwindow.py` も同じ理由で同じ指定をしている
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         proc = subprocess.run(
             cmd,
@@ -365,6 +375,7 @@ def _run_claude(prompt: str, model: str, effort: str, timeout: int, system: str)
             errors="replace",
             timeout=timeout,
             cwd=str(_neutral_cwd()),
+            **kwargs,
         )
     except subprocess.TimeoutExpired as exc:
         raise LLMError(f"claude CLI が {timeout} 秒でタイムアウトしました") from exc
