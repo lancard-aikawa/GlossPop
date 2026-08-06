@@ -43,18 +43,18 @@ from pathlib import Path
 
 from . import categories, config, store
 from .core import relations
-from .installer import InstallError, safe_members
+from .core.archivefmt import (
+    CATEGORIES_NAME,
+    safe_members,
+    GLOSSARY_PREFIX,
+    MANIFEST_NAME,
+    MAX_ARCHIVE_BYTES,
+    ArchiveFormatError,
+    entry_members,
+    manifest_bytes,
+)
+from .core import archivefmt
 from .core.models import GLOBAL_SCOPE, CategoryNameError
-
-#: zip の中の置き場所。展開時もこの名前で探す
-GLOSSARY_PREFIX = "glossary/"
-CATEGORIES_NAME = "categories.yaml"
-
-#: 書き出したものだと分かる目印。中身も検証に使う
-MANIFEST_NAME = "glosspop-export.json"
-
-#: 取り込む zip の上限。辞書は文字ばかりなので、これを超えるものは別物とみなす
-MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 
 #: 控えの置き場所（`DATA_ROOT` の下。保存先を移せば一緒に動く）
 BACKUP_DIR_NAME = "backups"
@@ -104,19 +104,12 @@ def export_bytes(only: list[str] | None = None) -> bytes:
             zf.writestr(CATEGORIES_NAME, master)
         zf.writestr(
             MANIFEST_NAME,
-            json.dumps(
-                {
-                    "app": "GlossPop",
-                    "kind": "glossary",
-                    "entries": count,
-                    # 一部だけ書き出したことは中身にも残す（受け取った側が
-                    # 「これで全部」と思わないように）
-                    "partial": picked is not None,
-                    "categories": sorted(picked) if picked is not None else [],
-                    "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-                },
-                ensure_ascii=False,
-                indent=2,
+            manifest_bytes(
+                app="GlossPop",
+                entries=count,
+                created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                partial=picked is not None,
+                categories=sorted(picked) if picked is not None else [],
             ),
         )
     return buf.getvalue()
@@ -341,52 +334,23 @@ def delete_backup(name: str) -> None:
 # --------------------------------------------------------------------------- #
 
 def _entry_members(zf: zipfile.ZipFile, members: list[zipfile.ZipInfo]) -> list[zipfile.ZipInfo]:
-    """``glossary/<カテゴリ>/<slug>.md`` だけを拾う。
-
-    深さも見る。**辞書は 2 段と決まっている**ので、それ以外は元の形が違う
-    （＝別のものを取り込もうとしている）とみなして通さない。
-    """
-    out = []
-    for info in members:
-        if info.is_dir() or not info.filename.startswith(GLOSSARY_PREFIX):
-            continue
-        parts = Path(info.filename[len(GLOSSARY_PREFIX):]).parts
-        if len(parts) == 2 and parts[1].lower().endswith(".md"):
-            out.append(info)
-    return out
+    """`glossary/<カテゴリ>/<slug>.md` だけを拾う（判断は core.archivefmt）。"""
+    return entry_members(members)
 
 
 def inspect(data: bytes) -> dict:
     """取り込む前に中身を確かめる。``{entries, categories, has_manifest}``。
 
-    **GlossPop が書き出したものかを見る。** アプリ本体の zip を取り込ませると
-    辞書が空で置き換わるので、形が違うものはここで止める。
+    **形の判断は `core.archivefmt`。** GlossPopApp と同じ zip を扱うので、
+    ここに写しを作らないこと（片方だけ並べ方を変えると、書き出した zip が
+    もう片方で「読めるのに空で置き換わる」）。
     """
-    if len(data) > MAX_ARCHIVE_BYTES:
-        raise ArchiveError(f"zip が大きすぎます（{MAX_ARCHIVE_BYTES // 1024 // 1024} MB まで）")
     try:
-        zf = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile as exc:
-        raise ArchiveError("zip として読めません") from exc
-    with zf:
-        try:
-            # 展開先の外に出る要素・シンボリックリンクは自分で弾く
-            # （外から来た書庫をライブラリ任せにしない。installer と同じ規則）
-            members = safe_members(zf, config.GLOSSARY_DIR.parent)
-        except InstallError as exc:
-            raise ArchiveError(str(exc)) from exc
-        entries = _entry_members(zf, members)
-        names = {m.filename for m in members}
-        if not entries and MANIFEST_NAME not in names:
-            raise ArchiveError(
-                "GlossPop が書き出した zip ではないようです"
-                f"（{GLOSSARY_PREFIX}<カテゴリ>/<用語>.md が入っていません）"
-            )
-        return {
-            "entries": len(entries),
-            "categories": len({Path(m.filename[len(GLOSSARY_PREFIX):]).parts[0] for m in entries}),
-            "has_manifest": MANIFEST_NAME in names,
-        }
+        return archivefmt.inspect(
+            data, config.GLOSSARY_DIR.parent, max_bytes=MAX_ARCHIVE_BYTES
+        )
+    except ArchiveFormatError as exc:
+        raise ArchiveError(str(exc)) from exc
 
 
 #: 取り込み方。`replace` は zip の中身そのものに、`merge` は足して上書きする
