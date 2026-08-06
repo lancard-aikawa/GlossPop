@@ -65,7 +65,7 @@ Python のインストールは要らない。
 `glosspop.exe` だけ取り出しても動かない。`_internal\` と同じフォルダに置いたまま使うこと。
 辞書は exe と同じ場所の `data\glossary\` に貯まるので、フォルダごとコピーすれば別の PC へ
 そのまま持っていける。更新のしかたは
-[リリースノート](packaging/release-notes.md)にある。
+[リリースノート](packaging/release-intro.md)にある。変更履歴は [CHANGELOG.md](CHANGELOG.md)。
 
 ## ソースから動かす
 

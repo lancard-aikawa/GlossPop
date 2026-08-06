@@ -70,6 +70,25 @@ if ($tag) {
 }
 
 # --------------------------------------------------------------------------- #
+# 1b. その版の変更点が書かれているか
+#
+#     Release の本文は CHANGELOG.md のこの節から作る。**無いとワークフローが
+#     落ちる**ので、タグを打つ前にここで気付く（バージョンの一致と同じ扱い）。
+# --------------------------------------------------------------------------- #
+Write-Step '変更点（CHANGELOG.md）'
+$lines = Get-Content CHANGELOG.md
+$at = ($lines | Select-String -Pattern "^##\s+$([regex]::Escape($init))\s*$").LineNumber
+if (-not $at) {
+    Fail "CHANGELOG.md に $init の節がありません。Release の本文になるので書き足すこと"
+}
+$rest = $lines[$at..($lines.Count - 1)]
+$end = ($rest | Select-String -Pattern '^##\s' | Select-Object -First 1).LineNumber
+$body = (($(if ($end) { $rest[0..($end - 2)] } else { $rest })) -join "`n").Trim()
+if (-not $body) { Fail "CHANGELOG.md の $init の節が空です" }
+Write-Host "  Release にはこれが出ます:"
+$body -split "`n" | ForEach-Object { Write-Host "    $_" }
+
+# --------------------------------------------------------------------------- #
 # 2. claude 抜きで全テスト
 # --------------------------------------------------------------------------- #
 Write-Step "claude 抜きで全テスト（CI には claude が無い）"

@@ -1372,14 +1372,14 @@ Playwright を動かして確かめる。
 | 関係 (`relations`) の項目 | SKILL.md の「関係を書く」、MANUAL の「関係と相関図」、`base.js` の `RANK_OPTIONS` / `RANK_MARK` |
 | 抽出の種別 (`EXTRACT_KINDS`) | MANUAL の「まとめて登録する」の表 |
 | 統合で選ばせる項目 (`merge.CONFLICT_FIELDS`) | `merge.js` の `FIELD_LABELS`（載っていない項目は英語の名前のまま画面に出る） |
-| 設定に足した項目 | MANUAL の「設定」、`packaging/release-notes.md` の「できること」、`settings.js` の `PATH_LABELS`（場所を足したとき） |
+| 設定に足した項目 | MANUAL の「設定」、`settings.js` の `PATH_LABELS`（場所を足したとき） |
 | 描画前に当てる設定（テーマ・文字の大きさ） | `base.js` のキーと値、**5 つの HTML の head のインライン script**（写しなので全部） |
 | 文字の大きさ（`--fs-base` と段階） | `style.css` の `:root`、`settings.js` の `<option>`、MANUAL の「文字の大きさ」の表。**周りの px は触らない** |
 | ビューアの左パネルの構成 | MANUAL の「左パネルの構成」（開き方の一覧・横断検索・フォルダを開く の各節も参照している）、`tests/test_smoke_ui.py` の `open_other_source()` / `open_content_search()` |
 | ペルソナの顔 (`config.PERSONA_*` / `ai._PERSONA_SNIFF`) | MANUAL の「語り手の顔」、`samples/README.md`、`docs/voices.md`、`ai-style.js` の `accept`。**画像を配る口は `GET /api/persona`、受け取る口は `POST /api/persona` の 1 つずつだけ** |
-| 文体 (`ai.STYLE_PRESETS` / 効く範囲 / 置き場所) | `ai-style.js`（画面は⚙とサイドバーで共用）、MANUAL の「文体（口調）」の 2 つの表、`docs/voices.md`（効く範囲の表を載せている）、`packaging/release-notes.md`（「できること」と「AI 下書きについて」）。**例は `ai.py` が正**（`settings.js` に写しを置かない） |
-| AI の提供元・モデル・思考の深さ | `llm.py`（`PROVIDERS` / `EFFORTS` / `CLAUDE_MODELS`）、MANUAL の「使う AI」と環境変数の表、`settings.js` の「AI」節、`packaging/release-notes.md` の「AI 下書きについて」（**同じ表が載っている**）、README の「AI について」 |
-| 更新まわりの挙動 | MANUAL の「更新のしかた」、`packaging/release-notes.md` の「更新するとき」 |
+| 文体 (`ai.STYLE_PRESETS` / 効く範囲 / 置き場所) | `ai-style.js`（画面は⚙とサイドバーで共用）、MANUAL の「文体（口調）」の 2 つの表、`docs/voices.md`（効く範囲の表を載せている）。**例は `ai.py` が正**（`settings.js` に写しを置かない） |
+| AI の提供元・モデル・思考の深さ | `llm.py`（`PROVIDERS` / `EFFORTS` / `CLAUDE_MODELS`）、MANUAL の「使う AI」と環境変数の表、`settings.js` の「AI」節、README の「AI について」 |
+| 更新まわりの挙動 | MANUAL の「更新のしかた」、`packaging/release-intro.md` の「更新するとき」 |
 | 自動リンクの規則 | MANUAL.md の「自動リンクの規則」、`content/ようこそ.md` |
 | カテゴリ名の制約 | `models.normalize_category()`、MANUAL、SKILL.md、`ai.build_prompt()` |
 | 画面 (`glossary` / `entry` / `graph` / `doctor`) の中身 | そのモジュールの `TEMPLATE`（**HTML 側には写しを置かない**）。新しい画面を足したら `overlay.js` の `ROUTES` |
@@ -1391,4 +1391,4 @@ Playwright を動かして確かめる。
 | 機能を足した / 設計の判断をした | `docs/open-questions.md`（**片付いた宿題は消す** —— 残ると「まだ無いもの」に見える）、`docs/design-notes.md`（決めたことと、その代償を書く） |
 | 使い方の説明を増やした | `MANUAL.md`（**README には移さない** —— README は入口だけに保つ。目次も一緒に直す） |
 | ビルド・リリースの手順 | `DEVELOP.md` |
-| バージョン | `pyproject.toml` と `glosspop/__init__.py` と `uv.lock` の**3 つとも**（前 2 つがタグと不一致だと release ワークフローが落ちる。lock は落ちないぶん気付けない）。`release-notes.md` と MANUAL の版番号の例も見る（あそこに出るのは**次の版**） |
+| バージョン | `pyproject.toml` と `glosspop/__init__.py` と `uv.lock` の**3 つとも**（前 2 つがタグと不一致だと release ワークフローが落ちる。lock は落ちないぶん気付けない）。MANUAL の版番号の例も見る（あそこに出るのは**次の版**）。**`CHANGELOG.md` にその版の節を書く** —— 無いとワークフローが落ちる |

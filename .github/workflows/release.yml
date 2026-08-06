@@ -152,6 +152,36 @@ jobs:
           name: ${{ steps.samples.outputs.zip }}
           path: dist/${{ steps.samples.outputs.zip }}
 
+      # 本文は「その版の変更点」＋「初めての方へ」。**変更点を先頭に置く。**
+      # 以前は packaging の説明をまるごと渡していたので、**毎回同じ本文**が出て
+      # 「何が変わったのか」がどこにも書かれていなかった。
+      - name: Release の本文を組み立てる
+        if: github.ref_type == 'tag'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ steps.version.outputs.version }}'
+          # `## <版番号>` から次の `## ` の手前まで。CHANGELOG.md の見出しの形が
+          # 変わったらここも直すこと
+          $lines = Get-Content CHANGELOG.md
+          $at = ($lines | Select-String -Pattern "^##\s+$([regex]::Escape($version))\s*$").LineNumber
+          if (-not $at) {
+            throw "CHANGELOG.md に $version の節がありません。変更点を書いてからタグを打ち直してください"
+          }
+          $rest = $lines[$at..($lines.Count - 1)]
+          $end = ($rest | Select-String -Pattern '^##\s' | Select-Object -First 1).LineNumber
+          $body = if ($end) { $rest[0..($end - 2)] } else { $rest }
+          $body = ($body -join "`n").Trim()
+          if (-not $body) {
+            throw "CHANGELOG.md の $version の節が空です"
+          }
+          Write-Host "--- 変更点 ---`n$body"
+          # 導入文の中の HTML コメント（書き手向けの注意書き）は落とす。
+          # 描画されないので害は無いが、Release の本文に混ぜるものではない
+          $intro = (Get-Content packaging/release-intro.md -Raw) -replace '(?s)<!--.*?-->', ''
+          Set-Content -Path dist/release-body.md -Encoding utf8 -Value @(
+            "## $version の変更点", '', $body, '', $intro.Trim()
+          )
+
       - name: Release を作る (ドラフト)
         if: github.ref_type == 'tag'
         env:
@@ -163,5 +193,5 @@ jobs:
           }
           gh release create '${{ github.ref_name }}' @assets `
             --title 'GlossPop ${{ steps.version.outputs.version }}' `
-            --notes-file packaging/release-notes.md `
+            --notes-file dist/release-body.md `
             --draft
