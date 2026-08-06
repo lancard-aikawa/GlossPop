@@ -9,3 +9,6 @@ samples/**/*.txt -text -diff
 # UTF-8 の日本語は化け、CP932 で 2 バイト目が 0x5C になる文字は構文を壊す)
 *.cmd text eol=crlf
 *.bat text eol=crlf
+
+# アイコンはバイナリ。改行変換にかけない（`.ico` の中身は PNG）
+*.ico binary

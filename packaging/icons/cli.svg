@@ -1,0 +1,12 @@
+<!-- glosspop.exe（コマンドライン用）のアイコン。
+     **一目で「こちらは端末から使うもの」と分かる図案にする** —— 配布物に exe が
+     2 つ並ぶので、同じ絵だとダブルクリックする人がどちらを押すか迷う。
+     色は本体と同じ組（地は --fg、字は --accent のダーク側）にして、
+     別のアプリには見えないようにしてある。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#1c1c1a"/>
+  <path d="M17 21 L29 32 L17 43" fill="none" stroke="#5eead4" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M35 43 H48" fill="none" stroke="#5eead4" stroke-width="5"
+        stroke-linecap="round"/>
+</svg>

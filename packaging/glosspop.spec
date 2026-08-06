@@ -60,7 +60,14 @@ pyz = PYZ(a.pure)  # noqa: F821
 # 以前は 1 本 (console=True) にして、窓が開いた時点で `FreeConsole` で離脱していた。
 # **子プロセスの窓が露出する**という副作用があり（親にコンソールが無いので claude が
 # 自分の窓を作った。しかもそれを閉じると下書きが失敗する）、変則をやめてこの形にした。
-def _exe(name: str, console: bool):
+# アイコンは 2 つとも別（→ `packaging/icons/`）。**同じ絵にしないこと** ——
+# exe が 2 つ並ぶので、同じ見た目だとどちらを押すのか分からない。
+# `.ico` は `make-icons.py` が svg から作って git に入れてある（ビルドのたびには
+# 作らない。ブラウザが要るので、CI とビルドはそれ抜きで通るようにしておく）。
+_ICONS = str(Path(SPECPATH) / "icons")  # noqa: F821
+
+
+def _exe(name: str, console: bool, icon: str):
     return EXE(  # noqa: F821
         pyz,
         a.scripts,
@@ -72,6 +79,7 @@ def _exe(name: str, console: bool):
         strip=False,
         upx=False,
         console=console,
+        icon=str(Path(_ICONS) / icon),
         disable_windowed_traceback=False,
         argv_emulation=False,
         target_arch=None,
@@ -80,8 +88,8 @@ def _exe(name: str, console: bool):
     )
 
 
-exe_cli = _exe("glosspop", True)
-exe_app = _exe("glosspopw", False)
+exe_cli = _exe("glosspop", True, "glosspop-cli.ico")
+exe_app = _exe("glosspopw", False, "glosspop-app.ico")
 
 coll = COLLECT(  # noqa: F821
     exe_cli,

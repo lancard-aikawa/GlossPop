@@ -370,6 +370,13 @@ console / GUI のどちらかのサブシステムで作るしかないので、
   ので、塞がないとサーバが立ち上がらない。**リダイレクトすると再現しない**ので、
   確かめるときは素で起動すること（`check-exe.ps1` がそうしている）
 
+**アイコンは 2 本で別にする**（`packaging/icons/`）。exe が並ぶので、同じ絵だと
+**どちらを押すのか分からない**。`glosspopw.exe` は `static/favicon.svg` と同じ図案
+（タスクバーとブラウザのタブが揃っていないと同じアプリに見えない）、`glosspop.exe` は
+端末らしい図案。**`.ico` はビルド時に作らない** —— `make-icons.py` が playwright で
+描くので、そこを通すと CI とビルドにブラウザが要る。svg を直したら手で走らせて、
+出来た `.ico` も一緒にコミットすること。
+
 **窓を出す合図は「自分のサーバが listen したか」**（`cli._wait_started`）。
 ポートが開いたかで見ると、**閉じた直後に開き直したとき**（前のサーバが生存確認で
 終わるまで 20 秒ほどある）にそのポートは「開いている」ので、**もうすぐ死ぬ古い
@@ -1388,6 +1395,7 @@ Playwright を動かして確かめる。
 | 相関図の形の規則（段・孤立語・並び・帯の折り返し） | `graph-model.js`（**1 つの見せ方だけに写しを作らない** —— `graph.js` / `fabric.js` / `matrix.js` / `ego.js` / `timeline.js` が同じものを読む） |
 | 相関図の見せ方を足した | `graph.js` の `MODES` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 5 つある」、CLAUDE.md のこの節 |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
+| exe のアイコン | `packaging/icons/*.svg` を直して `uv run python packaging/make-icons.py`。**`.ico` も一緒にコミットする**（ビルド時には作らない）。アプリ側は `static/favicon.svg` と揃える |
 | 画面の見た目（ビューア・一覧・用語ページ・相関図・抽出ダイアログ） | `docs/images/` の該当スクショ（README と MANUAL が貼っている。撮り直しは content/ を開いて 1280×820 のライトで撮る） |
 | 辞書のスキーマ / 文体 / 点検の判定 | `samples/` は**動く実物**として公開しているので、`tests/test_samples.py` が落ちていないか見る（落ちたらサンプルを直す。README の「置いて開くだけ」が嘘になる） |
 | 機能を足した / 設計の判断をした | `docs/open-questions.md`（**片付いた宿題は消す** —— 残ると「まだ無いもの」に見える）、`docs/design-notes.md`（決めたことと、その代償を書く） |

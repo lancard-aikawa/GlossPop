@@ -92,6 +92,8 @@ packaging/                  Windows 向け PyInstaller ビルド
   build.ps1     ビルド実行 (dist/GlossPop/ を作る)
   glosspop.spec PyInstaller の定義
   entry.py      exe のエントリスクリプト
+  icons/        exe のアイコン (svg が正。ico は make-icons.py で作って git に入れる)
+  make-icons.py svg -> ico。図案を直したときだけ手で走らせる
 ```
 
 ## Windows 向けビルド
