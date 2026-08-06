@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import categories, config, merge, store
+from . import categories, config, merge, store, watchdog
 from .models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
@@ -98,24 +98,56 @@ def _announce_local(action: str) -> int:
 # サブコマンド
 # --------------------------------------------------------------------------- #
 
-def _open_window_later(args: argparse.Namespace, url: str) -> None:
+def _wait_started(server, timeout: float = 30.0, sleep=None) -> bool:
+    """**自分の**サーバが listen し始めるまで待つ。
+
+    ポートが開いたかで見ないこと —— 前のサーバがまだ終わりきっていない間に開き
+    直すと（生存確認で終わるまで 20 秒ほどある）、**そのポートは「開いている」**。
+    そこで窓を出すと、**もうすぐ死ぬ古いサーバに向いた窓**が開く。こちらが bind に
+    失敗したことも同時に分かる（`started` が立たない）。
+    """
+    import time
+
+    sleep = sleep or time.sleep
+    for _ in range(int(timeout / 0.05)):
+        if getattr(server, "started", False):
+            return True
+        sleep(0.05)
+    return False
+
+
+def _open_window_later(args: argparse.Namespace, url: str, server=None) -> None:
     """サーバが listen したら専用ウィンドウを開く（別スレッド）。
 
-    **窓の寿命は追えない。** 起動した ``msedge.exe`` はブラウザ本体を別プロセスで
-    生んですぐ終了するので、こちらの ``Popen`` を ``wait()`` しても「窓が閉じた」
-    ことにはならない（一度これで「窓は開いたままサーバだけ落ちる」を作った）。
-    サーバを止めるのは Ctrl+C。
+    **窓の寿命はプロセスでは追えない。** 起動した ``msedge.exe`` はブラウザ本体を
+    別プロセスで生んですぐ終了するので、こちらの ``Popen`` を ``wait()`` しても
+    「窓が閉じた」ことにはならない（一度これで「窓は開いたままサーバだけ落ちる」を
+    作った）。追えるのは**ページの側からの合図**だけなので、そちらは
+    ``watchdog.py`` が引き受ける。
+
+    **コンソールを隠すのは窓が開けたあと。** 先に隠すと、窓が開けなかったときに
+    何も残らない（既定のブラウザに落ちた旨も、失敗の理由も読めない）。
     """
     import threading
 
     from . import appwindow
 
     def run() -> None:
-        if not appwindow.wait_until_ready(args.host, args.port):
-            print("サーバの起動を確認できませんでした。ウィンドウは開きません。", file=sys.stderr)
+        ok = (
+            _wait_started(server) if server is not None
+            else appwindow.wait_until_ready(args.host, args.port)
+        )
+        if not ok:
+            print(
+                "サーバを起動できませんでした（ポートが使われている？）。"
+                "ウィンドウは開きません。",
+                file=sys.stderr,
+            )
             return
         if appwindow.open_window(url) is None:
             print("アプリモードで開けるブラウザが無いので既定のブラウザで開きました。", file=sys.stderr)
+            return
+        appwindow.hide_own_console()
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -145,16 +177,35 @@ def cmd_serve(args: argparse.Namespace) -> int:
     else:
         from .app import app as target  # 文字列 import は exe 版で解決できない
 
-    if open_window:
-        _open_window_later(args, url)
+    if reload:
+        # reloader はプロセスを作り直すので uvicorn 側に任せる（開発用）。
+        # Server を掴めないので、窓を開けるなら従来どおりポートで待つ
+        if open_window:
+            watchdog.arm()
+            _open_window_later(args, url)
+        uvicorn.run(
+            target,
+            host=args.host,
+            port=args.port,
+            reload=True,
+            log_level=args.log_level,
+        )
+        return 0
 
-    uvicorn.run(
-        target,
-        host=args.host,
-        port=args.port,
-        reload=reload,
-        log_level=args.log_level,
+    # **`uvicorn.run()` ではなく Server を自分で持つ。** 生存確認が途絶えたときに
+    # 止める先が要り、窓を出す合図にも「自分が listen したか」が要る
+    # （`uvicorn.run()` はどちらの手段もくれない）
+    server = uvicorn.Server(
+        uvicorn.Config(target, host=args.host, port=args.port, log_level=args.log_level)
     )
+    if open_window:
+        # **ページからの合図を数え始めてから窓を開ける。** 逆にすると、開くのが
+        # 速かったときの最初の合図を落とす
+        watchdog.arm()
+        print("  窓を閉じるとサーバも終わります。", file=sys.stderr)
+        watchdog.watch(lambda: setattr(server, "should_exit", True))
+        _open_window_later(args, url, server)
+    server.run()
     return 0
 
 

@@ -38,6 +38,29 @@ def test_health(client):
     assert res.json()["entry_count"] == 0
 
 
+class TestStayingAlive:
+    """専用ウィンドウで開いたときだけ、ページの生存確認を数える。
+
+    `serve`（ブラウザは自分で開く）で数えてしまうと、**タブを閉じただけで
+    サーバが落ちる**。数えているかどうかはページ側も見て、送るのをやめる。
+    """
+
+    def test_it_is_off_unless_the_window_opened_it(self, client):
+        from glosspop import watchdog
+
+        assert client.get("/api/health").json()["window_mode"] is False
+        assert client.post("/api/alive").json() == {"armed": False}
+        assert watchdog.pings() == 0            # 数えてもいない
+
+    def test_pings_are_counted_once_armed(self, client):
+        from glosspop import watchdog
+
+        watchdog.arm()
+        assert client.get("/api/health").json()["window_mode"] is True
+        assert client.post("/api/alive").json() == {"armed": True}
+        assert watchdog.pings() == 1
+
+
 def test_create_then_render_adds_links(client):
     created = client.post("/api/entries", json=ENTRY)
     assert created.status_code == 201, created.text

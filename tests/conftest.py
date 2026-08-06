@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from glosspop import categories, config, documents, store
+from glosspop import categories, config, documents, store, watchdog
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +65,9 @@ def isolated_dirs(tmp_path, monkeypatch):
     # 本物の %APPDATA% に設定を書かない
     monkeypatch.setattr(config, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(store, "_ready", False)
+    # 生存確認もプロセス内に残る。arm したまま次のテストへ持ち越すと、
+    # `/api/alive` が数え始めて `window_mode` が真のままになる
+    watchdog.reset()
     # 「フォルダを開く」「URL を読む」の状態はプロセス内に残るので持ち越さない
     config.set_content_dir(None)
     config.set_reading_url(None)

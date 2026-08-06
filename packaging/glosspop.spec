@@ -56,7 +56,11 @@ exe = EXE(  # noqa: F821
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,  # ローカルサーバなのでログを見せる
+    # **CLI をそのまま使えるようにするため console=True。** `console=False` にすると
+    # `glosspop.exe list` が何も出さなくなる。ダブルクリックで付いてくるコンソール窓は
+    # アプリの窓が開けた時点で隠す（`appwindow.hide_own_console`）ので、
+    # ここを windowed に倒す必要は無い
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

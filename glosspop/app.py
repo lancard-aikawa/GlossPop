@@ -31,6 +31,7 @@ from . import (
     store,
     timeline,
     updates,
+    watchdog,
 )
 from .linker import Linker, entry_url
 from .models import (
@@ -483,10 +484,23 @@ def page_entry(ref: str) -> FileResponse:
 # API: メタ
 # --------------------------------------------------------------------------- #
 
+@app.post("/api/alive")
+def alive() -> dict:
+    """開いているページからの生存確認（→ `watchdog.py`）。
+
+    **専用ウィンドウで開いたときだけ意味がある。** `serve` では `armed` が偽なので
+    数えず、ページ側もそれを見て知らせるのをやめる。
+    """
+    watchdog.touch()
+    return {"armed": watchdog.armed()}
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
         "version": __version__,
+        # 専用ウィンドウで開いたか。ページはこれが真のときだけ生存確認を送る
+        "window_mode": watchdog.armed(),
         "ai_available": ai.available(),
         "claude_bin": config.CLAUDE_BIN,
         "glossary_dir": str(config.GLOSSARY_DIR),
