@@ -6,12 +6,16 @@
 <title>GlossPop — 辞書の点検</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <script>
-// 描画の前にテーマを当てる。あとから当てると、暗いテーマのとき一瞬白く光る。
-// キー名は base.js の THEME_KEY と同じ
+// 描画の前にテーマと文字の大きさを当てる。あとから当てると、暗いテーマのとき
+// 一瞬白く光り、大きさを変えていると一度小さい字で描いてから飛ぶ。
+// キー名と値は base.js の THEME_KEY / FONT_KEY と同じ（**5 つの HTML に同じ写しが
+// ある。片方だけ直すと、そのページだけ設定が効かない**）
 try {
   const t = localStorage.getItem("glosspop.theme");
   if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
-} catch (e) { /* 読めなければ OS の設定に従う */ }
+  const f = localStorage.getItem("glosspop.fontSize");
+  if (f === "small" || f === "large" || f === "xlarge") document.documentElement.dataset.fontsize = f;
+} catch (e) { /* 読めなければ OS の設定と既定の大きさに従う */ }
 </script>
 <link rel="stylesheet" href="/static/style.css">
 </head>

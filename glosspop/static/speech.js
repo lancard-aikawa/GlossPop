@@ -8,8 +8,18 @@
 // 一度に渡すと Chromium が途中で切る (既知の癖) うえ、いま読んでいる場所が
 // 分からなくなってハイライトを合わせられない。
 //
-// 音声はローカルのものだけ。Edge の「ナチュラル」音声は Web Speech API からは
-// 使えないので、滑らかさではリーディング モードに劣る。
+// **音声の一覧は遅れて届く。一度で確定させないこと。**
+// 以前は `voiceschanged` を 1.5 秒だけ待って諦めていたため、間に合わなかった環境で
+// **そのページでは以後ずっと 0 件**（＝「読み上げに使える音声がありません」）になり、
+// 読み上げが丸ごと使えなくなっていた。実測（アプリの窓の Edge）では、ボタンが出た
+// 時点で 27 件、そのあとオンラインのぶんが届いて **326 件**まで増える。ローカルの
+// 日本語 4 件（Ayumi / Haruka / Ichiro / Sayaka）も最初の 1.5 秒には入っていない。
+//
+// **ローカルを優先するが、オンラインのものも選べば使える。**
+// `localService === false` の音声は**ブラウザが提供元のサーバで合成する**ので、
+// 読ませた本文がそこへ出ていく。だから既定では選ばず、人が選んだときだけ使う
+// （AI に Gemini を選んだときと同じ扱い。一度選べば次からは覚えている）。
+// 落として一覧から消すと、ローカル音声の無い環境で読み上げが使えなくなる。
 
 const VOICE_KEY = "glosspop.voice";
 const RATE_KEY = "glosspop.rate";
@@ -65,26 +75,20 @@ export function available() {
   return typeof window !== "undefined" && "speechSynthesis" in window;
 }
 
-/** 日本語を先に、ローカル音声だけを返す。voices は非同期で埋まる。 */
-function loadVoices() {
-  return new Promise((resolve) => {
-    const pick = () => {
-      const all = speechSynthesis.getVoices().filter((v) => v.localService !== false);
-      if (!all.length) return null;
-      const ja = all.filter((v) => v.lang.toLowerCase().startsWith("ja"));
-      return [...ja, ...all.filter((v) => !ja.includes(v))];
-    };
-    const first = pick();
-    if (first) return resolve(first);
-    // 初回はまだ空。voiceschanged を待つ (来ないブラウザもあるので時間で諦める)
-    const done = () => {
-      speechSynthesis.removeEventListener("voiceschanged", done);
-      clearTimeout(timer);
-      resolve(pick() || []);
-    };
-    const timer = setTimeout(done, 1500);
-    speechSynthesis.addEventListener("voiceschanged", done);
-  });
+/**
+ * 並べ替えの優先順。**ローカルが先、その中で日本語が先。**
+ *
+ * オンラインのものも落とさずに後ろへ置く（落とすと、この環境では一覧が空になる）。
+ * 先頭が既定に選ばれるので、この順序がそのまま「黙って外へ出さない」になる。
+ * `sort` は安定なので、同じ点数のものは元の順（＝ブラウザの並び）のまま。
+ */
+function voiceScore(v) {
+  return (v.localService === false ? 2 : 0) + (v.lang.toLowerCase().startsWith("ja") ? 0 : 1);
+}
+
+/** いま取れる音声を並べて返す。初回はまだ空のことがある。 */
+function listVoices() {
+  return [...speechSynthesis.getVoices()].sort((a, b) => voiceScore(a) - voiceScore(b));
 }
 
 function remember(key, value) {
@@ -144,6 +148,24 @@ export function createReader({ root, onState = () => {} }) {
     voiceName: voice?.name || "",
   });
   const notify = () => onState(state());
+
+  /**
+   * 一覧を読み直し、選ぶものを決め直す。
+   *
+   * **人が選んだものは動かさない**（名前で照合する —— 読み直すと別のオブジェクトに
+   * なることがある）。決まっていないときの既定は**ローカルの音声だけ**で、
+   * オンラインのものへは落とさない。選んだ瞬間ではなく**押した瞬間に本文が
+   * 提供元へ出る**ので、`voices[0]` に落とすと選んだ覚えのないまま送られる。
+   */
+  function refreshVoices() {
+    voices = listVoices();
+    const wanted = recall(VOICE_KEY, "");
+    voice = (voice && voices.find((v) => v.name === voice.name))
+      || voices.find((v) => v.name === wanted)
+      || voices.find((v) => v.localService !== false)
+      || null;
+    notify();
+  }
 
   function clearMark() {
     for (const node of root.querySelectorAll(".speaking")) node.classList.remove("speaking");
@@ -215,11 +237,17 @@ export function createReader({ root, onState = () => {} }) {
   }
 
   return {
-    async prepare() {
-      voices = await loadVoices();
-      const wanted = recall(VOICE_KEY, "");
-      voice = voices.find((v) => v.name === wanted) || voices[0] || null;
-      notify();
+    /**
+     * 音声の一覧を読み込み、**以後も変わるたびに読み直す**ようにする。
+     *
+     * **一度きりにしないこと。** 以前は 1.5 秒だけ待って諦めていたので、
+     * 間に合わなかった環境では**以後ずっと 0 件**のままだった（実測は冒頭の項）。
+     * あとから届いたぶんで画面が直る形にしておくこと —— `voiceschanged` は
+     * 一覧が増えるたびに来るので、ローカルの音声だけ先に届く順序にも耐える。
+     */
+    prepare() {
+      refreshVoices();
+      speechSynthesis.addEventListener("voiceschanged", refreshVoices);
       return voices;
     },
 
@@ -231,13 +259,22 @@ export function createReader({ root, onState = () => {} }) {
       notify();
     },
 
-    /** `from` に要素を渡すと、そのブロックから読み始める。 */
+    /**
+     * `from` に要素を渡すと、そのブロックから読み始める。
+     *
+     * **始められた場合は `null`**、駄目なら理由（`"voice"` / `"empty"`）を返す。
+     * 真偽値にしないのは、呼ぶ側が理由ごとに違う案内を出すため。
+     */
     start(from = null) {
+      // **音声を選んでいないうちは喋らない。** `utter.voice` を空のままにすると
+      // ブラウザの既定が使われ、この環境ではそれがオンラインの音声になる
+      // ＝ 選ばせたつもりで本文が外へ出る
+      if (!voice && voices.length) return "voice";
       blocks = collectBlocks(root);
-      if (!blocks.length) return false;
+      if (!blocks.length) return "empty";
       const at = from ? blocks.indexOf(from.closest(BLOCKS)) : -1;
       speakAt(at >= 0 ? at : 0);
-      return true;
+      return null;
     },
 
     toggle() {
@@ -265,7 +302,11 @@ export function createReader({ root, onState = () => {} }) {
     },
 
     setVoice(name) {
-      voice = voices.find((v) => v.name === name) || voice;
+      // 「音声を選ぶ…」（空）が選ばれることがある。**それは選択ではない**ので
+      // 覚えない —— 覚えると、次に開いたとき空を「指定済み」として探しに行く
+      const found = voices.find((v) => v.name === name);
+      if (!found) return notify();
+      voice = found;
       remember(VOICE_KEY, name);
       if (playing) speakAt(index);
       else notify();

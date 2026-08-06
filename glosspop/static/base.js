@@ -80,6 +80,39 @@ export function applyTheme(value) {
   return theme;
 }
 
+// 文字の大きさ。**キー名も値も各 HTML の head にあるインライン script と同じもの**
+// （テーマと同じ形）。あちらは描画前に当てるためだけで、ここが本体。
+//
+// **周りの px を直して回らないこと。** 大きさの正は style.css の `--fs-base` 1 つで、
+// ほかの字はそこから比で作ってある。ここが決めるのはどの base を当てるかだけ。
+export const FONT_KEY = "glosspop.fontSize";
+export const FONT_SIZES = ["small", "medium", "large", "xlarge"];
+
+/** いまの設定。既定は ``medium``（＝これまでと同じ大きさ）。 */
+export function currentFontSize() {
+  try {
+    const value = localStorage.getItem(FONT_KEY);
+    if (FONT_SIZES.includes(value)) return value;
+  } catch {
+    /* 読めなければ既定の大きさ */
+  }
+  return "medium";
+}
+
+/** 大きさを当てて記憶する。``medium`` なら属性を外す（テーマの ``system`` と同じ）。 */
+export function applyFontSize(value) {
+  const size = FONT_SIZES.includes(value) ? value : "medium";
+  if (size === "medium") delete document.documentElement.dataset.fontsize;
+  else document.documentElement.dataset.fontsize = size;
+  try {
+    if (size === "medium") localStorage.removeItem(FONT_KEY);
+    else localStorage.setItem(FONT_KEY, size);
+  } catch {
+    /* 保存できなくてもその画面では効く */
+  }
+  return size;
+}
+
 // ------------------------------------------------------------- 表示オプション
 //
 // 本文の見せ方の設定。**設定ダイアログに置いてあるが、効くのはビューアの本文。**

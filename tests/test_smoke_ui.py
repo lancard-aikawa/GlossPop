@@ -938,6 +938,53 @@ def test_the_viewer_opens_a_graph_of_just_this_document(page, server, seeded):
     assert "辞書全体" in page.locator("#scopeNote").inner_text()
 
 
+def test_the_read_aloud_button_matches_what_the_browser_offers(page, server, seeded):
+    """読み上げ。**音声が 0 件ならボタンごと出さず、あるなら押せる。**
+
+    以前はボタンを出しておいて、押してから「この環境には読み上げに使える音声が
+    ありません」と断っていた（できないことを毎回試させていた）。
+
+    **環境を前提にしない。** 手元の Chrome に音声があるかは PC によって違い、
+    playwright の起動では `--disable-background-networking` が効いてオンラインの
+    音声一覧すら来ない（実測: 本物の起動なら 23 件、playwright 経由だと 0 件）。
+    そこで「ブラウザが何件返すか」をその場で数え、**ボタンの出方がそれと
+    合っているか**だけを見る —— これならどちらの環境でも意味を持つ。
+    """
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+
+    # 一覧は非同期に埋まる。speech.js と同じだけ待ってから数える
+    counts = page.evaluate("""() => new Promise((resolve) => {
+      const dump = () => {
+        const all = speechSynthesis.getVoices();
+        return {all: all.length, local: all.filter((v) => v.localService !== false).length};
+      };
+      if (dump().all) return resolve(dump());
+      setTimeout(() => resolve(dump()), 2000);
+      speechSynthesis.addEventListener("voiceschanged", () => resolve(dump()), {once: true});
+    })""")
+    speak = page.locator("#speak")
+    placeholder = page.locator("#speakVoice option[value='']")
+
+    if not counts["all"]:
+        assert speak.is_hidden(), "音声が 1 つも無いのに読み上げボタンが出ている"
+        return
+
+    speak.wait_for(state="visible", timeout=SETTLE_MS)
+    if counts["local"]:
+        # ローカルの音声があるなら、それが既定に選ばれている（今までどおり押せば喋る）。
+        # **ここでは押さない** —— 通ったマシンで実際に音が出るのは行儀が悪い
+        assert placeholder.count() == 0, "ローカルの音声があるのに選ばれていない"
+        return
+
+    # オンラインの音声しかない環境。**押しても喋らず、選ばせる。**
+    # 既定に任せると本文がその提供元へ送られる
+    speak.click()
+    page.locator("#speechBar").wait_for(state="visible", timeout=SETTLE_MS)
+    assert placeholder.count() == 1, "選ばれていない状態が一覧に出ていない"
+    assert "🌐" in (page.locator("#speakVoice").text_content() or ""), "オンラインの印が無い"
+
+
 def test_the_viewer_comes_back_to_what_you_were_reading(page, server, seeded):
     """寄り道して戻っても、開いていた本文が消えないこと。
 
@@ -1894,6 +1941,51 @@ _READ_VARS = """() => {
 
 def read_theme_vars(page):
     return page.evaluate(_READ_VARS % THEME_VARS)
+
+
+def font_px(page, selector):
+    """描かれている文字の大きさ（px）。計算後の値なので calc も比も解決済み。"""
+    return page.evaluate(
+        "(sel) => parseFloat(getComputedStyle(document.querySelector(sel)).fontSize)",
+        selector,
+    )
+
+
+def test_the_font_size_setting_grows_everything_and_survives_a_reload(page, server, isolated_dirs):
+    """文字の大きさ。**選んだ瞬間に効き、開き直しても残る。**
+
+    大きさの正は style.css の ``--fs-base`` 1 つで、ほかの字はそこから比で作って
+    ある。**周りの px を直して回る形に戻すと、直し漏れた 1 か所だけが小さいまま
+    残る** —— そこは画面を開くまで分からない。だから本文だけでなく、比で付いて
+    くる側（topbar の小さい字）も一緒に大きくなることを見る。
+
+    開き直しの側を担当しているのは head のインライン script で、**5 つの HTML に
+    同じ写しがある**。1 つ直し忘れると、そのページだけ設定が効かない。
+    """
+    page.goto(f"{server}/glossary")
+    wait_for_glossary(page)
+    small_body = font_px(page, "body")
+    small_meta = font_px(page, ".topbar .meta")
+
+    page.click("#settings")
+    page.locator("dialog.sheet[open] [data-ref='fontSize']").wait_for(timeout=SETTLE_MS)
+    page.select_option("dialog.sheet[open] [data-ref='fontSize']", "xlarge")
+    page.wait_for_function("document.documentElement.dataset.fontsize === 'xlarge'", timeout=5000)
+
+    assert font_px(page, "body") > small_body
+    assert font_px(page, ".topbar .meta") > small_meta, "基準に付いてこない字が残っている"
+
+    # 描画の前に当たること（あとから当てると一度小さい字で描いてから飛ぶ）
+    page.goto(f"{server}/")
+    assert page.evaluate("document.documentElement.dataset.fontsize") == "xlarge"
+    assert font_px(page, "body") > small_body
+
+    # 既定に戻すと属性ごと外れる（テーマの system と同じ扱い）
+    page.click("#settings")
+    page.locator("dialog.sheet[open] [data-ref='fontSize']").wait_for(timeout=SETTLE_MS)
+    page.select_option("dialog.sheet[open] [data-ref='fontSize']", "medium")
+    page.wait_for_function("!document.documentElement.dataset.fontsize", timeout=5000)
+    assert font_px(page, "body") == small_body
 
 
 def test_the_theme_can_be_switched_and_survives_a_reload(page, server, isolated_dirs):

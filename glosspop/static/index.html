@@ -6,12 +6,16 @@
 <title>GlossPop — ビューア</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <script>
-// 描画の前にテーマを当てる。あとから当てると、暗いテーマのとき一瞬白く光る。
-// キー名は base.js の THEME_KEY と同じ
+// 描画の前にテーマと文字の大きさを当てる。あとから当てると、暗いテーマのとき
+// 一瞬白く光り、大きさを変えていると一度小さい字で描いてから飛ぶ。
+// キー名と値は base.js の THEME_KEY / FONT_KEY と同じ（**5 つの HTML に同じ写しが
+// ある。片方だけ直すと、そのページだけ設定が効かない**）
 try {
   const t = localStorage.getItem("glosspop.theme");
   if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
-} catch (e) { /* 読めなければ OS の設定に従う */ }
+  const f = localStorage.getItem("glosspop.fontSize");
+  if (f === "small" || f === "large" || f === "xlarge") document.documentElement.dataset.fontsize = f;
+} catch (e) { /* 読めなければ OS の設定と既定の大きさに従う */ }
 </script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -127,6 +131,9 @@ try {
         <button type="button" id="speakNext" title="次の段落">▶▶</button>
         <button type="button" id="speakStop" title="読み上げをやめる">■</button>
         <select id="speakVoice" class="auto-width" aria-label="音声"></select>
+        <!-- 🌐 の音声はブラウザが提供元のサーバで合成する＝**本文がそこへ送られる**。
+             選ばれているときは黙らずに書く（外へ出るものは画面に出す） -->
+        <span class="hint" id="speakPrivacy" hidden>🌐 は本文が提供元へ送られます</span>
         <select id="speakRate" class="auto-width" aria-label="速さ">
           <option value="0.8">0.8x</option>
           <option value="1" selected>1.0x</option>

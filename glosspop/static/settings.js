@@ -8,7 +8,9 @@
 // アプリを丸ごと入れ替えたときに設定ごと消えて意味が無い。
 import {
   api,
+  applyFontSize,
   applyTheme,
+  currentFontSize,
   currentTheme,
   el,
   firstOnly,
@@ -151,6 +153,21 @@ function build() {
               <option value="dark">ダーク</option>
             </select>
           </div>
+          <!-- 大きさは 1 つだけ選ばせる。ここが style.css の基準 (fs-base) を決め、
+               注記も見出しも同じ比で付いてくる（**周りの px は触らない**）。
+               バッククォートを書かないこと -- ここは JS のテンプレート文字列の中 -->
+
+          <div class="setting-row setting-row-plain">
+            <label class="field-inline" for="gp-fontsize">文字の大きさ</label>
+            <select id="gp-fontsize" class="auto-width" data-ref="fontSize">
+              <option value="small">小</option>
+              <option value="medium">中（既定）</option>
+              <option value="large">大</option>
+              <option value="xlarge">特大</option>
+            </select>
+          </div>
+          <p class="hint">本文も画面の文字もまとめて変わります。相関図の図の中だけは
+            配置の計算に関わるので変わりません（図は拡大縮小で大きくできます）。</p>
           <!-- 本文の見せ方。**効くのはビューアだが置き場所はここ** ——
                サイドバーは「何を読むか」を選ぶ場所で、読み方の設定はここに集める -->
           <label class="check">
@@ -451,6 +468,7 @@ export async function openSettingsDialog() {
   styleEditor?.resetScope();              // 効いているほうを毎回先に見せる
   // ローカルの設定なので待たずに出せる
   refs.theme.value = currentTheme();
+  refs.fontSize.value = currentFontSize();
   refs.firstOnly.checked = firstOnly();
   setStatus(refs.status, "読み込み中", "busy");
   dialog.showModal();
@@ -460,8 +478,10 @@ export async function openSettingsDialog() {
   // 何も起きなかった）。extract.js の close を取り逃がした件と同じ形
   let info = null;
 
-  // テーマは押した瞬間に効かせる（保存ボタンは保存先だけの話）
+  // テーマと文字の大きさは選んだ瞬間に効かせる（保存ボタンは保存先だけの話）。
+  // ⚙ はビューアの上に重なって開くので、下の本文がその場で変わるのが見える
   const onTheme = () => applyTheme(refs.theme.value);
+  const onFontSize = () => applyFontSize(refs.fontSize.value);
 
   const onMode = () => syncMode();
 
@@ -885,6 +905,7 @@ export async function openSettingsDialog() {
   refs.modeApp.addEventListener("change", onMode);
   refs.modeCustom.addEventListener("change", onMode);
   refs.theme.addEventListener("change", onTheme);
+  refs.fontSize.addEventListener("change", onFontSize);
   refs.export.addEventListener("click", onExport);
   refs.exportScope.addEventListener("change", onExportScope);
   refs.importPick.addEventListener("click", onImportPick);
@@ -961,6 +982,7 @@ export async function openSettingsDialog() {
         refs.modeApp.removeEventListener("change", onMode);
         refs.modeCustom.removeEventListener("change", onMode);
         refs.theme.removeEventListener("change", onTheme);
+        refs.fontSize.removeEventListener("change", onFontSize);
         refs.export.removeEventListener("click", onExport);
         refs.exportScope.removeEventListener("change", onExportScope);
         refs.importPick.removeEventListener("click", onImportPick);

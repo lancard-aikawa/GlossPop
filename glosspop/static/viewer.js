@@ -420,40 +420,64 @@ const reader = speechAvailable()
   ? createReader({ root: doc, onState: paintSpeech })
   : null;
 
+/** 音声を選んでもらっている最中か。**読んでいなくても操作列を出す**ための印。 */
+let pickingVoice = false;
+
 function paintSpeech(state) {
   const bar = $("speechBar");
-  bar.hidden = !state.playing;
-  $("speak").hidden = state.playing;
+  // 選ぶ場所（音声の一覧）は操作列の中にしかないので、選ばせる間も出す
+  bar.hidden = !state.playing && !pickingVoice;
+  // 音声が 1 つも無い環境では読み上げられない。**ボタンごと出さない** ——
+  // 出しておいて押されてから断ると、できないことを毎回試させることになる
+  $("speak").hidden = state.playing || !state.voices.length;
   $("speakToggle").textContent = state.paused ? "▶" : "⏸";
   $("speakToggle").title = state.paused ? "再開" : "一時停止";
   $("speakWhere").textContent = state.total
     ? `${Math.min(state.index + 1, state.total)} / ${state.total} 段落`
     : "";
   const voice = $("speakVoice");
-  // 音声の一覧は一度だけ作る (毎回作ると選択中のものが飛ぶ)
-  if (voice.options.length !== state.voices.length) {
+  // まだ選んでいないときだけ先頭に「選ぶ」を挟む。**選ばれていない状態を
+  // 一覧の先頭のもので表さない** —— 選んだように見えて、押すと外へ出る
+  const wanted = state.voices.length + (state.voiceName ? 0 : 1);
+  // 音声の一覧は要るときだけ作り直す (毎回作ると選択中のものが飛ぶ)
+  if (voice.options.length !== wanted) {
     voice.replaceChildren(
-      ...state.voices.map((v) => el("option", { value: v.name, text: `${v.name} (${v.lang})` }))
+      ...(state.voiceName ? [] : [el("option", { value: "", text: "音声を選ぶ…" })]),
+      ...state.voices.map((v) => el("option", {
+        value: v.name,
+        // 🌐 = オンライン。合成は提供元のサーバでされる（本文がそこへ出る）
+        text: `${v.localService === false ? "🌐 " : ""}${v.name} (${v.lang})`,
+      }))
     );
   }
-  if (state.voiceName) voice.value = state.voiceName;
+  voice.value = state.voiceName;
+  const chosen = state.voices.find((v) => v.name === state.voiceName);
+  $("speakPrivacy").hidden = !chosen || chosen.localService !== false;
   $("speakRate").value = String(state.rate);
 }
 
 if (reader) {
-  reader.prepare().then((voices) => {
-    // 音声が 1 つも無い環境では読み上げられないので出さない
-    if (!voices.length) $("speak").dataset.unsupported = "1";
-  });
+  reader.prepare();
   $("speak").addEventListener("click", () => {
-    if ($("speak").dataset.unsupported) {
-      note("この環境には読み上げに使える音声がありません。", "error");
+    const why = reader.start();
+    if (why === "voice") {
+      // 一覧を出してから断る。**どこで選ぶのかが画面に無いまま断らない**
+      pickingVoice = true;
+      paintSpeech(reader.state());
+      $("speakVoice").focus();
+      note("使う音声を選んでから、もう一度押してください。"
+           + "🌐 の音声は提供元のサーバで合成されるので、本文がそこへ送られます。", "error");
       return;
     }
-    if (!reader.start()) note("読み上げる本文がありません。", "error");
+    if (why === "empty") return note("読み上げる本文がありません。", "error");
+    pickingVoice = false;
   });
   $("speakToggle").addEventListener("click", () => reader.toggle());
-  $("speakStop").addEventListener("click", () => reader.stop());
+  // ■ は「選ぶのをやめる」道でもある（選ばせている間も操作列が出ているので）
+  $("speakStop").addEventListener("click", () => {
+    pickingVoice = false;
+    reader.stop();
+  });
   $("speakPrev").addEventListener("click", () => reader.step(-1));
   $("speakNext").addEventListener("click", () => reader.step(1));
   $("speakVoice").addEventListener("change", (ev) => reader.setVoice(ev.target.value));
