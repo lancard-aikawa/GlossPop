@@ -14,8 +14,9 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel
 
-from . import categories, config, render
-from .models import (
+from . import categories, config
+from .core import render
+from .core.models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
     SCOPES,

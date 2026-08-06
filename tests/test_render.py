@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from glosspop.render import (
+from glosspop.core.render import (
     definition_to_html,
     html_title,
     md_to_html,

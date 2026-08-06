@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from glosspop import doctor, store
-from glosspop.models import EntryDraft
+from glosspop import store
+from glosspop.core import doctor
+from glosspop.core.models import EntryDraft
 
 
 def kinds(report: dict) -> list[str]:

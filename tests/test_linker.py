@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from glosspop.linker import Linker
-from glosspop.models import Entry
+from glosspop.core.linker import Linker
+from glosspop.core.models import Entry
 
 
 def mk(term: str, *, aliases: list[str] | None = None, category: str = "テスト", slug: str | None = None) -> Entry:
@@ -291,8 +291,8 @@ class TestDuplicateTerms:
 
 def test_term_split_by_ruby_still_links():
     """青空文庫 / epub のルビ。<ruby><rb>銀河</rb></ruby>鉄道 で 1 語として繋がること。"""
-    from glosspop.linker import Linker
-    from glosspop.models import Entry
+    from glosspop.core.linker import Linker
+    from glosspop.core.models import Entry
 
     linker = Linker([Entry(term="銀河鉄道", category="作品", slug="銀河鉄道")])
     html, hits = linker.annotate("<p><ruby><rb>銀河</rb></ruby>鉄道に乗った。</p>")
@@ -312,7 +312,7 @@ def _flat(variants):
     """比較用の素朴版。長い表記を先に並べるだけ。"""
     import re as _re
 
-    from glosspop.linker import _pattern_for
+    from glosspop.core.linker import _pattern_for
 
     ordered = sorted(variants, key=len, reverse=True)
     return _re.compile("|".join(_pattern_for(v) for v in ordered), _re.IGNORECASE)
@@ -343,7 +343,7 @@ _TEXTS = [
 
 
 def test_the_trie_matches_exactly_what_the_flat_pattern_matches():
-    from glosspop.linker import _compile, _variants
+    from glosspop.core.linker import _compile, _variants
 
     variants = []
     for surface in _SURFACES:
@@ -359,7 +359,7 @@ def test_the_trie_matches_exactly_what_the_flat_pattern_matches():
 
 def test_the_trie_matches_the_flat_pattern_on_generated_surfaces():
     """**共通の先頭が多い集合**が木の効きどころ。そこでずれないこと。"""
-    from glosspop.linker import _compile, _variants
+    from glosspop.core.linker import _compile, _variants
 
     surfaces = [f"用語{i:03d}" for i in range(200)]
     surfaces += [f"用語{i:03d}の続き" for i in range(0, 200, 7)]

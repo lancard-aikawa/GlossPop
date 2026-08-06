@@ -19,8 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from glosspop import config, documents, doctor, relations, store
-from glosspop.linker import Linker
+from glosspop import config, store
+from glosspop.core import documents, doctor, relations
+from glosspop.core.linker import Linker
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 

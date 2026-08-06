@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from glosspop import config, sites, store
 from glosspop.app import app
-from glosspop.models import EntryDraft
+from glosspop.core.models import EntryDraft
 
 
 @pytest.fixture

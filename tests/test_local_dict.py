@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from glosspop import config, store
 from glosspop.app import app
-from glosspop.models import CategoryNameError, EntryDraft, make_ref, split_ref
+from glosspop.core.models import CategoryNameError, EntryDraft, make_ref, split_ref
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ class TestRef:
 
     def test_a_category_cannot_collide_with_the_prefix(self):
         # ".local" というカテゴリは作れないので ref は曖昧にならない
-        from glosspop.models import normalize_category
+        from glosspop.core.models import normalize_category
 
         with pytest.raises(CategoryNameError):
             normalize_category(".local")

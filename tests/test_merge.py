@@ -13,9 +13,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from glosspop import merge, relations, store
+from glosspop import merge, store
+from glosspop.core import relations
 from glosspop.app import app
-from glosspop.models import EntryDraft
+from glosspop.core.models import EntryDraft
 
 
 @pytest.fixture

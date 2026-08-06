@@ -49,6 +49,26 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen |
 1 つにまとめる操作、`ai` が Claude CLI 呼び出し。
 `app.py` はこれらを繋ぐだけで、ロジックを持たない。
 
+### `glosspop/core/` は「どのマシンか」を知らない
+
+`models` `htmlclean` `render` `linker` `relations` `documents` `timeline` `doctor`
+の 8 つは `glosspop/core/` にある。**入力から出力を作るだけ**で、辞書の置き場所
+(`store`)・開いているフォルダ・設定ファイル (`config`) を一切知らない。
+
+**この層だけが GlossPopApp（携帯・共有版）と共有される**（→ docs/design-notes.md）。
+共有するものが 2 か所に分かれると、片方で直してもう片方で直し忘れて**同じ辞書なのに
+違う語がリンクになる** —— 画面を見ても分からない壊れ方をする。
+
+**`core` から `config` と `store` を import しないこと。**
+`tests/test_core_boundary.py` が見張っている（相対 import・絶対 import・
+import 時の副作用の 3 方向）。**人が気を付ける形にすると必ず越える** ——
+「ついでに開いているフォルダを見たい」は毎回出てくるので、そのたびに**呼ぶ側から
+引数で渡す**こと（`timeline.py` が `Linker` と `Document` を引数で受けているのが
+その形）。逆向き（`core` の外から `core` を使う）は自由。
+
+**物理的に別パッケージへ分けていない**のは、リリースの結合を増やす理由がまだ
+無いから。GlossPopApp が実際に動き出すまではこのまま。
+
 ### 壊しやすい不変条件
 
 **ディレクトリ名とファイル名が正。** エントリは `<辞書ルート>/<カテゴリ>/<slug>.md`。

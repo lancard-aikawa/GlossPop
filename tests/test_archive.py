@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from glosspop import archive, categories, config, store
-from glosspop.models import EntryDraft
+from glosspop.core.models import EntryDraft
 
 
 def _zip(files: dict[str, str]) -> bytes:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from glosspop.htmlclean import clean_html
+from glosspop.core.htmlclean import clean_html
 
 BASE = "https://example.com/docs/page.html"
 
@@ -156,7 +156,7 @@ def test_void_elements_in_drop_trees_do_not_eat_the_rest():
 
 @pytest.mark.parametrize("void", ["input", "embed", "frame", "source", "track"])
 def test_every_void_element_in_drop_trees_is_known(void):
-    from glosspop.htmlclean import DROP_TREES, VOID_TAGS
+    from glosspop.core.htmlclean import DROP_TREES, VOID_TAGS
 
     # DROP_TREES 側に void 要素を足すときは VOID_TAGS にも足すこと
     if void in DROP_TREES:

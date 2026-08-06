@@ -11,10 +11,10 @@
 
 from __future__ import annotations
 
-from glosspop import timeline
-from glosspop.documents import Document
-from glosspop.linker import Linker
-from glosspop.models import Entry
+from glosspop.core import timeline
+from glosspop.core.documents import Document
+from glosspop.core.linker import Linker
+from glosspop.core.models import Entry
 
 
 def entry(term: str, *, slug: str = "", aliases: list[str] | None = None) -> Entry:
@@ -123,7 +123,7 @@ class TestNothingIsStored:
 
     def test_the_answer_follows_the_text(self, tmp_path):
         """本文を直せば次に読んだときの位置が変わる（保存していない証拠）。"""
-        from glosspop import documents
+        from glosspop.core import documents
 
         path = tmp_path / "章.txt"
         path.write_text("太郎だけの場面。\n\n花子が現れた。\n", encoding="utf-8")

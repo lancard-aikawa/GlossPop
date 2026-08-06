@@ -12,8 +12,9 @@ from urllib.parse import unquote, urlsplit
 
 import httpx
 
-from . import config, documents
-from .htmlclean import clean_html
+from . import config
+from .core import documents
+from .core.htmlclean import clean_html
 
 MARKDOWN_SUFFIXES = (".md", ".markdown", ".mdown")
 TEXT_SUFFIXES = (".txt", ".text", ".log", ".rst", ".csv")

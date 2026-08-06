@@ -31,10 +31,10 @@
 
 from __future__ import annotations
 
-from . import relations as rel_mod
+from .core import relations as rel_mod
 from . import store
-from .linker import entry_url
-from .models import Entry, Relation, now_iso
+from .core.linker import entry_url
+from .core.models import Entry, Relation, now_iso
 
 #: 両側にあって食い違うと人に選ばせる項目。**リストは和集合で畳めるので入れない**
 #: （別名・タグ・使用例は「両方入っていて困る」ことがない）

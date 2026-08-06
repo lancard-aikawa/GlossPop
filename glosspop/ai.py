@@ -16,9 +16,10 @@ from pathlib import Path
 
 from anyio import to_thread
 
-from . import config, llm, relations, store
-from .linker import entry_url
-from .models import (
+from . import config, llm, store
+from .core import relations
+from .core.linker import entry_url
+from .core.models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
     SCOPES,

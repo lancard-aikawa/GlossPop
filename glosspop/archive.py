@@ -41,9 +41,10 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from . import categories, config, relations, store
+from . import categories, config, store
+from .core import relations
 from .installer import InstallError, safe_members
-from .models import GLOBAL_SCOPE, CategoryNameError
+from .core.models import GLOBAL_SCOPE, CategoryNameError
 
 #: zip の中の置き場所。展開時もこの名前で探す
 GLOSSARY_PREFIX = "glossary/"

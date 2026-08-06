@@ -18,23 +18,19 @@ from . import (
     archive,
     categories,
     config,
-    doctor,
-    documents,
     fetcher,
     installer,
     llm,
     merge,
     picker,
-    relations,
-    render,
     sites,
     store,
-    timeline,
     updates,
     watchdog,
 )
-from .linker import Linker, entry_url
-from .models import (
+from .core import render, relations, documents, timeline, doctor
+from .core.linker import Linker, entry_url
+from .core.models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
     SCOPES,

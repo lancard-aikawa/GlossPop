@@ -27,7 +27,13 @@ import yaml
 from pydantic import BaseModel, Field
 
 from . import config
-from .models import GLOBAL_SCOPE, LOCAL_SCOPE, SCOPES, CategoryNameError, normalize_category
+from .core.models import (
+    GLOBAL_SCOPE,
+    LOCAL_SCOPE,
+    SCOPES,
+    CategoryNameError,
+    normalize_category,
+)
 
 _lock = threading.RLock()
 #: scope -> (signature, categories)

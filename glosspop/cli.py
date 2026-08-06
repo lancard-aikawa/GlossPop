@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from . import categories, config, merge, store, watchdog
-from .models import (
+from .core.models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
     SCOPES,

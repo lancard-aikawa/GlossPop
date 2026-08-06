@@ -429,7 +429,7 @@ class TestRelationsPrompt:
 
     def test_lists_pairs_that_already_have_a_relation(self, cast):
         from glosspop import store
-        from glosspop.models import EntryDraft
+        from glosspop.core.models import EntryDraft
         giovanni, campanella = cast
         store.save(
             EntryDraft(term=giovanni.term, category=giovanni.category,
@@ -611,7 +611,7 @@ class TestFilterRelations:
 
     def test_drops_a_pair_that_already_has_a_relation(self, cast):
         from glosspop import store
-        from glosspop.models import EntryDraft
+        from glosspop.core.models import EntryDraft
         giovanni, campanella = cast
         store.save(
             EntryDraft(term=giovanni.term, category=giovanni.category,

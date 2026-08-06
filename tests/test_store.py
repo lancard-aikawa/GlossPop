@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from glosspop import categories, config, store
-from glosspop.models import CategoryNameError, EntryDraft, normalize_category, slugify
+from glosspop.core.models import CategoryNameError, EntryDraft, normalize_category, slugify
 
 
 def test_roundtrip_preserves_fields(add_entry):

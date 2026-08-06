@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from glosspop import relations, store
-from glosspop.models import Entry, EntryDraft, Relation
+from glosspop import store
+from glosspop.core import relations
+from glosspop.core.models import Entry, EntryDraft, Relation
 
 
 def rel(**kwargs) -> dict:

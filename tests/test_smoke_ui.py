@@ -24,7 +24,7 @@ import pytest
 sync_api = pytest.importorskip("playwright.sync_api", reason="playwright が入っていません")
 
 from glosspop import config, store, updates  # noqa: E402
-from glosspop.models import EntryDraft  # noqa: E402
+from glosspop.core.models import EntryDraft  # noqa: E402
 
 #: このファイルは丸ごと `smoke`。日常の反復から外せるようにするための印で、
 #: **リリース前 (`check.cmd ci`) は外さない**（外れると JS の壊れが素通りする）。

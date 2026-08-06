@@ -3,7 +3,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from glosspop import categories, config, documents, store, watchdog
+from glosspop import categories, config, store, watchdog
+from glosspop.core import documents
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +89,7 @@ def isolated_dirs(tmp_path, monkeypatch):
 
 @pytest.fixture
 def add_entry():
-    from glosspop.models import EntryDraft
+    from glosspop.core.models import EntryDraft
 
     def _add(term: str, **kwargs):
         kwargs.setdefault("category", "テスト")

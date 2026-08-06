@@ -6,7 +6,7 @@ import zipfile
 
 import pytest
 
-from glosspop import documents
+from glosspop.core import documents
 
 AOZORA = """銀河鉄道の夜
 宮沢賢治
