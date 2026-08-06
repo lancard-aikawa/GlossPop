@@ -11,11 +11,15 @@ import os
 import threading
 from pathlib import Path
 
-import yaml
-from pydantic import BaseModel
 
 from . import categories, config
 from .core import render
+from .core.entryfile import (
+    EntryFileError,
+    dump_markdown,
+    entry_from_file as _entry_from_file,
+    parse_markdown,
+)
 from .core.models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
@@ -30,102 +34,15 @@ from .core.models import (
     split_ref,
 )
 
-#: frontmatter に書き出すキーの順序 (category はディレクトリ名が正なので書かない)
-_FM_KEYS = (
-    "term",
-    "reading",
-    "aliases",
-    "subcategory",
-    "summary",
-    "examples",
-    # 旧 "related" は書き出さない。読み込み時に relations へ畳まれるので、
-    # 次に保存した時点で自動的に移行する (migrate_layout と同じ考え方)
-    "relations",
-    "tags",
-    "source",
-    "first_file",
-    "first_locator",
-    "former_refs",
-    "created_at",
-    "updated_at",
-)
-
 # save() が中で load_all() を呼ぶので再入可能ロックにする
 _lock = threading.RLock()
 _cache: tuple[object, list[Entry]] | None = None
 
-
-class StoreError(Exception):
-    pass
-
-
-# --------------------------------------------------------------------------- #
-# シリアライズ
-# --------------------------------------------------------------------------- #
-
-def parse_markdown(text: str) -> tuple[dict, str]:
-    """frontmatter と本文に分割する。frontmatter が無ければ全体を本文とみなす。"""
-    if not text.startswith("---"):
-        return {}, text.strip()
-    lines = text.splitlines()
-    if lines[0].strip() != "---":
-        return {}, text.strip()
-    for i in range(1, len(lines)):
-        if lines[i].strip() in ("---", "..."):
-            raw = "\n".join(lines[1:i])
-            body = "\n".join(lines[i + 1:]).strip()
-            try:
-                meta = yaml.safe_load(raw) or {}
-            except yaml.YAMLError as exc:
-                raise StoreError(f"frontmatter の YAML が壊れています: {exc}") from exc
-            if not isinstance(meta, dict):
-                raise StoreError("frontmatter がマッピングではありません")
-            return meta, body
-    # 閉じ `---` が無い → 全体を本文扱い
-    return {}, text.strip()
-
-
-def _plain(value: object) -> object:
-    """yaml.safe_dump に渡せる素の値にする。
-
-    ``relations`` は pydantic モデルのリストなので dict に落とし、そのうえで
-    空の項目を落とす（``label: ''`` が全行に並ぶとファイルが読めなくなる）。
-    """
-    if isinstance(value, BaseModel):
-        return {k: v for k, v in value.model_dump().items() if v not in ("", [], None)}
-    if isinstance(value, list):
-        return [_plain(v) for v in value]
-    return value
-
-
-def dump_markdown(entry: Entry) -> str:
-    meta = {}
-    for key in _FM_KEYS:
-        value = getattr(entry, key)
-        # 空文字 / 空リストは書かない (ファイルをノイズで埋めない)
-        if value in ("", [], None):
-            continue
-        meta[key] = _plain(value)
-    front = yaml.safe_dump(
-        meta,
-        allow_unicode=True,
-        sort_keys=False,
-        default_flow_style=False,
-        width=100,
-    ).rstrip()
-    body = entry.definition.strip()
-    return f"---\n{front}\n---\n\n{body}\n"
-
-
-def _entry_from_file(path: Path, scope: str = GLOBAL_SCOPE) -> Entry:
-    meta, body = parse_markdown(path.read_text(encoding="utf-8"))
-    meta = dict(meta)
-    meta["definition"] = body
-    meta["slug"] = path.stem
-    meta["category"] = path.parent.name  # ディレクトリ名が正
-    meta["scope"] = scope                # 置き場所が正 (frontmatter には書かない)
-    meta.setdefault("term", path.stem)
-    return Entry.model_validate(meta)
+#: 辞書まわりの失敗。**`core.entryfile.EntryFileError` の別名**にしてある ——
+#: ファイル形式の解釈は core へ移したので、そこで上がる例外も
+#: `except store.StoreError` で捕まえられないと、frontmatter の壊れが
+#: **500 になって「YAML が壊れています」が読み手に届かなくなる**。
+StoreError = EntryFileError
 
 
 # --------------------------------------------------------------------------- #

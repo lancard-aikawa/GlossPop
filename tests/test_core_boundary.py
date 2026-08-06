@@ -72,6 +72,7 @@ def test_core_has_the_modules_we_expect():
     assert _core_modules() == [
         "doctor",
         "documents",
+        "entryfile",
         "htmlclean",
         "linker",
         "models",
