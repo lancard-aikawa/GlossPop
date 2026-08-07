@@ -1107,6 +1107,7 @@ function draw(graph) {
       onCenter: moveCenter,
       mapName,
       hidden: mapHidden.get(mapName),
+      labels: !mapNoLabels.has(mapName),
       // 絵の縦横比は読み込むまで分からない。届いたら入れ物に合わせ直す
       onResize: () => fitView(),
     })
@@ -1497,6 +1498,12 @@ let mapName = "";
 const MAP_HIDDEN_KEY = "glosspop.graphMapHidden";
 let mapHidden = new Map();
 
+//: 地図で**名前を消した絵**。AI に描かせた地図には地名が焼き込まれているのが
+//: 普通なので、絵ごとに切れるようにする。**消したほうを覚える**（既定は出す側）。
+//: 消しても情報は失われない —— 乗せれば図の下の枠と吹き出しに出る
+const MAP_LABELS_KEY = "glosspop.graphMapNoLabels";
+let mapNoLabels = new Set();
+
 //: URL で語を名指しされたので、覚えている見せ方を押しのけて中心の図で開いたか。
 //: これも黙ってやらない（同じ理由）
 let centeredByUrl = false;
@@ -1544,6 +1551,14 @@ function rememberedHidden() {
   }
 }
 
+function rememberedNoLabels() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(MAP_LABELS_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
 function saveHidden() {
   try {
     const plain = {};
@@ -1586,7 +1601,28 @@ function paintMapLayers(drawn) {
     groups.get(item.category).push(item);
   }
 
-  const parts = [el("span", { class: "hint", text: "地図に出すもの:" })];
+  // **名前を出すかの切り替え。** 絵に地名が焼き込まれていると二重になるので、
+  // 絵ごとに切れるようにする（既定は出す側）
+  const nameBox = el("input", { type: "checkbox" });
+  nameBox.checked = !mapNoLabels.has(mapName);
+  nameBox.addEventListener("change", () => {
+    if (nameBox.checked) mapNoLabels.delete(mapName);
+    else mapNoLabels.add(mapName);
+    try {
+      localStorage.setItem(MAP_LABELS_KEY, JSON.stringify([...mapNoLabels]));
+    } catch {
+      /* 使えない環境でも、その画面では効く */
+    }
+    if (lastGraph) paintGraph(lastGraph);
+  });
+  const parts = [
+    el("label", {
+      class: "check",
+      "data-ref": "mapNames",
+      title: "絵に地名が入っているときは外す（乗せれば名前は出ます）",
+    }, [nameBox, el("span", { text: "名前を出す" })]),
+    el("span", { class: "hint", text: "地図に出すもの:" }),
+  ];
   for (const [category, list] of groups) {
     const refs = list.map((i) => i.ref);
     const allOn = refs.every((r) => !off.has(r));
@@ -1604,7 +1640,8 @@ function paintMapLayers(drawn) {
       const box = el("input", { type: "checkbox" });
       box.checked = !off.has(item.ref);
       box.addEventListener("change", () => toggle([item.ref], box.checked));
-      parts.push(el("label", { class: "check" }, [box, el("span", { text: item.term })]));
+      parts.push(el("label", { class: "check", "data-ref": "mapItem" },
+        [box, el("span", { text: item.term })]));
     }
   }
   mapLayers.replaceChildren(...parts);
@@ -1748,6 +1785,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   syncModeOptions();
   mapName = rememberedMap();
   mapHidden = rememberedHidden();
+  mapNoLabels = rememberedNoLabels();
   mapPick.addEventListener("change", () => {
     mapName = mapPick.value;
     try {

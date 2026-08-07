@@ -11,8 +11,9 @@
 // **出せなかったものは数える。** 座標の無い語、別の絵にいる語、片端が地図に無い関係。
 // `hidden` / `outside` / `undated` と同じ約束で、黙って欠けた図を出さない。
 //
-// **絵には地名が書かれていない。** 名前は辞書が持っているので、焼き込むと二重になり、
-// 改名したときに食い違う。絵は地形だけで、名前はこちらが置く。
+// **絵に地名を書かないのが望ましいが、強制はできない。** 名前は辞書が持っているので
+// 焼き込むと二重になるが、AI に描かせた地図には入っているのが普通 ——
+// **名前を出すかを切れる**ようにしてある（消しても点も線も残り、乗せれば名前は出る）。
 import {
   describeNode, describeRelation, estTextWidth, relationWords, svgEl as svg,
 } from "./base.js";
@@ -97,7 +98,9 @@ const asPoints = (pts) => pts.map((q) => `${q.x},${q.y}`).join(" ");
  */
 export function buildMap(graph, opts = {}) {
   const { nodes, edges, maps = [] } = graph;
-  const { onEdge, onResize, mapName, hidden } = opts;
+  // ``labels`` は**一言の層**の名前で既に使っている（下）ので、受け取り側で
+  // 名前を変える —— 同じ関数の中で 2 つ宣言すると読み込みごと落ちる（実際に踏んだ）
+  const { onEdge, onResize, mapName, hidden, labels: showNames = true } = opts;
 
   // **どの絵を出すかは、出ている語から決める。** いちばん多く点が乗る絵を既定にし、
   // 選ばれているものは必ず注意書きに出す（相関図の範囲と同じ約束）
@@ -246,9 +249,23 @@ export function buildMap(graph, opts = {}) {
     } else {
       body.push(svg("circle", { cx: p.x, cy: p.y, r: DOT_R }));
     }
-    // 名前の板。点だけは丸の下へ逃がす（丸に重ねると点が読めない）
+    // 名前の板。点だけは丸の下へ逃がす（丸に重ねると点が読めない）。
+    // **消せる。** AI に描かせた絵には地名が焼き込まれているのが普通で、
+    // そこへ重ねると二重になる。**消しても情報は失われない** ——
+    // 乗せれば図の下の枠と吹き出しに出る（だから「黙って欠ける」にならない）
     const top = p.kind === "point" ? p.y + DOT_R + 3 : p.y - (FONT + 7) / 2;
     const width = estTextWidth(label, FONT) + 10;
+    const name = !showNames ? [] : [
+      svg("rect", {
+        class: "rel-map-plate",
+        x: p.x - width / 2, y: top, width, height: FONT + 7, rx: 4,
+      }),
+      svg("text", {
+        x: p.x, y: top + (FONT + 7) / 2,
+        "text-anchor": "middle", "dominant-baseline": "central",
+        text: label,
+      }),
+    ];
     const group = svg("g", {
       class: ["rel-node", "rel-map-pin", `rel-map-${p.kind}`, node.missing ? "missing" : ""]
         .filter(Boolean).join(" "),
@@ -256,15 +273,7 @@ export function buildMap(graph, opts = {}) {
     }, [
       svg("a", { href: node.url || `/glossary?q=${encodeURIComponent(term)}` }, [
         ...body,
-        svg("rect", {
-          class: "rel-map-plate",
-          x: p.x - width / 2, y: top, width, height: FONT + 7, rx: 4,
-        }),
-        svg("text", {
-          x: p.x, y: top + (FONT + 7) / 2,
-          "text-anchor": "middle", "dominant-baseline": "central",
-          text: label,
-        }),
+        ...name,
         svg("title", {
           text: [term, node.path_label, node.summary].filter(Boolean).join(" — "),
         }),
@@ -286,6 +295,7 @@ export function buildMap(graph, opts = {}) {
   const note = [
     `「${chosen.name}」の上に ${pos.size} 語を置いています`
     + `（点 ${kinds.point} / 線 ${kinds.path} / 領域 ${kinds.area}）。`,
+    showNames ? "" : "名前は消しています（乗せると出ます）。",
     unchecked ? `チェックを外した ${unchecked} 語は出していません。` : "",
     noCoords ? `座標が書かれていない ${noCoords} 語は出していません。` : "",
     elsewhere ? `別の絵にいる ${elsewhere} 語は出していません。` : "",

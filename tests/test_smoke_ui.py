@@ -650,11 +650,11 @@ def test_the_map_can_hide_shapes_with_checkboxes(page, server, seeded):
     page.locator("svg.rel-map").wait_for(timeout=10000)
     assert page.locator("svg.rel-map .rel-map-pin").count() == 2
 
-    page.uncheck("#mapLayers label:has-text('カムパネルラ') input")
+    page.uncheck("#mapLayers [data-ref=mapItem]:has-text('カムパネルラ') input")
     page.wait_for_timeout(300)
     assert page.locator("svg.rel-map .rel-map-pin").count() == 1
     # **外したものは一覧に残る**（消すと戻せない）
-    assert page.locator("#mapLayers label").count() == 2
+    assert page.locator("#mapLayers [data-ref=mapItem]").count() == 2
     assert "チェックを外した 1 語" in (page.text_content("#legend") or "")
 
     # カテゴリの印でまとめて切り替わる。**半端なときは「全部出す」に倒す**
@@ -674,6 +674,37 @@ def test_the_map_can_hide_shapes_with_checkboxes(page, server, seeded):
     page.click("#mapLayers button.chip")
     page.wait_for_timeout(300)
     assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+
+
+def test_the_map_can_turn_the_names_off(page, server, seeded):
+    """**名前は消せる。** AI に描かせた地図には地名が焼き込まれているのが普通。
+
+    消しても情報は失われない —— 点も線も残り、乗せれば図の下の枠に名前が出る
+    （だから「黙って欠けた図」にはならない）。消していることは凡例にも書く。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-plate").count() == 1
+
+    page.uncheck("#mapLayers [data-ref=mapNames] input")
+    page.wait_for_timeout(300)
+    # 名前だけ消える。点は残る（＝情報を失っていない）
+    assert page.locator("svg.rel-map .rel-map-plate").count() == 0
+    assert page.locator("svg.rel-map .rel-map-point circle").count() == 1
+    assert "名前は消しています" in (page.text_content("#legend") or "")
+
+    page.check("#mapLayers [data-ref=mapNames] input")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-plate").count() == 1
 
 
 def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded):
