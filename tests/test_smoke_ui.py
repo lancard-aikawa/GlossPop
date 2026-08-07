@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import socket
 import threading
 import time
@@ -505,6 +506,473 @@ def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
     # 戻せること。戻したら段の図（サーバへは行き直さない）
     page.select_option("#mode", "layered")
     page.locator("svg.rel-graph:not(.rel-fabric)").wait_for(timeout=10000)
+
+
+#: 地図に使う絵。**寸法を書いておく** —— `map.js` は縦横比が届いてから高さを直すので、
+#: 内在サイズの無い SVG では実際の高さが決まらない
+TEST_MAP = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" '
+    'width="1000" height="500"><rect width="1000" height="500" fill="#dcd8cc"/></svg>'
+)
+
+
+def _put_test_map(name: str = "てすと図") -> None:
+    directory = store.maps_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.svg").write_text(TEST_MAP, encoding="utf-8")
+
+
+def test_the_graph_has_a_map_mode(page, server, seeded):
+    """座標を書いた語を絵の上に置く見せ方。
+
+    **座標が書いてあるものだけが出る**（種別やタグで「どれが地名か」を決めない）。
+    出していないものは必ず数えて凡例に出す —— ここが緩むと、絵に写っていない語を
+    黙って落とした図になる。線を押せば他の見せ方と同じ編集ダイアログが開く。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    # ザネリには座標を書かない —— **数えて凡例に出ること**を見るため
+    store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+    store.save(
+        EntryDraft(
+            term=b.term, category=b.category, summary=b.summary, definition=b.definition,
+            map="てすと図", pin=[0.62, 0.44],
+        ),
+        ref=b.ref,
+    )
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            map="てすと図", pin=[0.24, 0.30],
+            relations=[{"to": b.ref, "label": "並んで歩く"}],
+        ),
+        ref=a.ref,
+    )
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # 形を書いた 2 語だけが出る（ザネリは出ない）
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+    assert page.locator("svg.rel-map .rel-edge-group").count() == 1
+    # 絵は `<image>` の中（CSS の背景にすると viewBox で一緒に動かせない）
+    href = page.get_attribute("svg.rel-map image.rel-map-bg", "href")
+    assert href and href.startswith("/api/map?"), href
+
+    # **出していないものを黙らない。** どの絵かも書く
+    legend = page.text_content("#legend") or ""
+    assert "てすと図" in legend and "1 語" in legend, legend
+
+    # **点は絵の幅を 1 とした比で置かれる**（幅 1000 の絵なので 0.24 → 240）。
+    # 縦横それぞれに 0〜1 を割り当てる形に戻すと、縦横比の違う絵で点が歪む ——
+    # ここは絵の高さ (500) ではなく**幅**で割っていることを見ている
+    spots = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-map .rel-map-pin circle')]"
+        ".map((c) => [Math.round(+c.getAttribute('cx')), Math.round(+c.getAttribute('cy'))])"
+    )
+    assert sorted(map(tuple, spots)) == [(240, 300), (620, 440)], spots
+
+    # 線を押せば同じ編集ダイアログ（見せ方が変わっても直し方は 1 つ）
+    page.click("svg.rel-map .rel-edge-group")
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+    page.keyboard.press("Escape")
+
+
+def test_the_map_draws_points_lines_and_areas(page, server, seeded):
+    """形は 3 つ（点・線・領域）。**重ねる順は 領域 → 線 → 点。**
+
+    領域を後に描くと点を塗りつぶす。3 つとも同じ入れ物に混ぜると、描いた順で
+    見え方が変わる（絵は出るので、画面を見るまで気付けない類）。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition,
+        map="てすと図", line=[[0.1, 0.1], [0.5, 0.2], [0.9, 0.1]],
+    ), ref=b.ref)
+    store.save(EntryDraft(
+        term="ザネリ", category="登場人物", definition="級友。",
+        map="てすと図", area=[[0.1, 0.35], [0.6, 0.35], [0.35, 0.6]],
+    ))
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    assert page.locator("svg.rel-map .rel-map-point circle").count() == 1
+    assert page.locator("svg.rel-map .rel-map-line polyline.rel-map-route").count() == 1
+    assert page.locator("svg.rel-map .rel-map-area polygon").count() == 1
+    # 内訳も凡例に出す（何を出したのかを黙らない）
+    assert "点 1 / 線 1 / 領域 1" in (page.text_content("#legend") or "")
+
+    # **重ねる順**。領域がいちばん下、点がいちばん上
+    order = page.evaluate(
+        "() => [...document.querySelector('svg.rel-map').children]"
+        ".map((g) => g.querySelector('.rel-node')?.classList.contains('rel-map-area') ? 'area'"
+        "  : g.querySelector('.rel-node')?.classList.contains('rel-map-line') ? 'line'"
+        "  : g.querySelector('.rel-node')?.classList.contains('rel-map-point') ? 'point' : '')"
+        ".filter(Boolean)"
+    )
+    assert order == ["area", "line", "point"], order
+
+
+def test_the_map_can_hide_shapes_with_checkboxes(page, server, seeded):
+    """一覧のチェックで、出すものを選べる。
+
+    **外したものも一覧に残す**（消すと戻せない）。**外した数は凡例に出す**
+    （黙って欠けた図を出さない）。カテゴリの印を押すとまとめて切り替わる。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition,
+        map="てすと図", pin=[0.62, 0.44],
+    ), ref=b.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+
+    page.uncheck("#mapLayers [data-ref=mapItem]:has-text('カムパネルラ') input")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 1
+    # **外したものは一覧に残る**（消すと戻せない）
+    assert page.locator("#mapLayers [data-ref=mapItem]").count() == 2
+    assert "チェックを外した 1 語" in (page.text_content("#legend") or "")
+
+    # カテゴリの印でまとめて切り替わる。**半端なときは「全部出す」に倒す**
+    # （迷ったら出す側、が約束。ここを「全部外す」にすると、1 つ外しただけの
+    # つもりで押した人が図を丸ごと失う）
+    page.click("#mapLayers button.chip")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+
+    # 全部出ているときだけ、押すと全部外れる
+    page.click("#mapLayers button.chip")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 0
+    assert "すべてチェックが外れています" in (page.text_content("#legend") or "")
+
+    # 戻せる（外したほうを覚えているので、開き直しても状態は残る）
+    page.click("#mapLayers button.chip")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+
+
+def test_the_map_can_turn_the_names_off(page, server, seeded):
+    """**名前は消せる。** AI に描かせた地図には地名が焼き込まれているのが普通。
+
+    消しても情報は失われない —— 点も線も残り、乗せれば図の下の枠に名前が出る
+    （だから「黙って欠けた図」にはならない）。消していることは凡例にも書く。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-plate").count() == 1
+
+    page.uncheck("#mapLayers [data-ref=mapNames] input")
+    page.wait_for_timeout(300)
+    # 名前だけ消える。点は残る（＝情報を失っていない）
+    assert page.locator("svg.rel-map .rel-map-plate").count() == 0
+    assert page.locator("svg.rel-map .rel-map-point circle").count() == 1
+    assert "名前は消しています" in (page.text_content("#legend") or "")
+
+    page.check("#mapLayers [data-ref=mapNames] input")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-plate").count() == 1
+
+
+def _place_line(term: str, points: list[list[float]]) -> str:
+    """その語を「てすと図」の上に線として置く。ref を返す。"""
+    e = store.find_by_surface(term)[0]
+    store.save(EntryDraft(
+        term=e.term, category=e.category, definition=e.definition,
+        map="てすと図", line=points,
+    ), ref=e.ref)
+    return e.ref
+
+
+def _open_map(page, server):
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+
+
+def test_vertices_can_be_added_and_removed(page, server, seeded):
+    """**頂点を足す / 消す。** 足す口は線分の中点、消す口は乗せたときだけ出る ✕。
+
+    **最小（線は 2 点）を割る削除は断る** —— 通すとサーバ側で形が丸ごと空になり、
+    「1 つ消したら地図から消えた」になる。種別を勝手に落とさないのも同じ理由。
+    """
+    _put_test_map()
+    _place_line("ジョバンニ", [[0.2, 0.3], [0.6, 0.3]])
+
+    _open_map(page, server)
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.locator("svg.rel-map .rel-map-handle").first.wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-handle").count() == 2
+    # 2 点の線には線分が 1 本 ＝ 足す口も 1 つ
+    assert page.locator("svg.rel-map .rel-map-add").count() == 1
+
+    page.click("svg.rel-map .rel-map-add")
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-map .rel-map-handle').length === 3",
+        timeout=10000,
+    )
+
+    # ✕ は乗せるまで出ない（常に出すと、掴もうとして消すことになる）
+    vertex = page.locator("svg.rel-map .rel-map-vertex").first
+    assert not vertex.locator(".rel-map-drop").is_visible()
+    vertex.hover()
+    vertex.locator(".rel-map-drop").click()
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-map .rel-map-handle').length === 2",
+        timeout=10000,
+    )
+
+    # **これ以上は断る**（キーボードからも同じ道を通る）
+    page.locator("svg.rel-map .rel-map-handle").first.focus()
+    page.keyboard.press("Delete")
+    page.locator("#status.error").wait_for(timeout=10000)
+    assert "2 点からです" in (page.text_content("#status") or "")
+    assert page.locator("svg.rel-map .rel-map-handle").count() == 2
+
+
+def test_the_kind_can_be_changed_and_undone(page, server, seeded):
+    """**種別は人が宣言する。** 点 → 線 にすると足りない点が隣に足される
+    （これが画面から線を作る道）。
+
+    保存は即時なので、**戻す道を必ず出す** —— 消した頂点はこれが無いと
+    取り返せない（→ docs/open-questions.md にあった宿題）。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.30, 0.40],
+    ), ref=a.ref)
+
+    _open_map(page, server)
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.locator("#mapLayers [data-ref=mapKind]").first.wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-point circle").count() == 1
+
+    page.select_option("#mapLayers [data-ref=mapKind]", "line")
+    # **`state="attached"` で待つ。** 真横・真縦に並んだ線は**外形の高さ（幅）が 0**
+    # なので、「見えるまで」待つと真横の線で必ずタイムアウトする（`hitBand()` を
+    # 敷いてある理由と同じ話。自動で足す点は斜めに置いてあるが、手で動かせば起きる）
+    page.locator("svg.rel-map .rel-map-line polyline.rel-map-route").wait_for(
+        state="attached", timeout=10000
+    )
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-map .rel-map-handle').length === 2",
+        timeout=10000,
+    )
+    assert store.get(a.ref).line and not store.get(a.ref).pin
+
+    # **戻せる**（何を戻すのかもボタンに書く）
+    undo = page.locator("#mapLayers [data-ref=mapUndo]")
+    undo.wait_for(timeout=10000)
+    assert "ジョバンニ" in (undo.text_content() or "")
+    undo.click()
+    page.locator("svg.rel-map .rel-map-point circle").wait_for(timeout=10000)
+    assert store.get(a.ref).pin == [0.30, 0.40] and not store.get(a.ref).line
+    # 戻したら、戻す先はもう無い
+    assert page.locator("#mapLayers [data-ref=mapUndo]").count() == 0
+
+
+def test_the_entry_page_opens_the_map_at_that_word(page, server, seeded):
+    """用語ページ →「🗺 地図で見る」→ 地図が開き、**その語が光る**。
+
+    座標は用語のファイルに書くのに、**地図はそこから開けなかった**（置く動線も
+    相関図の覆いの中にしかなかった）。`?mode=map` で見せ方まで名指しするので、
+    **覚えている見せ方が段の図の人にも効く** —— 押しのけたことは注意書きに出す。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    link = page.locator("[data-ref=mapLink]")
+    link.wait_for(timeout=15000)
+    link.click()
+
+    page.locator("svg.rel-map").wait_for(timeout=15000)
+    # **その語に目印が付く**（広い絵の隅にあると、開いても自分の語を見失う）
+    lit = page.locator("svg.rel-map .rel-node.lit")
+    lit.wait_for(timeout=10000)
+    assert lit.get_attribute("data-ref") == a.ref
+    # 覚えている見せ方を押しのけたことは黙らない
+    assert "リンクの指定で地図" in (page.text_content("#notes") or "")
+
+
+def test_the_map_folds_names_that_would_overlap(page, server, seeded):
+    """**重なった名前は畳む**（地図は座標が与えられているので逃がす場所が無い）。
+
+    重ねると重なった 2 つとも読めず、下の絵まで隠す。消してはいないので、
+    畳んだ数を注意書きに出し、乗せれば出る。
+    """
+    _put_test_map()
+    for term, spot in (("ジョバンニ", [0.40, 0.30]), ("カムパネルラ", [0.41, 0.30])):
+        e = store.find_by_surface(term)[0]
+        store.save(EntryDraft(
+            term=e.term, category=e.category, definition=e.definition,
+            map="てすと図", pin=spot,
+        ), ref=e.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+
+    # 板は 2 枚とも DOM にある（消していない）が、片方は畳まれている
+    assert page.locator("svg.rel-map .rel-map-plate").count() == 2
+    assert page.locator("svg.rel-map .rel-map-name.tucked").count() == 1
+    assert "重なって置けない名前 1 個" in (page.text_content("#legend") or "")
+
+    # **乗せれば出る**（畳んだものが読めなくなっていないこと）
+    tucked = page.locator("svg.rel-map .rel-node:has(.rel-map-name.tucked)")
+    assert tucked.evaluate(
+        "(node) => { node.classList.add('lit');"
+        " return getComputedStyle(node.querySelector('.rel-map-name')).display; }"
+    ) != "none"
+
+
+def test_a_map_image_can_be_uploaded_and_deleted(page, server, seeded):
+    """絵をブラウザから入れて消せる。
+
+    **絵が 1 枚も無いと段の図に落ちる**ので、そのときも「🖼 絵」は出ていなければ
+    ならない —— 隠すと**最初の 1 枚を入れる道が無くなる**（鶏と卵）。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="あたらしい図", pin=[0.5, 0.4],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    # 絵が無いので段の図に落ちる。**それでもボタンは出ている**
+    page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
+    assert not page.locator("#mapEdit").is_hidden()
+
+    page.click("#mapEdit")
+    page.locator("#mapDialog[open]").wait_for(timeout=10000)
+    page.fill("#mapDialog [data-ref=name]", "あたらしい図")
+    page.set_input_files(
+        "#mapDialog [data-ref=file]",
+        files=[{"name": "m.svg", "mimeType": "image/svg+xml", "buffer": TEST_MAP.encode()}],
+    )
+    page.click("#mapDialog [data-ref=save]")
+    page.locator("#mapDialog .cat-row .map-thumb").first.wait_for(timeout=10000)
+
+    # 閉じると図を取り直し、地図が出せるようになる
+    page.click("#mapDialog [data-ref=close]")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 1
+
+    # 消すと出せなくなる（**辞書は消えない**ので、段の図に落ちるだけ）
+    page.once("dialog", lambda d: d.accept())
+    page.click("#mapEdit")
+    page.locator("#mapDialog[open]").wait_for(timeout=10000)
+    page.click("#mapDialog .cat-row button.ghost")
+    page.locator("#mapDialog .empty").wait_for(timeout=10000)
+    page.click("#mapDialog [data-ref=close]")
+    page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
+    assert len(store.find_by_surface("ジョバンニ")) == 1
+
+
+def test_a_shape_can_be_dragged_and_placed_on_the_map(page, server, seeded):
+    """地図の上で掴んで動かす / 置く。**地図だけの例外**（→ docs/design-notes.md）。
+
+    相関図で「掴んで動かす」を捨てた理由は「座標を書く場所が無い」だったが、
+    地図はまさにその場所を作る図なので、ここでは正当化される。
+    **他の見せ方へ広げないこと。**
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+    # **絵の名前だけ書いて形が無い語 = 置き待ち**（分類ではなく、書いてある意思表示）
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition, map="てすと図",
+    ), ref=b.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    # 閲覧中は掴めない（うっかり動かさない）
+    assert page.locator("svg.rel-map .rel-map-handle").count() == 0
+    assert "置きたいと書いてある語が 1 語" in (page.text_content("#legend") or "")
+
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.locator("svg.rel-map .rel-map-handle").first.wait_for(timeout=10000)
+    handle = page.locator("svg.rel-map .rel-map-handle").first
+    box = handle.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 60, steps=8)
+    page.mouse.up()
+    page.wait_for_timeout(600)
+    moved = store.get(a.ref).pin
+    assert moved != [0.24, 0.30] and len(moved) == 2, moved
+
+    # まだ置いていない語を選び、絵の上を押すと置ける
+    page.click("#mapLayers [data-ref=mapPending]")
+    page.wait_for_timeout(300)
+    stage = page.locator("svg.rel-map").bounding_box()
+    page.mouse.click(stage["x"] + stage["width"] * 0.6, stage["y"] + stage["height"] * 0.5)
+    page.wait_for_timeout(600)
+    assert len(store.get(b.ref).pin) == 2, store.get(b.ref).pin
+
+
+def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded):
+    """座標が 1 つも無ければ段の図に落とすが、**黙って差し替えない。**
+
+    時系列が `?doc=` 無しで選べないときと同じ扱い（注意書きを出し、覚えている
+    選択のほうは書き換えない）。
+    """
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
+    assert "地図に置ける語" in (page.text_content("#notes") or "")
+    assert page.locator("#mode").input_value() == "map"
 
 
 def test_the_graph_explains_what_you_point_at_in_a_fixed_box(page, server, seeded):
@@ -2389,3 +2857,179 @@ def test_the_first_only_option_moved_to_the_settings_and_still_works(page, serve
         "() => document.querySelectorAll('#doc a.gloss-link').length === 1",
         timeout=SETTLE_MS,
     )
+
+
+#: 用語ごとの画像に使う 1x1 の PNG（本物のバイト列。`imagefmt` が中身で見分ける）
+TINY_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000a49444154789c6360000002000100ffff03000006000557bfabd4000000"
+    "0049454e44ae426082"
+)
+
+
+def test_a_term_can_have_its_own_image(page, server, seeded):
+    """用語ページから画像を入れると、**一覧のカードと吹き出しにも出る**。
+
+    **語り手の顔とは別物。** 顔は辞書に 1 枚なので一覧には出さない（同じ絵が
+    並ぶだけ）が、用語ごとの画像は語ごとに違うので見分けに効く。吹き出しでは
+    同じ場所を取り合うので、**その語の画像があればそちらを出す**。
+    """
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    pick = page.locator("[data-ref=imagePick]")
+    pick.wait_for(timeout=15000)
+    # **入れる前でもボタンは出る**（隠すと最初の 1 枚を入れる道が無くなる）
+    assert page.locator(".entry-photo").count() == 0
+
+    page.set_input_files(
+        "[data-ref=imageFile]",
+        files=[{"name": "j.png", "mimeType": "image/png", "buffer": TINY_PNG}],
+    )
+    page.locator(".entry-photo").wait_for(timeout=15000)
+    assert page.locator("[data-ref=imageDrop]").count() == 1
+
+    # 一覧のカードにサムネイルが出る
+    open_glossary(page, server, "?q=ジョバンニ")
+    page.locator(".card .card-thumb").first.wait_for(timeout=15000)
+
+    # 吹き出しでは顔ではなく**その語の画像**が出る
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    link = page.locator("a.gloss-link", has_text="ジョバンニ").first
+    link.wait_for(timeout=15000)
+    link.hover()
+    face = page.locator(".gloss-pop .pop-face.is-term")
+    face.wait_for(timeout=10000)
+    assert "/api/entry-image" in (face.get_attribute("src") or "")
+
+    # 消せる（確認を通す）
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    page.locator("[data-ref=imageDrop]").wait_for(timeout=15000)
+    page.on("dialog", lambda d: d.accept())
+    page.click("[data-ref=imageDrop]")
+    page.locator("[data-ref=imagePick]").wait_for(timeout=15000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('.entry-photo').length === 0", timeout=10000
+    )
+
+
+def test_the_graph_can_be_saved_as_an_image(page, server, seeded):
+    """図を画像として保存できる（**6 つの見せ方すべてで同じ道**）。
+
+    **画面の SVG をそのまま出すと崩れる** —— 見た目は CSS のクラスと変数で
+    決まっていて、外に出た SVG からはどちらも引けない。計算済みの値を焼き込んで
+    いることを、**保存した中身**で確かめる（拡張子だけ見ても分からない）。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        relations=[{"to": b.ref, "label": "級友", "back": "級友"}],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+
+    page.select_option("#saveKind", "svg")
+    with page.expect_download(timeout=20000) as caught:
+        page.click("#saveImage")
+    download = caught.value
+    assert download.suggested_filename.endswith(".svg")
+    assert "登場人物" in download.suggested_filename
+
+    body = pathlib.Path(download.path()).read_text(encoding="utf-8")
+    # **寸法が要る**（外では入れ物が決めてくれない。地図の SVG を弾くのと同じ話）
+    assert "<svg" in body and "width=" in body and "viewBox=" in body
+    # **見た目が焼き込まれている。** クラス名だけ持って出ると素の黒い線になる
+    assert "stroke:" in body and "font-family:" in body
+    # 変数のまま出ていない（外では解決できない）
+    assert "var(--" not in body
+    # 一言も入っている（描いたものがそのまま入る）
+    assert "級友" in body
+
+    # PNG も出せる（貼る用）
+    page.select_option("#saveKind", "png")
+    with page.expect_download(timeout=20000) as caught:
+        page.click("#saveImage")
+    png = caught.value
+    assert png.suggested_filename.endswith(".png")
+    assert pathlib.Path(png.path()).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_saving_a_map_inlines_the_picture(page, server, seeded):
+    """地図を保存すると、**絵まで 1 枚に畳まれる**。
+
+    `/api/map?...` のままでは**こちらのサーバが動いていないと絵が出ない**
+    （渡した相手には絶対に出ない）ので、保存する意味が半分になる。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+
+    _open_map(page, server)
+    page.select_option("#saveKind", "svg")
+    with page.expect_download(timeout=20000) as caught:
+        page.click("#saveImage")
+    body = pathlib.Path(caught.value.path()).read_text(encoding="utf-8")
+
+    assert "/api/map" not in body            # 外を指したままにしない
+    assert "data:image/svg+xml;base64," in body or "data:image/" in body
+
+
+def test_the_graph_can_show_only_what_has_been_read(page, server, seeded):
+    """**ここまで読んだぶんだけ**（ビューアで読んでいるときだけ出る）。
+
+    単位を揃えない —— 読書位置はブロックの添字、サーバの位置は文字位置なので、
+    換算せず**本文のリンクそのもの**で「出てきた語」を決める（→ reading.js）。
+    伏せた数は必ず注意書きに出す。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        relations=[{"to": b.ref, "label": "級友"}],
+    ), ref=a.ref)
+    # 2 人が別の段落に出てくる本文にする（先頭だけ読んだ状態を作れるように）
+    doc = config.content_dir() / "銀河.md"
+    doc.write_text(
+        "# 午后の授業\n\n" + "ジョバンニは活版所で働いていた。\n\n"
+        + "\n\n".join(f"それから何日も過ぎた。{i}" for i in range(40))
+        + "\n\nカムパネルラは黙っていた。\n",
+        encoding="utf-8",
+    )
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=15000)
+    page.click("#docGraph")
+    page.locator(".overlay svg.rel-graph").wait_for(timeout=15000)
+
+    box = page.locator("#readSoFarBox")
+    box.wait_for(timeout=10000)
+    assert not box.is_hidden()          # ビューアの上に重ねているので出る
+
+    page.check("#readSoFar")
+    page.wait_for_function(
+        "() => (document.querySelector('#notes')?.textContent || '')"
+        ".includes('いま読んでいるところまで')",
+        timeout=10000,
+    )
+    notes = page.text_content("#notes") or ""
+    # 先頭しか読んでいないので、カムパネルラはまだ出ていない
+    assert "1 語だけを出しています" in notes, notes
+    assert "まだ出てきていない 1 語" in notes, notes
+
+    # 外せば全体に戻る（サーバへ行き直さずに）
+    page.uncheck("#readSoFar")
+    page.wait_for_function(
+        "() => !(document.querySelector('#notes')?.textContent || '')"
+        ".includes('いま読んでいるところまで')",
+        timeout=10000,
+    )
+
+
+def test_the_read_so_far_box_is_hidden_on_the_plain_graph_page(page, server, seeded):
+    """`/graph` を直接開いたときは出さない（どこまで読んだかを知らない）。"""
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph, #canvas .empty").first.wait_for(timeout=15000)
+    assert page.locator("#readSoFarBox").is_hidden()

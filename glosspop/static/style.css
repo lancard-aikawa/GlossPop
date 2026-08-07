@@ -839,6 +839,18 @@ body.overlaid .layout { pointer-events: none; }
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* 用語ごとの画像のサムネイル。**顔と違って語ごとに違う**ので一覧に出す。
+   カードの高さを揃えるため、左に小さく置いて本文を回り込ませる。 */
+.card.has-thumb { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; }
+.card-thumb {
+  grid-row: 1 / span 2;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius);
+  object-fit: cover;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
 
 /* --------------------------------------------------------- entry detail */
 
@@ -865,6 +877,22 @@ body.overlaid .layout { pointer-events: none; }
 }
 .entry-head .aliases { font-size: var(--fs-12); color: var(--fg-dim); margin: 6px 0 0; }
 .entry-head .summary { margin: 10px 0 0; font-size: var(--fs-15); }
+
+/* 用語ごとの画像。**顔（右上の丸）とは別物**なので、丸くも小さくもしない ——
+   その語そのものの絵なので、読める大きさで出す。**高さは頭打ちにする**
+   （縦長の画像で本文が画面の外へ押し出されないように）。 */
+.entry-image { margin: 12px 0 0; clear: both; }
+.entry-image .entry-photo {
+  display: block;
+  max-width: min(100%, 420px);
+  max-height: 320px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  object-fit: contain;
+}
+/* 入れる前は押す口だけ。**画像が無くてもボタンは出す** —— 隠すと入れる道が消える */
+.entry-image .toolbar { margin-top: 8px; }
 
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 /* 丸い粒が割れると印に見えなくなるので、こちらも折り返さない
@@ -1202,6 +1230,49 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-node.outside rect { fill: transparent; stroke-dasharray: 2 3; }
 .rel-node.missing rect { stroke: var(--danger); stroke-dasharray: 4 3; fill: transparent; }
 .rel-node.missing text { fill: var(--danger); }
+/* 地図（`map.js`）。**絵は `<image>` の中**に置いてあるので、`viewBox` を動かせば
+   画像も線も語も一緒に動く（CSS の背景にすると 2 つを別々に動かすことになる）。
+   点は丸と名前で、**箱にしない** —— 箱で地形を覆うと位置で置いた意味が減る。
+   名前の板は `.rel-node rect` の見た目をそのまま借りる（**写しを作らない**）。 */
+/* 地図に出すものの一覧。**行のほうを折り返す**（ボタンとラベルは折り返さない、
+   という約束はここでも同じ）。狭い画面では 1 語ずつ縦に積まれるだけで済む。 */
+.map-layers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0 0 8px;
+}
+.map-layers .check { width: auto; }
+
+.rel-map-bg { pointer-events: none; }
+.rel-map-pin circle { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
+.rel-map-pin a:hover circle { fill: var(--fg); }
+.rel-map-pin text { font: 600 12px var(--sans); }
+/* 形は 3 つ。**領域は必ず半透明**にする —— 塗りつぶすと、重なった側とその下の
+   地形が両方読めなくなる（重ねる順は 領域 → 線 → 点。JS 側で層を分けてある）。
+   線は細くて押せないので、透明な太い線を下に重ねて当たり判定にする（辺と同じ作法）。 */
+/* **描く要素のクラスは種別のクラスと分ける。** 同じ名前にすると `<g>` にも
+   付いて、`fill` が継承で効いてしまう（気付きにくい効き方をする）。 */
+.rel-map-fill { fill: var(--accent); fill-opacity: 0.18; stroke: var(--accent); stroke-width: 2; }
+.rel-map-pin a:hover .rel-map-fill { fill-opacity: 0.32; }
+.rel-map-route { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
+.rel-map-pin a:hover .rel-map-route { stroke: var(--fg); }
+.rel-map-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 16;
+  vector-effect: non-scaling-stroke;
+}
+/* **重なった名前は畳む**（一言の `.rel-edge-label.tucked` と同じ約束）。
+   地図は座標が与えられている図なので**逃がす場所が無い** —— 重ねると重なった
+   2 つとも読めず、下の絵まで隠す。消してはいないので、乗せる・焦点が当たる・
+   その語の関係を辿ると出る（畳んだ数は注意書きに出す）。 */
+.rel-map-name.tucked { display: none; }
+.rel-node:hover .rel-map-name.tucked,
+.rel-node:focus-within .rel-map-name.tucked,
+.rel-node.lit .rel-map-name.tucked,
+.rel-node.hot .rel-map-name.tucked { display: block; }
 .rel-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.5; }
 .rel-edge.missing { stroke: var(--danger); stroke-dasharray: 4 3; }
 .rel-edge.reveal { stroke: var(--warn); stroke-dasharray: 6 3; }
@@ -1504,3 +1575,51 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 }
 .side-fold > summary:hover { color: var(--fg); }
 .side-fold[open] > summary { margin-bottom: 6px; }
+
+/* 地図の絵の一覧に出す小さな見本。**入れ物より大きくしない**（1 枚が縦を食うと、
+   数枚あるだけでダイアログがスクロールだらけになる） */
+.map-thumb {
+  width: 56px;
+  height: 40px;
+  object-fit: contain;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+/* 掴んで動かすための丸。**地図だけの例外**（→ docs/design-notes.md）。
+   **縮小しても押せる大きさを保つ**（当たり判定と同じ理由）。 */
+.rel-map-handle {
+  fill: var(--panel);
+  stroke: var(--accent);
+  stroke-width: 2;
+  cursor: grab;
+  vector-effect: non-scaling-stroke;
+}
+.rel-map-handle:hover,
+.rel-map-handle:focus { fill: var(--accent); outline: none; }
+.rel-map.is-placing { cursor: crosshair; }
+
+/* 頂点を足す口（線分の中点）。**掴む丸より小さく・薄く** —— 同じ見た目にすると、
+   どれが本物の頂点なのか分からなくなる（数えると点の数が合わない）。 */
+.rel-map-add {
+  fill: var(--panel);
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 3 2;
+  opacity: 0.65;
+  cursor: cell;
+  vector-effect: non-scaling-stroke;
+}
+.rel-map-add:hover { opacity: 1; fill: var(--accent); }
+
+/* 消す口。**乗せた（または焦点が当たった）頂点にだけ出す** —— 常に出すと、
+   頂点の数だけ ✕ が並んで絵が読めなくなるうえ、掴もうとして消す。 */
+.rel-map-drop { display: none; cursor: pointer; }
+.rel-map-vertex:hover .rel-map-drop,
+.rel-map-vertex:focus-within .rel-map-drop { display: block; }
+.rel-map-drop circle { fill: var(--panel); stroke: var(--danger); stroke-width: 2; }
+.rel-map-drop path { stroke: var(--danger); stroke-width: 2; fill: none; }
+.rel-map-drop:hover circle { fill: var(--danger); }
+.rel-map-drop:hover path { stroke: var(--panel); }

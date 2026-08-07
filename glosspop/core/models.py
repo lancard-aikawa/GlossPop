@@ -16,6 +16,10 @@ GLOBAL_SCOPE = "global"
 LOCAL_SCOPE = "local"
 SCOPES = (GLOBAL_SCOPE, LOCAL_SCOPE)
 
+#: 画像の拡張子と見分け方は `core.imagefmt`（`MAP_SUFFIXES` / `IMAGE_SUFFIXES`）。
+#: **写しをここに置かない** —— 置き場所 (`store`)・zip の形 (`archivefmt`)・
+#: 受け取る口 (`app` / `ai`) が同じ判断をするので、1 か所から読む。
+
 #: ローカルエントリの ref に付ける接頭辞。
 #: カテゴリ名は「.」で始められない (normalize_category) ので実名と衝突しない
 LOCAL_PREFIX = ".local"
@@ -159,6 +163,20 @@ class Relation(BaseModel):
         return bool(self.back)
 
 
+def _point(value: object) -> list[float] | None:
+    """``[x, y]`` として読める点だけを返す。読めなければ ``None``。
+
+    **勝手に 0 へ寄せない** —— 寄せると絵の左上に点が湧いて「座標を書いたのに
+    違う場所」になる。落とせば地図に出ないだけで済み、数は図が数えて返す。
+    """
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+    try:
+        return [float(value[0]), float(value[1])]
+    except (TypeError, ValueError):
+        return None
+
+
 class EntryBase(BaseModel):
     term: str
     reading: str = ""
@@ -179,6 +197,74 @@ class EntryBase(BaseModel):
     #: 初出の位置。小説の人物辞書などで「どこで出てきた語か」を残すために使う
     first_file: str = ""        # content ルートからの相対パス
     first_locator: str = ""     # 表示用の位置 ("L.42" / "p.42" / "第3章" など)
+    #: 地図の見せ方で使う。**どちらも省略可**で、**両方書いてあるものだけが地図に出る**
+    #: （種別やタグで「どれが地名か」を推測しない —— 分類の漏れがそのまま図の欠落に
+    #: なる。書いた＝出したいという意思表示なので、機械が推測する余地がない）。
+    #: ``pin`` は**絵の幅を 1 とした比**。縦横それぞれに 0〜1 を割り当てると、
+    #: 縦横比の違う絵へ差し替えたときに点が歪む。
+    #:
+    #: **``at`` も ``path`` も名前として使えない。どちらも実際に踏んだ。**
+    #:
+    #: - ``at`` は `timeline.annotate()` がノードに入れる**本文中の文字位置**と
+    #:   ぶつかり、``?doc=`` のとき上書きされる（地図を開く主な経路で壊れる）
+    #: - ``path`` は `_entry_payload` が入れる**保存先のファイルパス**とぶつかる。
+    #:   `/api/entries/{ref}` が座標ではなくパス文字列を返すので、**エディタから
+    #:   保存し直すと線が黙って消える**
+    #:
+    #: **形は 3 つ。書き方が種別の宣言そのもの**なので、フラグを別に持たない
+    #: （持つと二重になって必ずずれる）。「最初と最後が同じなら領域」で推測する
+    #: 手もあるが、**一周して戻る経路が書けなくなる** —— 日記の往復がそのまま
+    #: 領域に化けるので採らない。
+    map: str = ""               # <辞書>/maps/<名前>.<拡張子> の <名前>
+    pin: list[float] = Field(default_factory=list)          # 点 [x, y]
+    line: list[list[float]] = Field(default_factory=list)   # 線 [[x, y], …]
+    area: list[list[float]] = Field(default_factory=list)   # 領域 [[x, y], …]
+
+    @field_validator("pin", mode="before")
+    @classmethod
+    def _clean_pin(cls, value: object) -> list[float]:
+        """読めない座標は**空にする**（勝手に 0 へ寄せない）。
+
+        0 に寄せると、絵の左上に点が湧いて「座標を書いたのに違う場所」になる。
+        空なら地図に出ないだけで済むし、出せなかった数は図が数えて返す。
+        """
+        return _point(value) or []
+
+    @field_validator("line", "area", mode="before")
+    @classmethod
+    def _clean_points(cls, value: object, info) -> list[list[float]]:
+        """点の並び。**読めない点は落とし、足りなければ丸ごと空にする。**
+
+        線は 2 点、領域は 3 点から。**閉じるのは描く側の仕事**なので、
+        最後にもう一度最初の点を書く必要はない（書いても害はない）。
+        """
+        if not isinstance(value, (list, tuple)):
+            return []
+        points = [p for p in (_point(v) for v in value) if p]
+        least = 3 if info.field_name == "area" else 2
+        return points if len(points) >= least else []
+
+    @property
+    def map_shape(self) -> dict | None:
+        """地図に置く形を ``{"kind", "points"}`` に畳む。無ければ ``None``。
+
+        **書き方は 3 つ、内部は 1 つ。** 旧 ``related`` を ``relations`` に畳むのと
+        同じで、読む側が 3 通りを場合分けせずに済むようにする。
+
+        複数書いてあるときは細かいほう（領域 → 線 → 点）を採るが、**黙って
+        選んでいるわけではない** —— 点検が「地図の形が 2 つ」として挙げる。
+        """
+        for kind, value in (("area", self.area), ("line", self.line)):
+            if value:
+                return {"kind": kind, "points": [list(p) for p in value]}
+        if self.pin:
+            return {"kind": "point", "points": [list(self.pin)]}
+        return None
+
+    @property
+    def map_shape_count(self) -> int:
+        """``pin`` / ``path`` / ``area`` のうち幾つ書かれているか（点検が見る）。"""
+        return sum(1 for v in (self.pin, self.line, self.area) if v)
 
     @model_validator(mode="before")
     @classmethod

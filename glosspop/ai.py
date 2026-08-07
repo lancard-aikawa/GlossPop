@@ -17,7 +17,7 @@ from pathlib import Path
 from anyio import to_thread
 
 from . import config, llm, store
-from .core import relations
+from .core import imagefmt, relations
 from .core.linker import entry_url
 from .core.models import (
     GLOBAL_SCOPE,
@@ -314,7 +314,7 @@ def describe_style() -> dict:
         # 道を残してあるので、片方だけ知っていても困る）
         "persona_name": f"{config.PERSONA_NAME}{config.PERSONA_SUFFIXES[0]}",
         "persona_max": PERSONA_MAX_BYTES,
-        "persona_types": sorted({name for name in _PERSONA_SNIFF.values()}),
+        "persona_types": sorted(imagefmt.IMAGE_SUFFIXES),
         "personas": [
             {
                 "scope": scope,
@@ -342,27 +342,18 @@ def describe_style() -> dict:
 #: 巨大なファイルで埋めさせない）
 PERSONA_MAX_BYTES = 2 * 1024 * 1024
 
-#: 中身の先頭から見分ける。**送られてきたファイル名は使わない** ——
-#: 拡張子は名乗りでしかなく、`.png` という名前の HTML を置かれると、
-#: `/api/persona` が中身を検査せずに配る口である以上そのまま配ってしまう。
-#: **SVG はここに無い**（スクリプトを持てる。`config.PERSONA_SUFFIXES` と同じ線）
-_PERSONA_SNIFF: dict[bytes, str] = {
-    b"\x89PNG\r\n\x1a\n": ".png",
-    b"\xff\xd8\xff": ".jpg",
-    b"GIF87a": ".gif",
-    b"GIF89a": ".gif",
-}
-
-
 def _sniff_persona(data: bytes) -> str:
-    """中身から拡張子を決める。画像に見えなければ ``AIError``。"""
-    for magic, suffix in _PERSONA_SNIFF.items():
-        if data.startswith(magic):
-            return suffix
-    # WebP だけは RIFF コンテナなので、先頭 4 バイトだけでは他と区別できない
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return ".webp"
-    raise AIError("画像として読めませんでした（PNG / JPEG / GIF / WebP を選んでください）")
+    """中身から拡張子を決める。画像に見えなければ ``AIError``。
+
+    **見分けそのものは `core.imagefmt`**（顔・地図・用語ごとの画像で 1 か所。
+    写しを作ると、対応形式を足したときに片方だけ通る）。ここが持つのは
+    **通す線と文言**だけ —— **SVG は通さない**（スクリプトを持てる。
+    `config.PERSONA_SUFFIXES` と同じ線）。
+    """
+    suffix = imagefmt.sniff(data)
+    if suffix is None:
+        raise AIError("画像として読めませんでした（PNG / JPEG / GIF / WebP を選んでください）")
+    return suffix
 
 
 def save_persona(scope: str, data: bytes) -> str:

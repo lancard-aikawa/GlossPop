@@ -139,17 +139,28 @@ function closeButton() {
 }
 
 /**
- * ペルソナ（語り手）の顔。**エントリごとに、その辞書のものを出す。**
+ * 吹き出しの左に出す絵。**用語ごとの画像が優先、無ければ語り手の顔。**
  *
- * 同じ表記が複数の辞書にあると吹き出しに並ぶので、1 枚を上に置くと
- * どれの語り手なのか分からなくなる（📁 の印と同じ理由で、行ごとに付ける）。
+ * **同じ場所を取り合うので、どちらか一方にする。** 吹き出しはその語の説明を出す
+ * 場所なので、**その語の絵があるならそちら**（顔は「誰が書いているか」で、
+ * 語が変わっても同じ絵になる）。顔だけのときは今までどおり。
+ *
+ * エントリごとに付けるのは変わらない —— 同じ表記が複数の辞書にあると吹き出しに
+ * 並ぶので、1 枚を上に置くとどれの絵なのか分からなくなる（📁 の印と同じ理由）。
  * 画像が無ければ何も出さない（枠だけ出して欠けて見せない）。
  */
 function faceOf(entry) {
-  if (!entry.persona_url) return "";
-  return `<img class="pop-face" src="${esc(entry.persona_url)}" alt=""`
-    + ` title="${esc(entry.path_label || "")} の語り手" loading="lazy">`;
+  const src = entry.image_url || entry.persona_url;
+  if (!src) return "";
+  const label = entry.image_url
+    ? esc(entry.term || "")
+    : `${esc(entry.path_label || "")} の語り手`;
+  return `<img class="pop-face${entry.image_url ? " is-term" : ""}"`
+    + ` src="${esc(src)}" alt="" title="${label}" loading="lazy">`;
 }
+
+/** 絵があるか（`pop-head` の余白を決めるのに使う。判断を 2 か所に書かない） */
+const hasFace = (entry) => Boolean(entry.image_url || entry.persona_url);
 
 function bodyOf(entry) {
   const parts = [];
@@ -183,7 +194,7 @@ function renderMissing(term) {
 /** 1 件だけのとき: 従来どおりの見た目。 */
 function renderSingle(entry) {
   const main =
-    `<div class="pop-head${entry.persona_url ? " has-face" : ""}">${faceOf(entry)}` +
+    `<div class="pop-head${hasFace(entry) ? " has-face" : ""}">${faceOf(entry)}` +
     `<div><span class="pop-cat">${esc(entry.path_label)}</span>` +
     `<p class="pop-term">${esc(entry.term)}` +
     (entry.reading ? `<span class="pop-reading">${esc(entry.reading)}</span>` : "") +

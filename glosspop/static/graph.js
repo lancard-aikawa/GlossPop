@@ -19,6 +19,9 @@ import { buildFabric } from "./fabric.js";
 import { buildMatrix } from "./matrix.js";
 import { buildTimeline } from "./timeline.js";
 import { buildEgo } from "./ego.js";
+import { buildMap, fitToKind, KIND_WORDS } from "./map.js";
+import { saveGraph } from "./graph-export.js";
+import { readingNow } from "./reading.js";
 import { encodePath } from "./editor.js";
 
 //: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
@@ -41,20 +44,48 @@ const TEMPLATE = `
     <!-- 時系列は「読むもの」が決まっていないと定義できないので、辞書全体の図では
          選べない（文書を絞っているときだけ。→ timeline.js） -->
     <option value="timeline">時系列（文書を開いているとき）</option>
+    <!-- 地図。**座標を書いた語があるときだけ**出せる（分類ではなく、書いてある
+         ものだけが出る。→ map.js） -->
+    <option value="map">地図（座標のある語）</option>
   </select>
+  <!-- どの絵を出すか。**辞書に数枚ある**ので選べないと「ほかに 〇〇 があります」と
+       書いておきながら行けない。地図のとき、絵が 2 枚以上あるときだけ出す -->
+  <select id="mapPick" class="auto-width" aria-label="地図" hidden></select>
+  <!-- **落ちているときも出す。** 絵が 1 枚も無いと段の図に落ちるので、ここを
+       隠すと「最初の 1 枚を入れる」道が無くなる（鶏と卵になる） -->
+  <button type="button" class="btn" id="mapEdit" hidden title="地図の絵を入れる / 消す">🖼 絵</button>
   <select id="category" class="auto-width" aria-label="カテゴリ"></select>
   <label class="check">
     <input type="checkbox" id="spoilers">
     <span>判明位置つきの関係も出す</span>
+  </label>
+  <!-- **ビューアで読んでいるときだけ出す。** 「どこまで読んだか」はビューアしか
+       知らないので、相関図のページを直接開いたときは出せない（時系列・地図と同じ
+       約束で、出しておいて効かないより出さないほうがまし。→ reading.js）。
+       ここはテンプレート文字列の中なので、バッククォートを書かないこと -->
+  <label class="check" id="readSoFarBox" hidden>
+    <input type="checkbox" id="readSoFar">
+    <span>ここまで読んだぶんだけ</span>
   </label>
   <!-- **ここに「関係を下書き」を戻さないこと。** この図は辞書全体を出すのに、
        下書きは開いているフォルダの本文を読む。並べると「図に出ている語について
        探す」と読まれるが、実際に読むのはビューアで開いているものとも図とも
        一致しない範囲だった（→ docs/design-notes.md） -->
   <a class="btn" href="/doctor" title="辞書全体の壊れを点検する">🩺 点検</a>
+  <!-- 図を外へ出す口。**6 つの見せ方すべてで同じ**（どれも SVG を 1 枚返す）。
+       **PNG は貼るため、SVG は拡大と編集のため**なので、どちらか一方にしない。
+       保存するのは**いまの拡大率ではなく図の全体**（切れた図を保存しない） -->
+  <button type="button" class="btn" id="saveImage" title="この図を画像として保存する">⬇ 画像</button>
+  <select id="saveKind" class="auto-width" aria-label="画像の形式">
+    <option value="png">PNG（貼る用）</option>
+    <option value="svg">SVG（拡大できる）</option>
+  </select>
   <span class="spacer"></span>
   <span class="status" id="status"></span>
 </div>
+<!-- 地図に出すものの一覧。**チェックを外したぶんは必ず数えて凡例に出す**
+     （黙って欠けた図を出さない、という約束はここでも同じ）。地図のときだけ出す -->
+<div class="map-layers" id="mapLayers" hidden></div>
 <p class="notice" id="notes" hidden></p>
 <!-- 拡大縮小のボタンは**図の上に重ねる**。ツールバーへ足すと、狭い画面で
      すでに折り返している行がもう 1 段増える -->
@@ -78,6 +109,37 @@ const TEMPLATE = `
      —— そこで文字列が切れて、続きが式として読まれる。実際に踏んだ） -->
 <p class="graph-detail" id="detail"></p>
 <p class="hint" id="legend"></p>
+
+<!-- 地図の絵を入れる / 消す。**辞書に数枚ある**ので、顔と違って名前と一覧が要る -->
+<dialog class="sheet" id="mapDialog">
+  <div class="edge-editor">
+    <header>
+      <h2>地図の絵</h2>
+      <div class="spacer"></div>
+      <button type="button" class="ghost" data-ref="close" aria-label="閉じる">✕</button>
+    </header>
+    <p class="hint">
+      エントリに <code>map: 名前</code> と <code>pin</code> / <code>path</code> /
+      <code>area</code> を書くと、その絵の上に出ます。
+      <strong>絵には地名を入れないでください</strong> ——
+      辞書の名前と二重になります（入ってしまっている絵は「名前を出す」を外して使います）。
+      AI に描かせるなら <strong>2048px 以上</strong>で。拡大してもボケないのは SVG だけです。
+    </p>
+    <div data-ref="list"></div>
+    <div class="cat-row">
+      <input type="text" data-ref="name" class="cat-row-main"
+             placeholder="絵の名前（例: 桶狭間）">
+      <select data-ref="scope" class="auto-width" aria-label="保存先"></select>
+      <input type="file" data-ref="file"
+             accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml">
+    </div>
+    <footer>
+      <span class="status" data-ref="status"></span>
+      <div class="spacer"></div>
+      <button type="button" class="primary" data-ref="save">入れる</button>
+    </footer>
+  </div>
+</dialog>
 
 <!-- 辺を押すと開く。点検ページと同じで、直すためにページを渡り歩かせない -->
 <dialog class="sheet" id="edgeDialog">
@@ -117,14 +179,26 @@ const TEMPLATE = `
 `;
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
+let mapPick, mapLayers, mapEdit, mapDialog;
+let readSoFarCheck, readSoFarBox;
+//: 「ここまで読んだぶんだけ」で伏せたことの断り書き（注意書きに出す）
+let readingNote = "";
 let detailNode;
 let modeSelect;
 
 //: 見せ方。layered = 段の図（既定） / fabric = 交差しない図 / matrix = 行列 /
-//: ego = 1 語を中心にした図 / timeline = 時系列（文書を開いているときだけ）。
+//: ego = 1 語を中心にした図 / timeline = 時系列（文書を開いているときだけ）/
+//: map = 地図（座標を書いた語があるときだけ）。
 //: **覚えておく** —— 覆いは何度でも開き直されるので、毎回選び直させない
 const MODE_KEY = "glosspop.graphMode";
-const MODES = ["layered", "fabric", "matrix", "ego", "timeline"];
+const MODES = ["layered", "fabric", "matrix", "ego", "timeline", "map"];
+
+//: 注意書きに出す短い名前。**`<option>` の文言をそのまま使わない** —— あちらは
+//: 選ぶための説明（「地図（座標のある語）」）で、文の中に入れると読めなくなる
+const MODE_WORDS = {
+  layered: "段の図", fabric: "交差しない図", matrix: "行列",
+  ego: "中心の図", timeline: "時系列", map: "地図",
+};
 //: 読むものが決まっているときしか出せない見せ方。時系列は「その文書のどこで
 //: 読めるようになるか」を軸にするので、辞書全体では定義できない（`?doc=` と同じ話）
 const DOC_ONLY_MODES = ["timeline"];
@@ -1080,21 +1154,49 @@ function draw(graph) {
     return { lonely: 0 };
   }
 
+  // 地図は**座標を書いた語がある辞書でしか出せない**。時系列と同じ扱いで、
+  // 選べないときも**黙って別の図に差し替えない**（注意書きを出し、覚えている
+  // 選択のほうは書き換えない）
+  mapFellBack = mode === "map" && !(graph.maps || []).length;
   const build = {
     fabric: buildFabric, matrix: buildMatrix, timeline: buildTimeline, ego: buildEgo,
+    map: mapFellBack ? null : buildMap,
   }[mode];
   const drawn = build
-    ? build(graph, { onEdge: openEdgeEditor, center: egoCenter, onCenter: moveCenter })
+    ? build(graph, {
+      onEdge: openEdgeEditor,
+      center: egoCenter,
+      onCenter: moveCenter,
+      mapName,
+      hidden: mapHidden.get(mapName),
+      editing: mapEditing,
+      placing: mapPlacing,
+      onMove: saveMapShape,
+      onPlace: (ref, points) => {
+        mapPlacing = "";
+        saveMapShape(ref, "point", points);
+      },
+      // 断りは**その場に出す**（形が変わらないので、出さないと何も起きて
+      // いないように見える）
+      onRefuse: (message) => setStatus(statusNode, message, "error"),
+      labels: !mapNoLabels.has(mapName),
+      // 絵の縦横比は読み込むまで分からない。届いたら入れ物に合わせ直す
+      onResize: () => fitView(),
+    })
     : buildLayered(nodes, edges);
   // 中心は図が決めることもある（指した語が範囲の外なら、いちばん多く繋がっている
   // 語に落ちる）。押した先が同じ語のままにならないよう、決まった値を控えておく
   if (drawn.center) egoCenter = drawn.center;
+  // 出す絵は図が決めることもある（覚えている絵がこの範囲に無ければ、いちばん
+  // 多く点が乗るものに落ちる）。押した先が同じにならないよう控えておく
+  if (drawn.map) mapName = drawn.map;
   canvas.classList.remove("is-empty");
   canvas.replaceChildren(drawn.root);
   svgRoot = drawn.root;
   contentBox = drawn.box;
   zoomBar.hidden = false;
   fitView();
+  if (mode === "map") spotlight(namedRef);
   return {
     lonely: drawn.lonely,
     linked: nodes.length - drawn.lonely,
@@ -1102,6 +1204,10 @@ function draw(graph) {
     // 見せ方が「出していないもの」を数えていれば、そのまま凡例へ通す
     // （**ここで落とすと黙って欠けた図になる**。実際に一度落とした）
     note: drawn.note || "",
+    // 地図が「この絵に置ける語」を返していれば、そのままチェックの一覧へ通す
+    // （**ここで落とすと一覧が空になり、外したものを戻せなくなる**。実際に落とした）
+    items: drawn.items || [],
+    pending: drawn.pending || [],
   };
 }
 
@@ -1350,6 +1456,59 @@ function selection() {
   };
 }
 
+/**
+ * 図を画像として保存する口。**見せ方ごとに書かない**（どれも SVG を 1 枚返す）。
+ *
+ * 保存するのは**図の全体**（`contentBox`）で、いまの拡大率ではない ——
+ * 拡大は見るための操作であって図の範囲ではないので、切れた図を保存しない。
+ */
+function installSaveImage(host) {
+  const button = host.querySelector("#saveImage");
+  const kind = host.querySelector("#saveKind");
+  button.addEventListener("click", async () => {
+    if (!svgRoot || !contentBox) {
+      setStatus(statusNode, "保存できる図がありません", "error");
+      return;
+    }
+    button.disabled = true;
+    setStatus(statusNode, "画像にしています", "busy");
+    try {
+      await saveGraph(svgRoot, contentBox, { kind: kind.value, name: imageName() });
+      setStatus(statusNode, "保存しました");
+    } catch (err) {
+      // **黙って諦めない。** 図は出ているのに保存だけできないことがある
+      setStatus(statusNode, err.message, "error");
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+/** 保存する名前。**何の図なのかを名前に残す**（あとで見分けられるように）。 */
+function imageName() {
+  const { category } = selection();
+  const scope = MODE_WORDS[mode] || "相関図";
+  const where = currentDoc ? currentDoc.split("/").pop() : (category || "辞書全体");
+  return `相関図-${scope}-${where}`.replace(/[\\/:*?"<>|]/g, "-");
+}
+
+/**
+ * 名指しされた語に目印を付けて、枠の中へ入れる（地図だけ）。
+ *
+ * 地図は座標が与えられている図なので、**中心の図のように組み替えられない** ——
+ * 広い絵の隅に置かれていると、開いても自分の語がどこにあるか分からない。
+ * 使うのは**乗せたときと同じ道具**（`.focusing` と `.lit`）なので、畳んだ名前も
+ * 一緒に出る。**次に何かへ乗せれば普通に消える**（貼り付いたままにしない）。
+ */
+function spotlight(ref) {
+  if (!ref || !svgRoot) return;
+  const node = svgRoot.querySelector(`.rel-node[data-ref="${CSS.escape(ref)}"]`);
+  if (!node) return;                  // その絵に置かれていない語（注意書きが出る）
+  svgRoot.classList.add("focusing");
+  node.classList.add("lit");
+  bringIntoView(node);
+}
+
 function paintNotes(graph) {
   const lines = [];
   if (graph.outside) {
@@ -1379,11 +1538,26 @@ function paintNotes(graph) {
       + "（見せ方は上で戻せます。覚えているほうは変えていません）。"
     );
   }
+  if (readingNote) lines.push(readingNote);
+  if (modeFromUrl && mode === modeFromUrl) {
+    // URL が見せ方まで名指ししてきたとき。**同じ約束**（黙って押しのけない）
+    lines.push(
+      `開いたリンクの指定で${MODE_WORDS[mode] || "この見せ方"}にしています`
+      + "（見せ方は上で戻せます。覚えているほうは変えていません）。"
+    );
+  }
   if (modeFellBack) {
     // 覚えていた見せ方を黙って別のものに差し替えない
     lines.push(
       "時系列は文書を開いているときだけ出せるので、いまは段の図にしています" +
       "（ビューアの「🕸 この文書の相関図」から開くと出せます）。"
+    );
+  }
+  if (mapFellBack) {
+    // 同上。**「座標が無い」と言うところまでが約束**（黙って別の図にしない）
+    lines.push(
+      "地図に置ける語がこの範囲にないので、いまは段の図にしています" +
+      "（エントリに map と pin を書くと出せます）。"
     );
   }
   for (const b of graph.broken) {
@@ -1421,6 +1595,15 @@ function installDetail() {
   canvas.addEventListener("focusout", () => showDetail(""));
 }
 
+/** 覚えている絵。**読めなくても困らない** —— いちばん多く点が乗るものに落ちる。 */
+function rememberedMap() {
+  try {
+    return localStorage.getItem(MAP_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
 /** 覚えている見せ方。読めない値なら段の図へ落ちる（起動できなくならないこと）。 */
 function rememberedMode() {
   try {
@@ -1435,9 +1618,47 @@ function rememberedMode() {
 //: **黙って別の図を出さない**（何が起きたのかは注意書きに出す）
 let modeFellBack = false;
 
+//: 地図を選んでいたが、座標を書いた語が 1 つも無かったので落としたか。
+//: 時系列の `modeFellBack` と同じ扱い（黙って差し替えない）
+let mapFellBack = false;
+
+//: どの絵を出しているか（``<scope>/<名前>``）。見せ方と同じで**覚えておく**
+//: —— 覆いは何度でも開き直されるので、毎回選び直させない
+const MAP_KEY = "glosspop.graphMap";
+let mapName = "";
+
+//: 地図で**チェックを外した語**（絵ごと）。**外したほうを覚える**のが肝 ——
+//: 「出すもの」を覚えると、あとから足した語が黙って出なくなる
+//: （`categories.reorder()` が送られなかったカテゴリを後ろに残すのと同じ考え方）
+const MAP_HIDDEN_KEY = "glosspop.graphMapHidden";
+let mapHidden = new Map();
+
+//: 地図で**名前を消した絵**。AI に描かせた地図には地名が焼き込まれているのが
+//: 普通なので、絵ごとに切れるようにする。**消したほうを覚える**（既定は出す側）。
+//: 消しても情報は失われない —— 乗せれば図の下の枠と吹き出しに出る
+const MAP_LABELS_KEY = "glosspop.graphMapNoLabels";
+let mapNoLabels = new Set();
+
+//: 地図を編集中か（丸を掴んで動かせる）。**覚えない** —— 開くたびに閲覧へ戻す。
+//: 見せ方や絵と違って、うっかり動かすほうの害が大きい
+let mapEditing = false;
+//: 「次に絵を押したらここへ置く」語。1 回置いたら空に戻す
+let mapPlacing = "";
+
 //: URL で語を名指しされたので、覚えている見せ方を押しのけて中心の図で開いたか。
 //: これも黙ってやらない（同じ理由）
 let centeredByUrl = false;
+
+//: URL が見せ方まで名指ししてきたか（用語ページの「🗺 地図で見る」がそれ）。
+//: **覚えているほうは書き換えない**のは `centeredByUrl` と同じで、押しのけた
+//: ことは注意書きに出す。**`?ref=` より強い** —— 見せ方まで書いてある指定に
+//: 「語が名指しされているから中心の図」を優先すると、押した先が別の図になる
+let modeFromUrl = "";
+
+//: URL で名指しされた語。地図では**その語を光らせて枠に入れる**（中心の図の
+//: ように図そのものを組み替えられないので、代わりに目印を付ける）。
+//: `egoCenter` と分けてあるのは、あちらが押すたびに移り変わるため
+let namedRef = "";
 
 /**
  * いまの範囲で選べる見せ方に揃える。
@@ -1472,10 +1693,428 @@ function moveCenter(ref) {
 }
 
 /** 受け取ったグラフを描いて、凡例と注意書きを添える。 */
+
+/**
+ * 地図の絵を入れる / 消すダイアログ。
+ *
+ * **顔と違って名前と一覧が要る**（地図は辞書に数枚ある）。一覧は
+ * `/api/maps`（**置いてある絵**）で、`/api/graph` の `maps`（**出ている語が
+ * 指している絵**）とは別物 —— 使っていない絵を消せるようにするため。
+ *
+ * **listener はダイアログを開く前に付ける。** 開いた瞬間から操作できるのに
+ * 読み込みを待ってから付けると、その間の操作が黙って無視される（実際に 2 回踏んだ）。
+ */
+function installMapDialog() {
+  const refs = {};
+  for (const node of mapDialog.querySelectorAll("[data-ref]")) {
+    refs[node.dataset.ref] = node;
+  }
+  const close = () => mapDialog.close();
+  refs.close.addEventListener("click", close);
+  mapEdit.addEventListener("click", () => {
+    paintMapDialog(refs, null);
+    mapDialog.showModal();
+    loadMapDialog(refs);
+  });
+  refs.save.addEventListener("click", () => saveMapImage(refs));
+  mapDialog.addEventListener("close", () => {
+    // 絵が増減したら図も描き直す（サーバへは行き直す —— 一覧が変わっている）
+    if (mapDialogChanged) {
+      mapDialogChanged = false;
+      refresh();
+    }
+  });
+}
+
+let mapDialogChanged = false;
+
+async function loadMapDialog(refs) {
+  setStatus(refs.status, "読み込み中", "busy");
+  try {
+    paintMapDialog(refs, await api("/api/maps"));
+    setStatus(refs.status, "");
+  } catch (err) {
+    setStatus(refs.status, err.message, "error");
+  }
+}
+
+/** 一覧と保存先を描く。**開いた時点で持っているものを描き、届いたら描き直す。** */
+function paintMapDialog(refs, data) {
+  const maps = data?.maps || [];
+  refs.list.replaceChildren(
+    ...(maps.length
+      ? maps.map((m) => el("div", { class: "cat-row" }, [
+        el("img", { src: m.url, alt: "", class: "map-thumb" }),
+        el("span", { class: "cat-row-main", text: `${m.name}（${m.scope === "local" ? "📁 このフォルダ" : "全体"}・${Math.round(m.bytes / 1024)} KB）` }),
+        el("button", {
+          type: "button",
+          class: "ghost",
+          text: "消す",
+          onclick: () => deleteMapImage(refs, m),
+        }),
+      ]))
+      : [el("p", { class: "empty", text: data ? "まだ絵がありません。" : "読み込み中…" })])
+  );
+  const canLocal = data?.can_local !== false;
+  refs.scope.replaceChildren(
+    el("option", { value: "global", text: "全体" }),
+    // **辞書の無いフォルダには置けない**（開いただけのフォルダを汚さない）
+    el("option", { value: "local", text: "📁 このフォルダ", disabled: !canLocal }),
+  );
+}
+
+async function saveMapImage(refs) {
+  const name = refs.name.value.trim();
+  const file = refs.file.files?.[0];
+  if (!name) return setStatus(refs.status, "名前を入れてください", "error");
+  if (!file) return setStatus(refs.status, "画像を選んでください", "error");
+  setStatus(refs.status, "送っています", "busy");
+  try {
+    const url = `/api/map?scope=${encodeURIComponent(refs.scope.value)}`
+      + `&name=${encodeURIComponent(name)}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+    mapDialogChanged = true;
+    refs.name.value = "";
+    refs.file.value = "";
+    paintMapDialog(refs, data);
+    setStatus(refs.status, "入れました");
+  } catch (err) {
+    setStatus(refs.status, err.message, "error");
+  }
+}
+
+async function deleteMapImage(refs, item) {
+  // **エントリの map は書き換えない**ので、消すと出なくなるだけ。そう伝える
+  if (!confirm(`「${item.name}」を消します。この絵に置いていた語は地図に出なくなります（辞書は消えません）。よろしいですか？`)) return;
+  setStatus(refs.status, "消しています", "busy");
+  try {
+    const url = `/api/map?scope=${encodeURIComponent(item.scope)}`
+      + `&name=${encodeURIComponent(item.name)}`;
+    mapDialogChanged = true;
+    paintMapDialog(refs, await api(url, { method: "DELETE" }));
+    setStatus(refs.status, "消しました");
+  } catch (err) {
+    setStatus(refs.status, err.message, "error");
+  }
+}
+
+
+/**
+ * 動かした形を書き戻す。**専用の口を使う**（`PUT /api/map-shape/{ref}`）。
+ *
+ * 相関図が持っているのはノードの一部だけなので、ここから `EntryDraft` を組み立てて
+ * PUT すると**本文も関係も落ちる** —— サーバ側で読み直して差し替えさせる
+ * （関係の書き込みを `/api/relations` にまとめたのと同じ理由）。
+ */
+async function saveMapShape(ref, kind, points, { remember = true } = {}) {
+  if (remember) rememberShape(ref);
+  try {
+    await api(`/api/map-shape/${encodePath(ref)}`, {
+      method: "PUT",
+      body: { kind, points },
+    });
+    setStatus(statusNode, "地図の位置を保存しました");
+    await refresh();
+  } catch (err) {
+    setStatus(statusNode, err.message, "error");
+  }
+}
+
+//: 書き換える**前**の形。**保存が即時**（掴んで離したら書く）なので、
+//: 戻す手段が無いと**消した頂点は取り返せない**（→ docs/open-questions.md で
+//: 「頂点を消せるようにするなら先に 1 つ戻すを決める」としていた宿題）。
+//:
+//: **同じ語を続けて触ったぶんは 1 つにまとめる。** 矢印キーは 1 押しごとに
+//: 保存するので、押した回数だけ積むと「戻す」を何十回も押すことになる ——
+//: 積むのは**その語を最初に触る前の形**。
+const MAX_UNDO = 50;
+let mapUndo = [];
+
+/** いまの形を控える。**まだ置かれていない語は「置かれていない」ことを控える。** */
+function rememberShape(ref) {
+  if (mapUndo[mapUndo.length - 1]?.ref === ref) return;
+  const node = (lastGraph?.nodes || []).find((n) => n.ref === ref);
+  if (!node) return;
+  mapUndo.push({
+    ref,
+    term: node.term || ref,
+    // 置かれていなかったなら空の種別で戻す（＝地図から下ろす）
+    kind: node.shape?.kind || "",
+    points: (node.shape?.points || []).map((p) => [...p]),
+  });
+  if (mapUndo.length > MAX_UNDO) mapUndo.shift();
+}
+
+/** 1 つ戻す。**戻した操作は積み直さない**（押すたびに 1 つずつ遡る）。 */
+async function undoMapShape() {
+  const prev = mapUndo.pop();
+  if (!prev) return;
+  await saveMapShape(prev.ref, prev.kind, prev.points, { remember: false });
+  setStatus(statusNode, `「${prev.term}」の形を戻しました`);
+}
+
+/** 覚えている「外したもの」を読む。読めなければ空（＝全部出す側に倒す）。 */
+function rememberedHidden() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MAP_HIDDEN_KEY) || "{}");
+    return new Map(Object.entries(raw).map(([k, v]) => [k, new Set(v)]));
+  } catch {
+    return new Map();
+  }
+}
+
+function rememberedNoLabels() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(MAP_LABELS_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveHidden() {
+  try {
+    const plain = {};
+    for (const [key, set] of mapHidden) if (set.size) plain[key] = [...set];
+    localStorage.setItem(MAP_HIDDEN_KEY, JSON.stringify(plain));
+  } catch {
+    /* 使えない環境でも、その画面では効く */
+  }
+}
+
+/**
+ * 地図に出すものの一覧（チェック）。**地図のときだけ出す。**
+ *
+ * **一覧は「その絵に置ける語」全部**（外したものも並べる）—— 外したものが消えると
+ * 戻す手段が無くなる。**カテゴリで束ねて並べる**ので「説だけ全部外す」ができる。
+ *
+ * **外したほうを覚える。** 「出すもの」を覚えると、あとから足した語が黙って
+ * 出なくなる（新しく書いた語は必ず出る側に倒す）。
+ */
+/**
+ * 種別を選び直す口（編集中だけ）。**種別は人が宣言する。**
+ *
+ * 「最初と最後が同じなら領域」のような推測をしないのと同じ話で、点の数が増えた
+ * ／減ったから種別が変わる、にはしない（→ CLAUDE.md）。足りない点は
+ * `fitToKind()` が足し、余る点（線 → 点）は落とす —— **落ちることは押す前に出す。**
+ */
+function kindPicker(item) {
+  const pick = el("select", {
+    class: "auto-width",
+    "data-ref": "mapKind",
+    "aria-label": `${item.term} の形`,
+    title: "この語の形。線や領域にすると、足りない点は隣に足されます",
+  }, [
+    ...Object.entries(KIND_WORDS).map(([value, text]) =>
+      el("option", { value, text, selected: value === item.kind })),
+    // **地図から下ろす道もここに置く。** 座標を消す口が画面に無いと、
+    // 「置いてしまったものを取り消す」が frontmatter を開く作業になる
+    // （点は頂点を 1 つも消せないので、その受け皿でもある）
+    el("option", { value: "", text: "地図から下ろす" }),
+  ]);
+  pick.value = item.kind;
+  pick.addEventListener("change", () => {
+    const node = (lastGraph?.nodes || []).find((n) => n.ref === item.ref);
+    const points = node?.shape?.points || [];
+    const next = pick.value ? fitToKind(pick.value, points) : [];
+    // **落ちるものは押す前に出す**（削除・統合と同じ扱い）。戻せるようには
+    // したが、消えることを黙って通してよい理由にはならない
+    const ask = !pick.value
+      ? `「${item.term}」を地図から下ろします（座標が消えます）。よろしいですか？`
+      : next.length < points.length
+        ? `「${item.term}」を${KIND_WORDS[pick.value]}にすると、`
+          + `${points.length - next.length} 点が落ちます。よろしいですか？`
+        : "";
+    if (ask && !confirm(ask)) {
+      pick.value = item.kind;                 // 断られたら選択も戻す
+      return;
+    }
+    saveMapShape(item.ref, pick.value, next);
+  });
+  return pick;
+}
+
+function paintMapLayers(drawn) {
+  const items = drawn.items || [];
+  mapEdit.hidden = mode !== "map";
+  // **置ける語が 1 つも無くても出す** —— 「置く」から未配置の語へ行けるので、
+  // ここを隠すと最初の 1 つを置く道が無くなる（🖼 絵 を隠さないのと同じ話）
+  mapLayers.hidden = mode !== "map" || !(items.length || (drawn.pending || []).length);
+  if (mapLayers.hidden) return;
+  const off = mapHidden.get(mapName) || new Set();
+
+  const toggle = (refs, on) => {
+    const set = new Set(mapHidden.get(mapName) || []);
+    for (const ref of refs) {
+      if (on) set.delete(ref);
+      else set.add(ref);
+    }
+    mapHidden.set(mapName, set);
+    saveHidden();
+    if (lastGraph) paintGraph(lastGraph);
+  };
+
+  const groups = new Map();
+  for (const item of items) {
+    if (!groups.has(item.category)) groups.set(item.category, []);
+    groups.get(item.category).push(item);
+  }
+
+  // **名前を出すかの切り替え。** 絵に地名が焼き込まれていると二重になるので、
+  // 絵ごとに切れるようにする（既定は出す側）
+  const nameBox = el("input", { type: "checkbox" });
+  nameBox.checked = !mapNoLabels.has(mapName);
+  nameBox.addEventListener("change", () => {
+    if (nameBox.checked) mapNoLabels.delete(mapName);
+    else mapNoLabels.add(mapName);
+    try {
+      localStorage.setItem(MAP_LABELS_KEY, JSON.stringify([...mapNoLabels]));
+    } catch {
+      /* 使えない環境でも、その画面では効く */
+    }
+    if (lastGraph) paintGraph(lastGraph);
+  });
+  // **編集は覚えない。** 開くたびに閲覧へ戻す（うっかり動かすほうの害が大きい）
+  const editBox = el("input", { type: "checkbox" });
+  editBox.checked = mapEditing;
+  editBox.addEventListener("change", () => {
+    mapEditing = editBox.checked;
+    mapPlacing = "";
+    if (lastGraph) paintGraph(lastGraph);
+  });
+  const parts = [
+    el("label", {
+      class: "check",
+      "data-ref": "mapEdit",
+      title: "丸を掴んで位置を動かせるようにする（離すと保存されます）",
+    }, [editBox, el("span", { text: "置く" })]),
+  ];
+  // **保存は即時なので、戻す道を必ず出す。** 消した頂点はこれが無いと
+  // 取り返せない（→ docs/design-notes.md）。**編集中だけ**出す
+  if (mapEditing && mapUndo.length) {
+    const last = mapUndo[mapUndo.length - 1];
+    parts.push(el("button", {
+      type: "button",
+      class: "chip",
+      "data-ref": "mapUndo",
+      text: `↩ 「${last.term}」を戻す`,
+      title: `${mapUndo.length} 手ぶん戻せます（1 回押すと 1 つ）`,
+      onclick: undoMapShape,
+    }));
+  }
+  parts.push(
+    el("label", {
+      class: "check",
+      "data-ref": "mapNames",
+      title: "絵に地名が入っているときは外す（乗せれば名前は出ます）",
+    }, [nameBox, el("span", { text: "名前を出す" })]),
+    el("span", { class: "hint", text: "地図に出すもの:" }),
+  );
+  for (const [category, list] of groups) {
+    const refs = list.map((i) => i.ref);
+    const allOn = refs.every((r) => !off.has(r));
+    // カテゴリの見出しそのものがまとめて切り替えるボタン（「説だけ外す」ができる）。
+    // **半端に選ばれているときは「全部出す」に倒す** —— 迷ったら出す側、が
+    // この辞書の約束（黙って欠けさせない）。全部出ているときだけ全部外す
+    parts.push(el("button", {
+      type: "button",
+      class: "chip",
+      text: `${category || "未分類"} ${refs.filter((r) => !off.has(r)).length}/${refs.length}`,
+      title: allOn ? "このカテゴリをまとめて外す" : "このカテゴリをまとめて出す",
+      onclick: () => toggle(refs, !allOn),
+    }));
+    for (const item of list) {
+      const box = el("input", { type: "checkbox" });
+      box.checked = !off.has(item.ref);
+      box.addEventListener("change", () => toggle([item.ref], box.checked));
+      parts.push(el("label", { class: "check", "data-ref": "mapItem" },
+        [box, el("span", { text: item.term })]));
+      // **種別は編集中だけ選べる。** ここが**画面から線や領域を作る唯一の道**
+      // （置くと点になるので、線にしたければ種別を変えて頂点を足す）。
+      // **点の数から機械が推測しない** —— 足りないぶんは `fitToKind()` が足す。
+      // **label の中には入れない** —— 中の `<select>` を押したときに
+      // チェックまで動くかがブラウザまかせになる（隣に並べれば起きない）
+      if (mapEditing) parts.push(kindPicker(item));
+    }
+  }
+  // **まだ置いていない語**（絵の名前だけ書いてある）。押してから絵を押すと置く。
+  // 分類していない —— 「この絵に置きたい」と書いてあるものだけが並ぶ
+  const pending = drawn.pending || [];
+  if (mapEditing && pending.length) {
+    parts.push(el("span", { class: "hint", text: "まだ置いていない:" }));
+    for (const item of pending) {
+      parts.push(el("button", {
+        type: "button",
+        class: mapPlacing === item.ref ? "chip primary" : "chip",
+        "data-ref": "mapPending",
+        text: item.term,
+        title: "押してから絵の上を押すと、そこへ置きます",
+        onclick: () => {
+          mapPlacing = mapPlacing === item.ref ? "" : item.ref;
+          if (lastGraph) paintGraph(lastGraph);
+        },
+      }));
+    }
+  }
+  mapLayers.replaceChildren(...parts);
+}
+
+/** 絵の選択肢を作る。**地図のとき、絵が 2 枚以上あるときだけ出す。** */
+function paintMapOptions(graph) {
+  const maps = graph.maps || [];
+  mapPick.hidden = mode !== "map" || maps.length < 2;
+  if (mapPick.hidden) return;
+  mapPick.replaceChildren(
+    ...maps.map((m) => el("option", { value: `${m.scope}/${m.name}`, text: m.name }))
+  );
+  mapPick.value = mapName;
+}
+
+/**
+ * 「ここまで読んだぶん」に絞る。**出てきていない語と、その語につながる関係を伏せる。**
+ *
+ * 判断は `reading.js` に任せる（本文のリンクそのものを見る）—— ここで文字位置と
+ * ブロックの添字を突き合わせようとしないこと。**伏せた数は必ず返す**ので、
+ * 図は「黙って欠けた図」にならない（`hidden` / `outside` と同じ約束）。
+ */
+function limitToRead(graph) {
+  const now = readingNow();
+  if (!now) return { graph, note: "" };
+  const nodes = graph.nodes.filter((n) => now.refs.has(n.ref));
+  const shown = new Set(nodes.map((n) => n.ref));
+  const edges = graph.edges.filter((e) => shown.has(e.from) && shown.has(e.to));
+  const note = [
+    `いま読んでいるところまでに出てきた ${nodes.length} 語だけを出しています`,
+    graph.nodes.length - nodes.length
+      ? `（まだ出てきていない ${graph.nodes.length - nodes.length} 語と、`
+        + `その語につながる関係 ${graph.edges.length - edges.length} 本は伏せています`
+      : "（伏せたものはありません",
+    // **決めきれない語は入れていない、と書く。** 黙って落とすと「出てきたのに
+    // 図に無い」になり、機械の取りこぼしと見分けが付かない
+    now.undecided
+      ? `。同じ表記が複数のカテゴリにある語 ${now.undecided} か所は、どれのことか`
+        + "決まらないので入れていません"
+      : "",
+    "）。",
+  ].join("");
+  return { graph: { ...graph, nodes, edges }, note };
+}
+
 function paintGraph(graph) {
   lastGraph = graph;
   showDetail("");
+  // **絞る前のものを覚えておく**（チェックを外したらサーバへ行き直さずに戻す）
+  const limited = readSoFarCheck.checked ? limitToRead(graph) : { graph, note: "" };
+  readingNote = limited.note;
+  graph = limited.graph;
   const drawn = draw(graph);
+  paintMapOptions(graph);
+  paintMapLayers(drawn);
   paintNotes(graph);
   setStatus(statusNode, `${graph.nodes.length} 語 / ${graph.edges.length} 本の関係`);
   const common =
@@ -1511,6 +2150,13 @@ function paintGraph(graph) {
       + "左の見出しは、両方の語が出そろう位置（章・ページ・行）。"
       + "位置は開くたびに本文から数えていて保存はしないので、本文を直せば次に開いたときに追いつきます。"
       + "「判明: …」は人が書いた判明位置で、並べ替えには使っていません。",
+    // 「どこ」が見えるのがこの見せ方の役目。**分類していない**と書いておかないと、
+    // 「地名なのに出てこない」を機械の取りこぼしだと読まれる
+    map:
+      "座標を書いた語を絵の上に置いています。"
+      + "どれが地名かは決めていません —— 座標を書いた語が出るだけなので、"
+      + "出したい語には map と pin を書いてください。"
+      + "線は、両端がこの絵に置かれている関係だけです。",
   }[mode] || "▲▼ の代わりに上下の関係は段で表しています。";
   legend.textContent =
     shape + common
@@ -1560,37 +2206,81 @@ export async function mount(host, { search = "", embed = false } = {}) {
   canvas = host.querySelector("#canvas");
   zoomBar = host.querySelector("#zoom");
   modeSelect = host.querySelector("#mode");
+  mapPick = host.querySelector("#mapPick");
+  mapLayers = host.querySelector("#mapLayers");
+  mapEdit = host.querySelector("#mapEdit");
+  mapDialog = host.querySelector("#mapDialog");
+  installMapDialog();
   detailNode = host.querySelector("#detail");
   notes = host.querySelector("#notes");
   legend = host.querySelector("#legend");
   statusNode = host.querySelector("#status");
   categorySelect = host.querySelector("#category");
   spoilerCheck = host.querySelector("#spoilers");
+  readSoFarCheck = host.querySelector("#readSoFar");
+  readSoFarBox = host.querySelector("#readSoFarBox");
+  readSoFarCheck.checked = false;
+  readSoFarCheck.addEventListener("change", () => {
+    // 絞るだけならサーバへ行き直さない（同じデータを描き替えるだけ）
+    if (lastGraph) paintGraph(lastGraph);
+  });
+  installSaveImage(host);
   edgeDialog = host.querySelector("#edgeDialog");
   countNode = document.getElementById("count");   // topbar は覆いの外
   params = new URLSearchParams(search);
   currentScope = params.get("scope") || "";
   currentDoc = params.get("doc") || "";
+  // **ビューアで文書を読んでいるときだけ出す**（`?doc=` が無ければ「全体の図」で、
+  // どこまで読んだかは意味を持たない）。**覚えない** —— 開くたびに全体へ戻す
+  // （伏せたまま開き直すと「関係が消えた」と読まれる）
+  readSoFarBox.hidden = !(currentDoc && readingNow());
+  readingNote = "";
   // 中心の図の初期値。用語ページの「この語を中心に」からはこれが付いてくる
   egoCenter = params.get("ref") || "";
+  namedRef = egoCenter;
   embedded = embed;
   termByRef = new Map();
   lastGraph = null;
+  // **戻せるのは開いている間だけ。** 覆いは何度でも開き直されるので、持ち越すと
+  // 「いつのものか分からない形」を戻すボタンが出る（編集を覚えないのと同じ扱い）
+  mapUndo = [];
 
   // **listener は最初の await より前に付ける。** あとに回すと、その間の操作が
   // 黙って無視される（設定ダイアログと extract.js で 2 回踏んだ）
   mode = rememberedMode();
+  // **URL が見せ方を名指ししていればそれが最優先。** 用語ページの「🗺 地図で見る」は
+  // 語と見せ方の両方を指しているので、`?ref=` の「中心の図で開く」に負けさせない
+  const wanted = params.get("mode") || "";
+  modeFromUrl = MODES.includes(wanted) && wanted !== mode ? wanted : "";
   // **語を名指しで開かれたら中心の図で出す。** そうしないと、覚えている見せ方が
   // 段の図の人には「この語を中心に」を押しても何も起きない。**覚えているほうは
   // 書き換えない**（この 1 回だけの上書き）ので、次にふつうに開けば元に戻る
-  centeredByUrl = Boolean(egoCenter) && mode !== "ego";
-  if (egoCenter) mode = "ego";
+  centeredByUrl = Boolean(egoCenter) && mode !== "ego" && !MODES.includes(wanted);
+  if (MODES.includes(wanted)) mode = wanted;
+  else if (egoCenter) mode = "ego";
   syncModeOptions();
+  // 絵も URL から指せる（用語ページはその語が置かれている絵を知っている）。
+  // **こちらも覚えているほうは書き換えない**
+  mapName = params.get("map") || rememberedMap();
+  mapHidden = rememberedHidden();
+  mapNoLabels = rememberedNoLabels();
+  mapPick.addEventListener("change", () => {
+    mapName = mapPick.value;
+    try {
+      localStorage.setItem(MAP_KEY, mapName);
+    } catch {
+      /* 使えない環境でも選べること自体は動く */
+    }
+    // 絵を変えるだけならサーバへ行き直さない（同じデータを描き替えるだけ）
+    if (lastGraph) paintGraph(lastGraph);
+  });
   modeSelect.addEventListener("change", () => {
     mode = MODES.includes(modeSelect.value) ? modeSelect.value : "layered";
     // 自分で選び直したなら、落とした / 押しのけたときの断り書きはもう要らない
     modeFellBack = false;
+    mapFellBack = false;
     centeredByUrl = false;
+    modeFromUrl = "";
     try {
       localStorage.setItem(MODE_KEY, mode);
     } catch {

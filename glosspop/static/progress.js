@@ -78,8 +78,8 @@ export function forget(key) {
   saveAll(data);
 }
 
-/** いま画面の上端にある段落の番号。 */
-function topBlock(container, doc) {
+/** いま画面の上端にある段落の番号（**再開する位置**。読んだところは `reading.js`）。 */
+function topBlockOf(container, doc) {
   const top = container.getBoundingClientRect().top;
   const blocks = doc.children;
   for (let i = 0; i < blocks.length; i++) {
@@ -109,7 +109,7 @@ export function createTracker({ container, doc }) {
     if (!key || restoring) return;
     const total = doc.children.length;
     if (!total) return;
-    const block = topBlock(container, doc);
+    const block = topBlockOf(container, doc);
     // 先頭まで戻したら覚えていたものを捨てる（「続きから」が出続けない）
     if (block < MIN_BLOCK) forget(key);
     else remember(key, block, total);

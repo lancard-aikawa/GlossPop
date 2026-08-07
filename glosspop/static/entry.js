@@ -277,6 +277,38 @@ function appearancesSection(entry) {
   return section("本文での使われ方", box);
 }
 
+/**
+ * 地図への入口。**`map:` が書いてあるときだけ**出す。
+ *
+ * 座標は用語のファイルに書くのに、**地図はここから開けなかった** —— 置く動線も
+ * 相関図の覆いの中にしか無く、用語ページからは自分がどこに置かれているのかも
+ * 分からなかった。`?mode=map` で見せ方まで名指しするのは、覚えている見せ方が
+ * 段の図の人に効かせるため（`?ref=` の「中心の図で開く」と同じ話）。
+ *
+ * **形が無いときは「置く」と書く。** 絵の名前だけ書いた語は地図の側で
+ * 「置き待ち」として並ぶので、行き先は同じでよい（`map.js` の `pending`）。
+ * **形だけあって `map:` が無いときは出さない** —— どの絵の話か決まらないし、
+ * そちらは点検が挙げる（`shape_without_map`）。
+ */
+function mapLink(entry) {
+  if (!entry.map) return null;
+  const placed = Boolean(entry.pin?.length || entry.line?.length || entry.area?.length);
+  const query = new URLSearchParams({
+    mode: "map",
+    map: `${entry.scope}/${entry.map}`,
+    ref: entry.ref,
+  });
+  return el("a", {
+    class: "btn",
+    "data-ref": "mapLink",
+    href: `/graph?${query}`,
+    title: placed
+      ? `「${entry.map}」の上のこの語を見る`
+      : `「${entry.map}」の上にこの語を置く`,
+    text: placed ? "🗺 地図で見る →" : "🗺 地図に置く →",
+  });
+}
+
 function relationsSection(entry) {
   const resolved = entry.relations_resolved || [];
   const links = entry.backlinks || [];
@@ -318,6 +350,7 @@ function relationsSection(entry) {
         title: "この語を真ん中に置いて、2 つ先までの関係を見る",
         text: "この語を中心に →",
       }),
+      mapLink(entry),
       // **1 語ぶんの下書き。** 全体まとめての下書きはビューアにあるが、
       // 「この語だけ関係が空のまま」を埋める道がここに無かった
       el("button", {
@@ -342,6 +375,73 @@ function relationsSection(entry) {
     ])
   );
   return section("関係", parts);
+}
+
+/**
+ * 用語ごとの画像。**語り手の顔とは別物**（顔は「誰が書いているか」で辞書に 1 枚）。
+ *
+ * **受け取る口の規則は顔と同じ**（生のバイト列で送る・ファイル名は使わない・
+ * 拡張子はサーバが中身から決める）。ここが持つのは選ばせ方と文言だけ。
+ * **SVG は選ばせない** —— サーバも通さないので、選べると「入れたのに断られた」になる。
+ */
+function imagePanel(entry) {
+  const box = el("div", { class: "entry-image", "data-ref": "imagePanel" });
+  const status = el("span", { class: "status" });
+  const file = el("input", {
+    type: "file",
+    accept: "image/png,image/jpeg,image/webp,image/gif",
+    "data-ref": "imageFile",
+    hidden: true,
+  });
+
+  const send = async (method, body) => {
+    setStatus(status, method === "DELETE" ? "消しています" : "入れています", "busy");
+    try {
+      const res = await fetch(
+        `/api/entry-image?ref=${encodePath(entry.ref)}`,
+        { method, body, headers: body ? { "Content-Type": "application/octet-stream" } : {} }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+      setStatus(status, "");
+      // **吹き出しも一覧も同じ絵を出す**ので、覚えているぶんを捨てる
+      invalidatePopupCache();
+      await reload(entry.ref);
+    } catch (err) {
+      setStatus(status, err.message, "error");
+    }
+  };
+
+  file.addEventListener("change", () => {
+    const picked = file.files?.[0];
+    file.value = "";                       // 同じファイルをもう一度選べるように
+    if (picked) send("POST", picked);
+  });
+
+  if (entry.image_url) {
+    box.append(el("img", { class: "entry-photo", src: entry.image_url, alt: "" }));
+  }
+  box.append(el("div", { class: "toolbar" }, [
+    el("button", {
+      type: "button",
+      "data-ref": "imagePick",
+      text: entry.image_url ? "画像を差し替え" : "🖼 画像を入れる",
+      title: "PNG / JPEG / GIF / WebP（4 MB まで）",
+      onclick: () => file.click(),
+    }),
+    entry.image_url ? el("button", {
+      type: "button",
+      class: "danger",
+      "data-ref": "imageDrop",
+      text: "画像を消す",
+      // **確認を取る。** 画像は控えに入るが、1 件ずつ戻す口は無い
+      onclick: () => confirm(`「${entry.term}」の画像を消します。よろしいですか？`)
+        && send("DELETE", null),
+    }) : null,
+    file,
+    status,
+  ]));
+  return box;
 }
 
 function render(entry) {
@@ -369,6 +469,9 @@ function render(entry) {
     head.append(el("p", { class: "aliases", text: `別名: ${entry.aliases.join(" / ")}` }));
   }
   if (entry.summary) head.append(el("p", { class: "summary", text: entry.summary }));
+  // **用語ごとの画像は本文の前**（顔は見出しの横）。**主戦場はここ** ——
+  // 吹き出しは狭くて顔と取り合うので、大きく出せるのは用語ページだけ
+  head.append(imagePanel(entry));
   if (entry.tags?.length) {
     // タグで絞り込む (`?q=` に流すと、そのタグ名が本文に出るだけの語まで拾う)
     head.append(el("div", { class: "chips" }, entry.tags.map((t) => chip(`#${t}`, `/glossary?tag=${encodeURIComponent(t)}`))));

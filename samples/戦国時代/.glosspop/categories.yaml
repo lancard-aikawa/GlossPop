@@ -1,0 +1,10 @@
+categories:
+- name: 事件
+- name: 説
+- name: 人
+  subcategories:
+  - 織田家
+  - 今川家
+  - 徳川家
+  - 浅井・朝倉
+- name: 地

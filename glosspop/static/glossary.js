@@ -78,10 +78,15 @@ function hasSelection() {
  * 要約の上ではふつうに文字を選べる。
  */
 function card(e) {
-  const node = el("div", { class: "card" }, [
+  const node = el("div", { class: e.image_url ? "card has-thumb" : "card" }, [
     // **ペルソナの顔は一覧には出さない。** 顔は辞書に 1 枚なので、同じ辞書の
     // カードが並ぶと同じ絵が何十個も繰り返されるだけで、何も区別できない
-    // （出す価値があるのは、複数の辞書が並ぶ吹き出しと、1 件を見る用語ページ）
+    // （出す価値があるのは、複数の辞書が並ぶ吹き出しと、1 件を見る用語ページ）。
+    // **用語ごとの画像は逆で、語ごとに違うので見分けに効く** —— 出す。
+    // **`loading="lazy"` は外さないこと**（一覧は数千枚になりうる）
+    e.image_url ? el("img", {
+      class: "card-thumb", src: e.image_url, alt: "", loading: "lazy",
+    }) : null,
     el("a", {
       class: "t", href: e.url,
       html: esc(e.term) + (e.reading ? `<span class="r">${esc(e.reading)}</span>` : ""),

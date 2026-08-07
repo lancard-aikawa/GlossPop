@@ -1,12 +1,18 @@
 # 携帯前提で引き直す（→ GlossPopApp）
 
+> **この文書の結論（「辞書はサーバに置く」「オンラインが主」）は、その後
+> [serverless-rethink.md](serverless-rethink.md) で覆っている。**
+> サーバを運用しないという方針が先にあり、`glosspop.core` がブラウザで動くことも
+> 実測で確かめた。**最終形はまだ決めていない**ので、ここは当時の検討としてそのまま残す。
+
 **結論: 本体には足さず、GlossPopApp という別プロジェクトにした。**
 決定そのものは [design-notes.md](design-notes.md) にあり、ここは**そこへ至る検討の
 記録**。[open-questions.md](open-questions.md) にあった「複数端末での共有」の続きで、
 あちらからは畳んだ。
 
 **実物は `../GlossPopApp`**（別リポジトリ）。作ったものと残っているものは
-[そちらの README](../../GlossPopApp/README.md) と
+[そちらの README](../../GlossPopApp/README.md)・[MANUAL](../../GlossPopApp/MANUAL.md)・
+[DEVELOP](../../GlossPopApp/DEVELOP.md)（店に並べる殻のビルドもここ）・
 [CLAUDE.md](../../GlossPopApp/CLAUDE.md) が持っている ——
 **この文書は「なぜそうしたか」だけを残す。**
 

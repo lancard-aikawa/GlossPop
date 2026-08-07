@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from anyio import to_thread
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -28,7 +30,7 @@ from . import (
     updates,
     watchdog,
 )
-from .core import render, relations, documents, timeline, doctor
+from .core import render, relations, documents, timeline, doctor, imagefmt
 from .core.linker import Linker, entry_url
 from .core.models import (
     GLOBAL_SCOPE,
@@ -171,6 +173,22 @@ class RelationsApplyRequest(BaseModel):
     """
 
     relations: list[RelationItem] = []
+
+
+class MapShapeRequest(BaseModel):
+    """地図の上の形だけを書き換える。
+
+    **エントリ全体をクライアントに組み立て直させない。** 相関図が持っているのは
+    ノードの一部（用語名・カテゴリ・形）だけなので、そこから `EntryDraft` を作って
+    PUT させると**本文も関係も落ちる** —— 関係の書き込みを `/api/relations` に
+    まとめたのと同じ理由で、サーバ側で読み直して差し替える。
+    """
+
+    #: 絵の名前。空なら**いまの値のまま**（形だけ動かすとき）
+    map: str | None = None
+    #: point | line | area。空文字なら**形を消す**（地図から外す）
+    kind: str = ""
+    points: list[list[float]] = []
 
 
 class AISettingsRequest(BaseModel):
@@ -367,13 +385,38 @@ def _ai_state() -> dict:
     return data
 
 
-def _term_card(entry: Entry, *, personas: dict[str, str] | None = None) -> dict:
+def _image_index() -> dict[str, str]:
+    """``{ref: 画像の URL}``。**一覧のために 1 回だけ作る。**
+
+    語ごとに `store.image_file()` を呼ぶと、3000 語の一覧で**語数 × 拡張子の数**
+    だけ stat が飛ぶ（顔を 1 回だけ調べているのと同じ判断）。
+    """
+    out: dict[str, str] = {}
+    for scope in SCOPES:
+        for ref, path in store.list_images(scope).items():
+            try:
+                stamp = int(path.stat().st_mtime)
+            except OSError:
+                continue
+            out[ref] = f"/api/entry-image?ref={quote(ref)}&v={stamp}"
+    return out
+
+
+def _term_card(
+    entry: Entry,
+    *,
+    personas: dict[str, str] | None = None,
+    images: dict[str, str] | None = None,
+) -> dict:
     # **一覧では 1 回だけ調べて配る。** エントリごとに調べると、3000 語の一覧で
     # 拡張子の数だけ stat が飛ぶ（辞書は 2 つしかないので 1 回で足りる）
     persona = (personas or {}).get(entry.scope)
     if persona is None:
         persona = _persona_url(entry.scope)
     return {
+        # **一覧には顔を出さないが、用語ごとの画像は出す。** 顔は辞書に 1 枚なので
+        # 同じ絵が何十個も並ぶだけだが、こちらは語ごとに違う（＝見分けに効く）
+        "image_url": (images if images is not None else _image_index()).get(entry.ref, ""),
         "ref": entry.ref,
         "slug": entry.slug,
         "term": entry.term,
@@ -415,6 +458,9 @@ def _entry_payload(entry: Entry, *, linker: Linker | None = None) -> dict:
     # こちらは「すでに書かれたものの出どころ」なので基準が違う）。揃えると、
     # 小説のフォルダを開いている間だけ全体辞書の用語にもその顔が付く
     data["persona_url"] = _persona_url(entry.scope)
+    # **用語ごとの画像は顔とは別**（顔は「誰が書いているか」、こちらは「その語」）。
+    # 吹き出しでは同じ場所を取り合うので、**用語の画像があればそちらを出す**
+    data["image_url"] = _image_url(entry.ref)
     # 実際の保存先。グローバルとローカルでルートが違うので、組み立てを UI に任せない
     data["path"] = str(store.path_for_ref(entry.ref))
     data["definition_html"] = definition_html
@@ -919,9 +965,46 @@ def graph(
     )
     if document is not None:
         timeline.annotate(result, document, _linker())
+    # 地図の見せ方が使える絵。**出てくる語から候補を出す**（別に一覧の口を作らない）
+    result["maps"] = _graph_maps(result["nodes"])
     # 何に絞ったのかは画面に出す（絞っていないときは「辞書全体」と言わせる）
     result["doc"] = doc or ""
     return result
+
+
+def _graph_maps(nodes: list[dict]) -> list[dict]:
+    """図に出ているノードが指している地図の一覧。
+
+    **URL に更新時刻を入れるのはここ 1 か所**（顔の `_persona_url()` と同じ約束）。
+    入れないと絵を差し替えても古いものが出る。
+
+    候補を**ノードから作る**のは、絵を並べる別の口を持たないため —— 「置いてある絵」
+    ではなく「いま図に出ている語が指している絵」が欲しい（`?doc=` で絞ったときに、
+    その文書と関係の無い地方の図を選ばせない）。
+    """
+    seen: dict[tuple[str, str], dict] = {}
+    for node in nodes:
+        name, scope = node.get("map"), node.get("scope") or GLOBAL_SCOPE
+        if not name or not node.get("shape"):
+            continue                      # 両方書いてあるものだけが地図に出る
+        key = (scope, name)
+        if key in seen:
+            seen[key]["count"] += 1
+            continue
+        path = store.map_file(scope, name)
+        if path is None:
+            continue                      # 絵が無い（数は下の places で分かる）
+        try:
+            stamp = int(path.stat().st_mtime)
+        except OSError:
+            stamp = 0
+        seen[key] = {
+            "name": name,
+            "scope": scope,
+            "url": f"/api/map?scope={scope}&name={quote(name)}&v={stamp}",
+            "count": 1,
+        }
+    return sorted(seen.values(), key=lambda m: (m["scope"], m["name"]))
 
 
 def _relation_scope(category: str, scope: str) -> list[Entry]:
@@ -1088,8 +1171,18 @@ def run_doctor() -> dict:
     参照を名前で書ける（ID を持たない）ぶん、書き間違いや相手の削除で静かに
     切れる。``/api/graph`` はカテゴリ単位でしか壊れを返さないので、横断して
     集める受け皿がここ。
+
+    **置いてある絵はここで数えて渡す。** `doctor` は `core` にあって辞書の
+    置き場所を知らないので、「その名前の絵があるか」は呼ぶ側にしか分からない。
     """
-    return doctor.check(store.load_all())
+    return doctor.check(store.load_all(), maps=_available_maps())
+
+
+def _available_maps() -> set[str]:
+    """置いてある絵の ``<scope>/<名前>``。辞書の無いスコープは黙って空。"""
+    return {
+        f"{scope}/{path.stem}" for scope in SCOPES for path in store.list_maps(scope)
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1106,6 +1199,7 @@ def list_entries(
 ) -> list[dict]:
     needle = q.strip().casefold()
     personas = {s: _persona_url(s) for s in SCOPES}
+    images = _image_index()
     out = []
     for e in store.load_all():
         if scope is not None and e.scope != scope:
@@ -1122,7 +1216,7 @@ def list_entries(
             haystack = " ".join([e.term, e.reading, e.summary, e.definition, *e.aliases, *e.tags]).casefold()
             if needle not in haystack:
                 continue
-        card = _term_card(e, personas=personas)
+        card = _term_card(e, personas=personas, images=images)
         card["aliases"] = e.aliases
         card["tags"] = e.tags
         card["updated_at"] = e.updated_at
@@ -1181,6 +1275,38 @@ def update_entry(ref: str, draft: EntryDraft) -> dict:
     except store.StoreError as exc:
         raise HTTPException(404, str(exc)) from exc
     return _entry_payload(entry)
+
+
+@app.put("/api/map-shape/{ref:path}")
+def put_map_shape(ref: str, req: MapShapeRequest) -> dict:
+    """1 エントリの地図の形を差し替える。
+
+    **形は必ず 1 つだけになる** —— 送られた種別を書き、残り 2 つは空にする
+    （画面から `two_map_shapes` を作らせない）。**書く直前に読み直す**ので、
+    本文・関係・別名はそのまま残る。
+    """
+    entry = store.get(ref)
+    if entry is None:
+        raise HTTPException(404, f"用語が見つかりません: {ref}")
+    kinds = {"point": "pin", "line": "line", "area": "area"}
+    if req.kind and req.kind not in kinds:
+        raise HTTPException(400, f"不明な形です: {req.kind}")
+
+    data = entry.model_dump()
+    data["map"] = entry.map if req.map is None else req.map.strip()
+    # **消す先は `kinds` から導く。** 名前を並べ直すと必ずずれる —— 実際、線の
+    # 項目が `path` から `line` に変わったあとも**ここだけ `path` を消していた**
+    # ので、線 → 点 に変えても線が残り、`two_map_shapes` ができていた
+    for field in kinds.values():
+        data[field] = []
+    if req.kind:
+        points = req.points
+        data[kinds[req.kind]] = points[0] if req.kind == "point" and points else points
+    try:
+        saved = store.save(EntryDraft.model_validate(data), ref=ref)
+    except store.StoreError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _entry_payload(saved)
 
 
 @app.post("/api/move/{ref:path}")
@@ -1602,6 +1728,153 @@ def persona(scope: str = GLOBAL_SCOPE) -> FileResponse:
     )
 
 
+#: 画像の Content-Type。**顔・地図・用語ごとの画像で共用**
+#: （`core.imagefmt` の拡張子と対で持つ。`.svg` を使うのは地図だけ）
+IMAGE_TYPES = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+}
+
+
+@app.get("/api/map")
+def map_image(name: str, scope: str = GLOBAL_SCOPE) -> FileResponse:
+    """相関図の「地図」で背景に敷く絵を返す。無ければ 404。
+
+    **顔と違って SVG を通す。** 地図は線画で拡大が本題なので、ラスタだと背景だけ
+    ボケる（「にじむと SVG の意味が無い」と決めてある側と食い違う）。**通せる根拠は
+    形式ではなく出し方**で、2 つで担保している:
+
+    - **`<image>` に埋め込む。** ブラウザは `<img>` / `<image>` 経由で読んだ SVG を
+      **secure static mode** で描くので、中の `<script>` も `onload` も外部参照も
+      動かない（仕様レベルの保証で、サニタイズより堅い）
+    - **`CSP: sandbox`。** 埋め込みだけだと **URL を直接開かれたとき**に文書として
+      扱われ、スクリプトがこちらのオリジンで動く。ヘッダ 1 行でそこも opaque origin
+      に落ちる（`nosniff` も一緒に）
+
+    **名前は検査する。** 顔は決め打ちの名前で逃げられたが、地図は辞書に数枚あるので
+    逃げられない —— 組み立てた結果が置き場所の中にあることを `store.map_file()` が
+    最後に確かめる。
+    """
+    if scope not in SCOPES:
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    path = store.map_file(scope, name)
+    if path is None:
+        raise HTTPException(404, "その地図がありません")
+    return FileResponse(
+        path,
+        media_type=IMAGE_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        headers={
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            # URL に更新時刻を入れるので、こちらは長く持たせてよい
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+#: 見分けは `core.imagefmt.sniff()`（顔・地図・用語ごとの画像で 1 か所）。
+#: **地図だけ SVG を通す** —— 配る側が `<image>` 埋め込みと `CSP: sandbox` で
+#: 担保しているので、形式ではなく出し方で安全を取っている（→ `map_image`）。
+
+#: SVG が寸法を持っているか。**持たないと縦横比が読めない。**
+#: 実測: `width`/`height` があれば実寸、**`viewBox` だけでも比は正しい**（ブラウザが
+#: そこから導く）。**どちらも無いと 300x150 の既定値**にされ、中身が何であれ
+#: **2:1 で描かれる** —— 絵は出るので画面を見るまで気付けない。ここで弾くのが
+#: 唯一の実効的な場所（描く側からは、本当に 300x150 の絵と区別が付かない）。
+_SVG_SIZED = re.compile(
+    rb"<svg[^>]*?(?:viewBox|width)\s*=", re.IGNORECASE | re.DOTALL
+)
+
+
+def _sniff_map(data: bytes) -> str:
+    """中身から拡張子を決める。読めなければ 400。
+
+    **寸法の検査は地図だけの追加分**（見分けそのものは `imagefmt` の仕事）。
+    """
+    suffix = imagefmt.sniff(data, allow_svg=True)
+    if suffix == ".svg" and not _SVG_SIZED.search(data[:4096]):
+        raise HTTPException(
+            400,
+            "この SVG には大きさが書かれていません"
+            "（width と height、または viewBox を入れてください）。"
+            "無いと縦横比が読めず、図が黙って歪みます。",
+        )
+    if suffix is None:
+        raise HTTPException(400, "画像として読めませんでした（PNG / JPEG / GIF / WebP / SVG）")
+    return suffix
+
+
+@app.get("/api/maps")
+def list_map_images() -> dict:
+    """置いてある絵の一覧。**辞書の無いスコープは黙って空**（作らない）。
+
+    `/api/graph` の `maps` とは別物 —— あちらは**出ている語が指している絵**で、
+    こちらは**置いてある絵**。使っていない絵を消せるように、管理側はこちらを見る。
+    """
+    out = []
+    for scope in SCOPES:
+        for path in store.list_maps(scope):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            out.append({
+                "name": path.stem,
+                "scope": scope,
+                "suffix": path.suffix.lower(),
+                "bytes": stat.st_size,
+                "url": f"/api/map?scope={scope}&name={quote(path.stem)}&v={int(stat.st_mtime)}",
+            })
+    return {"maps": out, "max_bytes": store.MAP_MAX_BYTES, "can_local": store.local_available()}
+
+
+@app.post("/api/map")
+async def put_map_image(request: Request, name: str, scope: str = GLOBAL_SCOPE) -> dict:
+    """地図の絵を置く / 差し替える。**中身は生のバイト列で受け取る。**
+
+    ``multipart`` にしないのは、送られてくるファイル名を**そもそも受け取らない**
+    ため（顔と同じ形）。ただし**地図は名前が要る**ので、そこだけはクエリで受け、
+    `store.map_path()` が**組み立てた結果が置き場所の中にあることを確かめる**。
+    """
+    if scope not in SCOPES:
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "中身が空です")
+    if len(data) > store.MAP_MAX_BYTES:
+        raise HTTPException(
+            400, f"大きすぎます（{store.MAP_MAX_BYTES // (1024 * 1024)} MB まで）"
+        )
+    target = store.map_path(scope, (name or "").strip(), _sniff_map(data))
+    if target is None:
+        raise HTTPException(400, "その名前では置けません")
+    # **押したときだけディレクトリを作る**（開いただけのフォルダを汚さない）
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    # 別の拡張子の同名を片付ける（残すと「差し替えたのに変わらない」になる）
+    store.clear_other_maps(scope, target.stem, target)
+    return list_map_images()
+
+
+@app.delete("/api/map")
+def delete_map_image(name: str, scope: str = GLOBAL_SCOPE) -> dict:
+    """地図の絵を消す。**エントリの `map` は書き換えない。**
+
+    書き換えて回ると、手で戻したときに繋がらない（関係の転送と同じ考え方）。
+    絵が無い語は地図に出なくなるだけで、**数は図が凡例に出す**。
+    """
+    if scope not in SCOPES:
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    found = store.map_file(scope, (name or "").strip())
+    if found is not None:
+        found.unlink(missing_ok=True)
+    return list_map_images()
+
+
 @app.post("/api/persona")
 async def put_persona(request: Request, scope: str = GLOBAL_SCOPE) -> dict:
     """語り手の顔を差し替える。**中身は生のバイト列で受け取る。**
@@ -1630,6 +1903,96 @@ def remove_persona(scope: str = GLOBAL_SCOPE) -> dict:
     except ai.AIError as exc:
         raise HTTPException(400, str(exc)) from exc
     return _ai_state()
+
+
+# --------------------------------------------------------------------------- #
+# 用語ごとの画像
+#
+# **語り手の顔とは別物。** 顔は「誰が書いているか」で辞書に 1 枚、こちらは
+# 「その語そのもの」で語ごと。**規則は顔と地図から変えていない** ——
+# パスを外から組み立てない / 拡張子は中身から決める / 上限を持つ /
+# 別の拡張子を片付ける / URL に更新時刻を入れる。
+# --------------------------------------------------------------------------- #
+
+def _image_url(ref: str) -> str:
+    """その語の画像の URL。無ければ空。**更新時刻を入れる**（差し替えが効くように）。
+
+    作るのはここ 1 か所（顔の `_persona_url()` と同じ約束で、写しを作らない）。
+    """
+    found = store.image_file(ref)
+    if found is None:
+        return ""
+    try:
+        stamp = int(found.stat().st_mtime)
+    except OSError:
+        return ""
+    return f"/api/entry-image?ref={quote(ref)}&v={stamp}"
+
+
+@app.get("/api/entry-image")
+def entry_image(ref: str) -> FileResponse:
+    """用語ごとの画像を返す。無ければ 404。
+
+    **SVG は通さない**（顔と同じ線）。地図が通せるのは `<image>` 埋め込みと
+    `CSP: sandbox` で担保しているからで、こちらは用語ページに `<img>` で出すだけ
+    なので**通す理由が無い** —— それでも `nosniff` と `sandbox` は付けておく
+    （置かれたものをそのまま配る口である以上、出し方で守る側は緩めない）。
+
+    **ref から組み立てた結果が置き場所の中にあることは `store.image_file()` が
+    確かめる。** ここは検査を持たない（2 か所に分かれると片方が緩む）。
+    """
+    path = store.image_file(ref)
+    if path is None:
+        raise HTTPException(404, "その画像がありません")
+    return FileResponse(
+        path,
+        media_type=IMAGE_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        headers={
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+@app.post("/api/entry-image")
+async def put_entry_image(request: Request, ref: str) -> dict:
+    """用語ごとの画像を差し替える。**生のバイト列で受ける**（顔と同じ）。
+
+    multipart にするとファイル名を受け取ることになり、**名乗りを使わない**という
+    約束が守りにくくなる。拡張子は中身から決め、書いたあとに別の拡張子を片付ける。
+    """
+    if store.get(ref) is None:
+        raise HTTPException(404, f"用語が見つかりません: {ref}")
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > store.IMAGE_MAX_BYTES:
+        raise HTTPException(413, "画像が大きすぎます")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "画像が空です")
+    if len(data) > store.IMAGE_MAX_BYTES:
+        raise HTTPException(
+            400, f"画像は {store.IMAGE_MAX_BYTES // 1024 // 1024} MB までです"
+        )
+    suffix = imagefmt.sniff(data)
+    if suffix is None:
+        raise HTTPException(400, "画像として読めませんでした（PNG / JPEG / GIF / WebP）")
+    target = store.image_path(ref, suffix)
+    if target is None:
+        raise HTTPException(400, f"この用語には置けません: {ref}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    store.clear_other_images(ref, target)
+    return {"ref": ref, "image_url": _image_url(ref)}
+
+
+@app.delete("/api/entry-image")
+def remove_entry_image(ref: str) -> dict:
+    """用語ごとの画像を消す。**エントリは書き換えない**（画像は frontmatter に無い）。"""
+    if store.image_file(ref) is None:
+        raise HTTPException(404, "その画像がありません")
+    store.delete_image(ref)
+    return {"ref": ref, "image_url": ""}
 
 
 @app.get("/api/ai/settings")

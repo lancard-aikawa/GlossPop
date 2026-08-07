@@ -14,6 +14,7 @@ import { mountStyleEditor } from "./ai-style.js";
 import { openExtractDialog } from "./extract.js";
 import { installGlossPopup } from "./popup.js";
 import { createTracker, keyFor } from "./progress.js";
+import { provideReading, readBlock, seenUpTo } from "./reading.js";
 import { installOverlay, open } from "./overlay.js";
 import { openRelationsDialog } from "./relations-draft.js";
 import { installSelectionAdd } from "./select-add.js";
@@ -34,6 +35,10 @@ installGlossPopup();
 // 読書位置。スクロールするのは本文そのものではなく外側の main
 // (`.layout > * { overflow: auto }`)
 const tracker = createTracker({ container: doc.parentElement, doc });
+
+// **相関図に「いまどこまで読んだか」を渡す。** 値ではなく関数を渡す ——
+// 覆いは何度でも開き直されるので、開いた時点ではなく**押した時点**の位置が要る
+provideReading(() => seenUpTo(doc, readBlock(doc.parentElement, doc)));
 
 const selection = installSelectionAdd({
   root: doc,

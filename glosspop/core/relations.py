@@ -102,6 +102,10 @@ def _node(entry: Entry, *, inside: bool) -> dict:
         "scope": entry.scope,
         "path_label": entry.path_label,
         "url": entry_url(entry),
+        # 地図の見せ方が使う。**点・線・領域を 1 つに畳んで渡す**（→ models）。
+        # 3 通りの場合分けを描く側に持ち込まない
+        "map": entry.map,
+        "shape": entry.map_shape,
         # 絞り込みの外にいるが、辺の相手として出す必要があるノード
         "outside": not inside,
         "missing": False,
@@ -120,6 +124,8 @@ def _missing_node(target: str) -> dict:
         "path_label": "未登録",
         # wiki の赤リンク。押したらその語で登録に入れるよう検索へ飛ばす
         "url": f"/glossary?q={target}",
+        "map": "",
+        "shape": None,
         "outside": True,
         "missing": True,
     }

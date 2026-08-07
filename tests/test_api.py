@@ -1669,3 +1669,416 @@ class TestPersona:
     def test_an_unknown_scope_is_refused_on_write(self, client):
         assert self._post(client, self.PNG, scope="でたらめ").status_code == 400
         assert client.delete("/api/persona?scope=でたらめ").status_code == 400
+
+
+class TestTheMapImage:
+    """相関図の「地図」で敷く絵を配る口 (`/api/map`)。
+
+    **顔と違って SVG を通す。** 地図は線画で拡大が本題なので、ラスタだと背景だけ
+    ボケる（「にじむと SVG の意味が無い」と決めてある側と食い違う）。**通せる根拠は
+    形式ではなく出し方**なので、そのヘッダをここで見張る —— 落とすと、直接開かれた
+    ときにスクリプトがこちらのオリジンで動く。
+
+    **名前は決め打ちにできない**（地図は辞書に数枚ある）ので、組み立てた結果が
+    置き場所の中にあることも見る。
+    """
+
+    SVG = b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>'
+
+    def _put(self, name="ほんの図"):
+        directory = store.maps_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{name}.svg").write_bytes(self.SVG)
+
+    def test_a_missing_map_is_404(self, client):
+        assert client.get("/api/map", params={"name": "ない図"}).status_code == 404
+
+    def test_an_unknown_scope_is_refused(self, client):
+        assert client.get(
+            "/api/map", params={"name": "ほんの図", "scope": "でたらめ"}
+        ).status_code == 400
+
+    def test_a_map_is_served_with_the_headers_that_make_svg_safe(self, client):
+        self._put()
+        res = client.get("/api/map", params={"name": "ほんの図"})
+        assert res.status_code == 200
+        assert res.content == self.SVG
+        assert res.headers["content-type"].startswith("image/svg+xml")
+        # **直接開かれたときの穴を塞ぐのはこの 1 行**（埋め込みだけでは足りない）
+        assert res.headers["content-security-policy"] == "sandbox"
+        assert res.headers["x-content-type-options"] == "nosniff"
+
+    @pytest.mark.parametrize(
+        "name", ["../categories", r"..\..\pyproject", "ほんの図/../../x", ""]
+    )
+    def test_a_name_that_escapes_the_folder_is_refused(self, client, name):
+        self._put()
+        assert client.get("/api/map", params={"name": name}).status_code == 404
+
+    def test_the_graph_lists_the_maps_its_nodes_point_at(self, client):
+        """候補は**出ている語から**作る（置いてある絵を並べる口は持たない）。"""
+        self._put()
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25, 0.5],
+        })
+        client.post("/api/entries", json={
+            "term": "丘", "category": "場所", "definition": "小高いところ。",
+        })
+        body = client.get("/api/graph").json()
+        assert [m["name"] for m in body["maps"]] == ["ほんの図"]
+        assert body["maps"][0]["count"] == 1
+        assert "v=" in body["maps"][0]["url"]     # 差し替えても古い絵が出ないように
+        spots = {n["term"]: n["shape"] for n in body["nodes"]}
+        assert spots == {"港": {"kind": "point", "points": [[0.25, 0.5]]}, "丘": None}
+
+    def test_a_map_with_no_picture_is_not_offered(self, client):
+        """座標は書いてあるが絵が無い、は候補に出さない（押しても 404 になる）。"""
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "無い図", "pin": [0.25, 0.5],
+        })
+        assert client.get("/api/graph").json()["maps"] == []
+
+    def test_a_line_and_an_area_are_folded_into_one_shape(self, client):
+        """**書き方は 3 つ、内部は 1 つ。** 描く側に場合分けを持ち込まない。"""
+        self._put()
+        client.post("/api/entries", json={
+            "term": "街道", "category": "場所", "definition": "道。",
+            "map": "ほんの図", "line": [[0.1, 0.2], [0.4, 0.5], [0.8, 0.3]],
+        })
+        client.post("/api/entries", json={
+            "term": "国", "category": "場所", "definition": "領域。",
+            "map": "ほんの図", "area": [[0, 0], [1, 0], [0.5, 1]],
+        })
+        shapes = {n["term"]: n["shape"]["kind"] for n in client.get("/api/graph").json()["nodes"]}
+        assert shapes == {"街道": "line", "国": "area"}
+
+    def test_too_few_points_is_emptied(self, client):
+        """線は 2 点、領域は 3 点から。足りなければ**丸ごと空**（半端を描かない）。"""
+        client.post("/api/entries", json={
+            "term": "街道", "category": "場所", "definition": "道。",
+            "map": "ほんの図", "line": [[0.1, 0.2]],
+        })
+        assert client.get("/api/graph").json()["nodes"][0]["shape"] is None
+
+    def test_writing_two_shapes_is_reported_by_the_doctor(self, client):
+        """**黙って片方を選ばない。** 描くために細かいほうを採るが、点検が挙げる。"""
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25, 0.5], "area": [[0, 0], [1, 0], [0.5, 1]],
+        })
+        assert client.get("/api/graph").json()["nodes"][0]["shape"]["kind"] == "area"
+        kinds = [i["kind"] for i in client.get("/api/doctor").json()["issues"]]
+        assert "two_map_shapes" in kinds
+
+    def test_a_broken_coordinate_is_emptied_not_guessed(self, client):
+        """読めない座標は**空にする**。0 に寄せると絵の左上に点が湧く。"""
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25],
+        })
+        assert client.get("/api/graph").json()["nodes"][0]["shape"] is None
+
+    def test_the_doctor_knows_which_pictures_are_there(self, client):
+        """**置いてある絵は `app` が数えて渡す**（`core` は置き場所を知らない）。
+
+        渡していないと「その名前の絵がありません」を言えず、絵を消した語が
+        地図から静かに消えたままになる。
+        """
+        self._put()
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "summary": "船の着くところ。", "map": "ほんの図", "pin": [0.25, 0.5],
+        })
+        assert not client.get("/api/doctor").json()["issues"]
+
+        store.map_file("global", "ほんの図").unlink()
+        kinds = [i["kind"] for i in client.get("/api/doctor").json()["issues"]]
+        assert kinds == ["map_without_image"]
+
+
+class TestUploadingAMapImage:
+    """絵を置く / 消す口 (`POST` / `DELETE /api/map`)。
+
+    顔と同じ規則（ファイル名を受け取らない・拡張子は中身から・上限を持つ・
+    別の拡張子を片付ける）に、**名前の検査**が 1 つ増える —— 地図は辞書に数枚
+    あるので「決め打ちの名前」で逃げられない。
+
+    もう 1 つ地図だけのものが **SVG の寸法検査**。`width`/`height` も `viewBox` も
+    無い SVG はブラウザが 300x150 の既定値にするので、**中身が何であれ 2:1 で
+    描かれる**（絵は出るので画面を見るまで気付けない）。**ここが唯一弾ける場所**。
+    """
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    SVG = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"></svg>'
+    SVG_NO_SIZE = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+
+    def _post(self, client, data, name="ほんの図", scope="global"):
+        return client.post(
+            "/api/map", params={"name": name, "scope": scope}, content=data,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    def test_an_image_can_be_put_and_read_back(self, client):
+        assert self._post(client, self.PNG).status_code == 200
+        res = client.get("/api/map", params={"name": "ほんの図"})
+        assert res.status_code == 200 and res.content == self.PNG
+
+    def test_an_svg_with_a_viewbox_is_accepted(self, client):
+        assert self._post(client, self.SVG).status_code == 200
+        assert client.get("/api/map", params={"name": "ほんの図"}).content == self.SVG
+
+    def test_an_svg_without_a_size_is_refused(self, client):
+        """**絵は出るので、ここで弾かないと黙って 2:1 に歪む。**"""
+        res = self._post(client, self.SVG_NO_SIZE)
+        assert res.status_code == 400
+        assert "大きさ" in res.json()["detail"]
+
+    def test_something_that_is_not_an_image_is_refused(self, client):
+        assert self._post(client, "# ただのテキスト".encode()).status_code == 400
+
+    def test_an_empty_body_is_refused(self, client):
+        assert self._post(client, b"").status_code == 400
+
+    def test_too_big_is_refused(self, client):
+        big = b"\x89PNG\r\n\x1a\n" + b"0" * store.MAP_MAX_BYTES
+        assert self._post(client, big).status_code == 400
+
+    @pytest.mark.parametrize("name", ["../にげる", "ほんの図/../../x", ""])
+    def test_a_name_that_escapes_the_folder_is_refused(self, client, name):
+        assert self._post(client, self.PNG, name=name).status_code == 400
+
+    def test_the_extension_comes_from_the_content_not_the_name(self, client):
+        """名前に拡張子を書いても使わない（名乗りでしかない）。"""
+        assert self._post(client, self.PNG, name="ほんの図.svg").status_code == 200
+        assert [m["suffix"] for m in client.get("/api/maps").json()["maps"]] == [".png"]
+
+    def test_putting_a_second_format_clears_the_first(self, client):
+        """**残すと探索順で決まる絵が出て「差し替えたのに変わらない」になる。**"""
+        self._post(client, self.SVG)
+        self._post(client, self.PNG)
+        maps = client.get("/api/maps").json()["maps"]
+        assert [m["suffix"] for m in maps] == [".png"]
+        assert client.get("/api/map", params={"name": "ほんの図"}).content == self.PNG
+
+    def test_an_image_can_be_deleted_and_the_entry_is_left_alone(self, client):
+        """**エントリの `map` は書き換えない。** 書き換えて回ると手で戻せない。"""
+        self._post(client, self.PNG)
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25, 0.5],
+        })
+        assert client.delete("/api/map", params={"name": "ほんの図"}).json()["maps"] == []
+        assert client.get("/api/map", params={"name": "ほんの図"}).status_code == 404
+        node = client.get("/api/graph").json()["nodes"][0]
+        assert node["map"] == "ほんの図" and node["shape"]["kind"] == "point"
+
+    def test_an_unknown_scope_is_refused(self, client):
+        assert self._post(client, self.PNG, scope="でたらめ").status_code == 400
+        assert client.delete(
+            "/api/map", params={"name": "ほんの図", "scope": "でたらめ"}
+        ).status_code == 400
+
+
+class TestMovingAShapeOnTheMap:
+    """地図の形だけを書き換える口 (`PUT /api/map-shape/{ref}`)。
+
+    **エントリ全体をクライアントに組み立て直させない。** 相関図が持っているのは
+    ノードの一部だけなので、そこから draft を作って PUT させると本文も関係も落ちる
+    （関係を `/api/relations` にまとめたのと同じ理由）。
+    """
+
+    def _make(self, client, **extra):
+        body = {
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "summary": "船の着くところ。", "aliases": ["みなと"], **extra,
+        }
+        return client.post("/api/entries", json=body).json()["ref"]
+
+    def test_a_point_can_be_placed_and_the_rest_is_kept(self, client):
+        ref = self._make(client)
+        res = client.put(
+            f"/api/map-shape/{ref}",
+            json={"map": "ほんの図", "kind": "point", "points": [[0.25, 0.5]]},
+        )
+        assert res.status_code == 200
+        body = client.get(f"/api/entries/{ref}").json()
+        assert body["map"] == "ほんの図" and body["pin"] == [0.25, 0.5]
+        # **本文も別名も残る**（ここが落ちるのが、draft を組み立て直させたときの事故）
+        assert body["definition"] == "船着き場。" and body["aliases"] == ["みなと"]
+
+    def test_switching_the_kind_clears_the_others(self, client, put_map):
+        """**形は必ず 1 つだけ。** 画面から `two_map_shapes` を作らせない。"""
+        put_map("ほんの図")          # 絵が無いと点検が別のことを言う（それは別のテスト）
+        ref = self._make(client, map="ほんの図", pin=[0.1, 0.2])
+        client.put(f"/api/map-shape/{ref}", json={"kind": "line", "points": [[0, 0], [1, 1]]})
+        node = client.get("/api/graph").json()["nodes"][0]
+        assert node["shape"] == {"kind": "line", "points": [[0.0, 0.0], [1.0, 1.0]]}
+        assert not client.get("/api/doctor").json()["issues"]
+
+    @pytest.mark.parametrize(
+        "before, after",
+        [
+            ({"pin": [0.1, 0.2]}, "line"),
+            ({"line": [[0.1, 0.2], [0.4, 0.5]]}, "point"),
+            ({"line": [[0.1, 0.2], [0.4, 0.5]]}, "area"),
+            ({"area": [[0, 0], [1, 0], [0.5, 1]]}, "point"),
+        ],
+    )
+    def test_every_direction_clears_the_others(self, client, put_map, before, after):
+        """**どの向きに変えても残り 2 つが空になる。**
+
+        線の項目が `path` から `line` に変わったあとも**消す側だけ `path` のまま**
+        だったので、線 → 点 では線が残って `two_map_shapes` ができていた
+        （pin → line だけを見ていたので、テストも画面も気付けなかった）。
+        """
+        put_map("ほんの図")
+        ref = self._make(client, map="ほんの図", **before)
+        points = [[0.3, 0.4], [0.6, 0.7], [0.2, 0.8]][: {"point": 1, "line": 2, "area": 3}[after]]
+        client.put(f"/api/map-shape/{ref}", json={"kind": after, "points": points})
+
+        body = client.get(f"/api/entries/{ref}").json()
+        written = [name for name in ("pin", "line", "area") if body[name]]
+        assert written == [{"point": "pin", "line": "line", "area": "area"}[after]]
+        assert not client.get("/api/doctor").json()["issues"]
+
+    def test_the_map_name_is_kept_when_not_sent(self, client):
+        """形だけ動かすときに絵の名前を送らせない（送らせると消し忘れる）。"""
+        ref = self._make(client, map="ほんの図", pin=[0.1, 0.2])
+        client.put(f"/api/map-shape/{ref}", json={"kind": "point", "points": [[0.3, 0.4]]})
+        assert client.get(f"/api/entries/{ref}").json()["map"] == "ほんの図"
+
+    def test_an_empty_kind_takes_it_off_the_map(self, client):
+        ref = self._make(client, map="ほんの図", pin=[0.1, 0.2])
+        client.put(f"/api/map-shape/{ref}", json={"kind": ""})
+        body = client.get(f"/api/entries/{ref}").json()
+        assert body["pin"] == [] and body["line"] == [] and body["area"] == []
+
+    def test_an_unknown_kind_and_a_missing_entry_are_refused(self, client):
+        ref = self._make(client)
+        assert client.put(f"/api/map-shape/{ref}", json={"kind": "まる"}).status_code == 400
+        assert client.put(
+            "/api/map-shape/場所/ない", json={"kind": "point", "points": [[0, 0]]}
+        ).status_code == 404
+
+    def test_the_file_path_does_not_leak_into_the_line(self, client):
+        """**`path` という名前を使わない理由。**
+
+        `_entry_payload` は保存先を `path` に入れる。座標の項目を `path` にすると、
+        `/api/entries/{ref}` が返す値がパス文字列になり、**エディタから保存し直すと
+        線が黙って消える**（`at` が時系列の文字位置とぶつかったのと同じ形）。
+        """
+        ref = self._make(client)
+        client.put(
+            f"/api/map-shape/{ref}",
+            json={"map": "ほんの図", "kind": "line", "points": [[0.1, 0.2], [0.3, 0.4]]},
+        )
+        body = client.get(f"/api/entries/{ref}").json()
+        assert body["line"] == [[0.1, 0.2], [0.3, 0.4]]
+        assert body["path"].endswith(".md")          # こちらは保存先のまま
+        # 返ってきたものをそのまま保存し直しても線が残る
+        assert client.put(f"/api/entries/{ref}", json=body).status_code == 200
+        assert client.get(f"/api/entries/{ref}").json()["line"] == [[0.1, 0.2], [0.3, 0.4]]
+
+
+class TestTheEntryImage:
+    """用語ごとの画像の口 (`GET` / `POST` / `DELETE /api/entry-image`)。
+
+    **顔と同じ規則**（生のバイト列で受ける・ファイル名は使わない・拡張子は中身から・
+    上限を持つ・別の拡張子を片付ける・URL に更新時刻を入れる）に、**ref の検査**が
+    加わる —— 顔は決め打ちの名前で逃げられるが、こちらは語ごとに変わる。
+    """
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    GIF = b"GIF89a" + b"0" * 32
+
+    def _make(self, client, term="赤シャツ", category="人物"):
+        return client.post("/api/entries", json={
+            "term": term, "category": category, "summary": "教頭。", "definition": "本文。",
+        }).json()["ref"]
+
+    def _post(self, client, ref, data):
+        return client.post(
+            "/api/entry-image", params={"ref": ref}, content=data,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    def test_put_get_and_delete(self, client):
+        ref = self._make(client)
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404
+
+        res = self._post(client, ref, self.PNG)
+        assert res.status_code == 200
+        # **URL に更新時刻を入れる**（入れないと差し替えても古い画像が出る）
+        assert "v=" in res.json()["image_url"]
+
+        got = client.get("/api/entry-image", params={"ref": ref})
+        assert got.content == self.PNG
+        assert got.headers["content-type"] == "image/png"
+        # 置かれたものをそのまま配る口なので、出し方で守る側は緩めない
+        assert got.headers["content-security-policy"] == "sandbox"
+        assert got.headers["x-content-type-options"] == "nosniff"
+
+        assert client.delete("/api/entry-image", params={"ref": ref}).status_code == 200
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404
+
+    def test_the_extension_comes_from_the_content(self, client):
+        """**名乗りは使わない。** 送られてきたのが GIF なら GIF として置く。"""
+        ref = self._make(client)
+        self._post(client, ref, self.GIF)
+        assert client.get("/api/entry-image", params={"ref": ref}).headers["content-type"] \
+            == "image/gif"
+
+    def test_swapping_clears_the_other_suffix(self, client):
+        """残すと探索順で決まる画像が出て「差し替えたのに変わらない」になる。"""
+        ref = self._make(client)
+        self._post(client, ref, self.PNG)
+        self._post(client, ref, self.GIF)
+        assert store.image_file(ref).suffix == ".gif"
+        assert not list(store.image_file(ref).parent.glob("赤シャツ.png"))
+
+    def test_something_that_is_not_an_image_is_refused(self, client):
+        ref = self._make(client)
+        assert self._post(client, ref, b"<html>").status_code == 400
+
+    def test_svg_is_refused(self, client):
+        """**SVG は通さない**（顔と同じ線。地図だけが出し方で担保している）。"""
+        ref = self._make(client)
+        assert self._post(client, ref, b'<svg xmlns="http://www.w3.org/2000/svg"/>') \
+            .status_code == 400
+
+    def test_too_big_is_refused(self, client, monkeypatch):
+        ref = self._make(client)
+        monkeypatch.setattr(store, "IMAGE_MAX_BYTES", 16)
+        assert self._post(client, ref, self.PNG).status_code in (400, 413)
+
+    def test_an_unknown_term_is_refused(self, client):
+        """**置く先はエントリ。** 居ない語に置けると、孤児の画像が作れてしまう。"""
+        assert self._post(client, "人物/居ない人", self.PNG).status_code == 404
+
+    @pytest.mark.parametrize("ref", ["../persona", "人物/../../x", "人物", ""])
+    def test_a_ref_that_escapes_is_refused(self, client, ref):
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404
+
+    def test_the_entry_and_the_list_carry_the_url(self, client):
+        """用語ページ・吹き出し・一覧が同じ URL を見る（写しを作らない）。"""
+        ref = self._make(client)
+        self._post(client, ref, self.PNG)
+        assert "/api/entry-image" in client.get(f"/api/entries/{ref}").json()["image_url"]
+        cards = {c["term"]: c["image_url"] for c in client.get("/api/entries").json()}
+        assert "/api/entry-image" in cards["赤シャツ"]
+
+    def test_the_image_moves_with_the_category(self, client):
+        """画面から移しても追従する（`store.move()` が動かす）。"""
+        ref = self._make(client)
+        self._post(client, ref, self.PNG)
+        moved = client.post(f"/api/move/{ref}", json={"category": "主要人物"}).json()
+        assert client.get("/api/entry-image", params={"ref": moved["ref"]}).status_code == 200
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404
+
+    def test_deleting_the_entry_takes_the_image(self, client):
+        ref = self._make(client)
+        self._post(client, ref, self.PNG)
+        client.delete(f"/api/entries/{ref}")
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404

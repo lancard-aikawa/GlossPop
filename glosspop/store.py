@@ -20,6 +20,7 @@ from .core.entryfile import (
     entry_from_file as _entry_from_file,
     parse_markdown,
 )
+from .core.imagefmt import IMAGE_SUFFIXES, MAP_SUFFIXES
 from .core.models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
@@ -82,6 +83,256 @@ def persona_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
     if scope == LOCAL_SCOPE:
         return config.local_persona_dir()
     return config.global_persona_dir()
+
+
+#: 地図に使える拡張子は `core.imagefmt.MAP_SUFFIXES`（上で import している）。
+#: **並びは探す順でもある** —— `map_file()` が上から試す。
+#: **ここに写しを置かない**: zip に入れる側 (`archivefmt`) が同じ判断をするので、
+#: 片方だけ足すと**手元では見えるのに渡した先で消える**。
+
+
+def maps_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
+    """スコープに対応する地図の置き場所。まだ 1 枚も無くても返る。
+
+    **顔や文体と同じ親**（辞書ルートの 1 つ上）に置く。フォルダごとコピーすれば
+    絵も付いてくる、という性質を辞書・文体・顔と揃えるため。
+    """
+    parent = persona_dir(scope)
+    return None if parent is None else parent / "maps"
+
+
+def map_file(scope: str, name: str) -> Path | None:
+    """名前から地図のファイルを引く。**置き場所の外に出る名前は通さない。**
+
+    名前は画面（とエントリの frontmatter）から来る文字列なので、組み立てた結果が
+    置き場所の中にあることを最後に必ず確かめる（控えの `_backup_path` と同じ規則）。
+    顔と違って**名前を決め打ちにできない**のは、地図が辞書に数枚あるため。
+    """
+    directory = maps_dir(scope)
+    if directory is None or not name or name != Path(name).name:
+        return None
+    try:
+        root = directory.resolve()
+    except OSError:
+        return None
+    for suffix in MAP_SUFFIXES:
+        try:
+            found = (directory / f"{name}{suffix}").resolve()
+        except OSError:
+            continue
+        if root in found.parents and found.is_file():
+            return found
+    return None
+
+
+#: 受け取れる大きさ。**顔 (2 MB) より大きい** —— 地図は絵として大きく、AI に
+#: 描かせると数 MB になる。上限そのものは要る（辞書のフォルダを埋めさせない）
+MAP_MAX_BYTES = 8 * 1024 * 1024
+
+
+def map_path(scope: str, name: str, suffix: str) -> Path | None:
+    """書き込み先。**置き場所の外に出る名前は通さない**（`map_file` と同じ検査）。
+
+    まだ無くても返す（`persona_dir` と `persona_file` を分けてあるのと同じ形で、
+    こちらは書く側が使う）。
+    """
+    directory = maps_dir(scope)
+    if directory is None or not name or name != Path(name).name:
+        return None
+    if suffix not in MAP_SUFFIXES:
+        return None
+    candidate = directory / f"{name}{suffix}"
+    try:
+        root, found = directory.resolve(), candidate.resolve()
+    except OSError:
+        return None
+    return candidate if root in found.parents else None
+
+
+def list_maps(scope: str) -> list[Path]:
+    """その辞書に置いてある絵。**無い辞書では空**（作らない）。"""
+    directory = maps_dir(scope)
+    if directory is None or not directory.is_dir():
+        return []
+    return sorted(
+        (p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in MAP_SUFFIXES),
+        key=lambda p: p.name,
+    )
+
+
+def clear_other_maps(scope: str, name: str, keep: Path) -> None:
+    """同じ名前で**別の拡張子**の絵を片付ける。
+
+    残すと `map_file()` の探索順で決まる絵が出て、**「差し替えたのに変わらない」**
+    になる（顔の `_clear_personas()` と同じ理由）。
+    """
+    for suffix in MAP_SUFFIXES:
+        other = map_path(scope, name, suffix)
+        if other is None or other == keep:
+            continue
+        try:
+            other.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# 用語ごとの画像
+#
+# **顔（辞書に 1 枚）とは別物。** 顔は「誰が書いているか」で、こちらは
+# 「その語そのもの」。だから**エントリと同じ 2 段**（`images/<カテゴリ>/<slug>.<拡張子>`）
+# に置き、エントリが動けば一緒に動く。
+#
+# **`images/<slug>` の 1 段にしない。** 名前だけを鍵にすると、
+# **カテゴリ違いの同名が同じ画像を指す** —— 「ソース」が料理とプログラミングに
+# 併存できるのはこの辞書の狙いどおりの機能なので、そこで衝突する鍵は使えない
+# （`find_by_surface()` がリストを返すのと同じ話）。**カテゴリを移したときに
+# 取り残される**問題は、移す側 (`move()`) が画像も動かすことで塞ぐ。
+# --------------------------------------------------------------------------- #
+
+#: 受け取れる大きさ。顔 (2 MB) より大きく、地図 (8 MB) より小さい ——
+#: 語の数だけ増えるので、1 枚あたりは抑える
+IMAGE_MAX_BYTES = 4 * 1024 * 1024
+
+
+def images_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
+    """スコープに対応する画像の置き場所。まだ 1 枚も無くても返る。
+
+    **顔・文体・地図と同じ親**（辞書ルートの 1 つ上）。フォルダごとコピーすれば
+    付いてくる、という性質を揃えるため。
+    """
+    parent = persona_dir(scope)
+    return None if parent is None else parent / "images"
+
+
+def _image_base(ref: str) -> Path | None:
+    """ref に対応する画像のパス（拡張子なし）。**置き場所の外へ出る ref は通さない。**
+
+    ref は URL から来る文字列なので、組み立てた結果が置き場所の中にあることを
+    最後に必ず確かめる（地図の `map_file()` と控えの `_backup_path` と同じ規則）。
+    """
+    try:
+        scope, category, slug = split_ref(ref)
+    except CategoryNameError:
+        return None
+    directory = images_dir(scope)
+    if directory is None:
+        return None
+    # `..` や区切りを含むものはここで落ちる（1 段ぶんの名前でなければ通さない）
+    if category != Path(category).name or slug != Path(slug).name:
+        return None
+    candidate = directory / category / slug
+    try:
+        root, found = directory.resolve(), candidate.resolve()
+    except OSError:
+        return None
+    return candidate if root in found.parents else None
+
+
+def image_file(ref: str) -> Path | None:
+    """その語の画像。無ければ ``None``（拡張子は `IMAGE_SUFFIXES` の順に探す）。"""
+    base = _image_base(ref)
+    if base is None:
+        return None
+    for suffix in IMAGE_SUFFIXES:
+        found = base.with_name(f"{base.name}{suffix}")
+        if found.is_file():
+            return found
+    return None
+
+
+def image_path(ref: str, suffix: str) -> Path | None:
+    """書き込み先。まだ無くても返す（`image_file` と対で、こちらは書く側）。"""
+    base = _image_base(ref)
+    if base is None or suffix not in IMAGE_SUFFIXES:
+        return None
+    return base.with_name(f"{base.name}{suffix}")
+
+
+def list_images(scope: str = GLOBAL_SCOPE) -> dict[str, Path]:
+    """その辞書の画像を ``{ref: パス}`` で全部返す。**走査は 1 回だけ。**
+
+    一覧はカードの数だけ画像を引くので、語ごとに `image_file()` を呼ぶと
+    **語数 × 拡張子の数**だけ stat が飛ぶ（3000 語で 15,000 回）。ディレクトリを
+    1 回歩けば済む —— `_signature()` を `os.scandir` で作っているのと同じ判断。
+    """
+    directory = images_dir(scope)
+    if directory is None or not directory.is_dir():
+        return {}
+    found: dict[str, Path] = {}
+    try:
+        for category in directory.iterdir():
+            if not category.is_dir():
+                continue
+            for path in category.iterdir():
+                if not path.is_file() or path.suffix.lower() not in IMAGE_SUFFIXES:
+                    continue
+                ref = make_ref(scope, category.name, path.stem)
+                # 同じ語に別の拡張子が残っていたら、探す順の先頭を採る
+                # （`image_file()` と同じ答えになるように）
+                current = found.get(ref)
+                if current is None or IMAGE_SUFFIXES.index(path.suffix.lower()) < \
+                        IMAGE_SUFFIXES.index(current.suffix.lower()):
+                    found[ref] = path
+    except OSError:
+        return found
+    return found
+
+
+def clear_other_images(ref: str, keep: Path) -> None:
+    """同じ語の**別の拡張子**の画像を片付ける（`clear_other_maps` と同じ理由）。"""
+    for suffix in IMAGE_SUFFIXES:
+        other = image_path(ref, suffix)
+        if other is None or other == keep:
+            continue
+        try:
+            other.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def move_image(old_ref: str, new_ref: str) -> None:
+    """画像をエントリに追従させる。**無ければ何もしない。**
+
+    ここが無いと、カテゴリを移した語の画像が**元のカテゴリのフォルダに取り残される**
+    （画面からは「差し替えたのに出ない」に見える）。
+    """
+    found = image_file(old_ref)
+    if found is None or old_ref == new_ref:
+        return
+    target = image_path(new_ref, found.suffix.lower())
+    if target is None:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.replace(found, target)
+    except OSError:
+        return
+    _prune_image_dir(found.parent)
+
+
+def delete_image(ref: str) -> None:
+    """その語の画像を消す。**エントリを消すときは必ず通す**（孤児を残さない）。"""
+    for suffix in IMAGE_SUFFIXES:
+        path = image_path(ref, suffix)
+        if path is None:
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    base = _image_base(ref)
+    if base is not None:
+        _prune_image_dir(base.parent)
+
+
+def _prune_image_dir(directory: Path) -> None:
+    """空になったカテゴリのフォルダを片付ける（辞書側と違い、中身が正ではない）。"""
+    try:
+        if directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
+    except OSError:
+        pass
 
 
 def local_available() -> bool:
@@ -436,6 +687,9 @@ def move(ref: str, category: str | None = None, *, scope: str | None = None) -> 
         _write_atomic(target, dump_markdown(moved))
         if old_path != target:
             old_path.unlink(missing_ok=True)
+        # **画像も一緒に動かす。** 置き場所がエントリと同じ 2 段なので、
+        # 動かさないと元のカテゴリに取り残される（画面からは消えたように見える）
+        move_image(ref, new_ref)
         invalidate()
         return moved
 
@@ -466,6 +720,9 @@ def delete(ref: str) -> bool:
         if not path.exists():
             return False
         path.unlink()
+        # **画像も消す。** 残すと、同じカテゴリに同じ用語名を登録し直したときに
+        # **前の語の画像が出る**（消したはずのものが戻ってくる、いちばん驚く壊れ方）
+        delete_image(ref)
         global _cache
         _cache = None
         return True

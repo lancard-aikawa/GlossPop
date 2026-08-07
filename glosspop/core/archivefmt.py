@@ -12,12 +12,18 @@ GlossPopApp（利用者ごとのディレクトリ）の仕事で、ここが持
 
 ```
 glossary/<カテゴリ>/<slug>.md   … 辞書。**2 段と決まっている**
+maps/<名前>.<拡張子>            … 地図の絵。**1 段**（あってもなくてもよい）
+images/<カテゴリ>/<slug>.<拡張子> … 用語ごとの画像。**辞書と同じ 2 段**
 categories.yaml                 … カテゴリマスター（GlossPop だけが入れる）
 glosspop-export.json            … 目印
 ```
 
 **Markdown はそのまま入れる。** 解凍すればテキストエディタで読めることを保つため、
 独自形式にしない。
+
+**知らない要素は黙って無視する。** 上の形だけを拾い、それ以外は読み飛ばす ——
+地図を足したときに、**古い版が書き出した zip も、新しい版の zip を古い版で開いた
+ときも、そのまま通る**（拾えないぶんが落ちるだけで、エラーにはしない）。
 """
 
 from __future__ import annotations
@@ -27,15 +33,24 @@ import json
 import zipfile
 from pathlib import Path
 
+from .imagefmt import IMAGE_SUFFIXES, MAP_SUFFIXES
+
 #: zip の中の置き場所。展開時もこの名前で探す
 GLOSSARY_PREFIX = "glossary/"
+MAPS_PREFIX = "maps/"
+IMAGES_PREFIX = "images/"
 CATEGORIES_NAME = "categories.yaml"
 
 #: 書き出したものだと分かる目印。中身も検証に使う
 MANIFEST_NAME = "glosspop-export.json"
 
-#: 取り込む zip の上限。辞書は文字ばかりなので、これを超えるものは別物とみなす
-MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+#: 取り込む zip の上限。これを超えるものは別物とみなす。
+#:
+#: **「辞書は文字ばかり」という前提は地図で消えた。** 絵は 1 枚 8 MB まで入り
+#: (`store.MAP_MAX_BYTES`)、しかも圧縮が効かない。控え (`write_backup`) は
+#: 書き出しと同じ zip なので、**上限が低いと自分で書いた控えを取り込み直せなく
+#: なる** —— 絵が数枚ある辞書でそれが起きると、控えの約束のほうが嘘になる。
+MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
 
 
 class ArchiveFormatError(Exception):
@@ -82,6 +97,45 @@ def entry_members(members: list[zipfile.ZipInfo]) -> list[zipfile.ZipInfo]:
     return out
 
 
+def map_members(members: list[zipfile.ZipInfo]) -> list[zipfile.ZipInfo]:
+    """``maps/<名前>.<拡張子>`` だけを拾う。**1 段と決まっている。**
+
+    **拡張子で絞るのは安全のため。** 展開先は絵の置き場所で、そこへ置いたものは
+    `GET /api/map` が**中身を検査せずにそのまま返す**（顔と同じ規則）。名乗りだけで
+    通すと、`maps/x.html` を入れた zip が配れるページになる。通す一覧は
+    `models.MAP_SUFFIXES` **1 か所**（置き場所の側と同じもの）。
+
+    **辞書と違って、無くても形が違うことにはならない。** 絵は「あれば入る」もので、
+    エントリのように zip の正体を決めない（→ `inspect`）。
+    """
+    out = []
+    for info in members:
+        if info.is_dir() or not info.filename.startswith(MAPS_PREFIX):
+            continue
+        parts = Path(info.filename[len(MAPS_PREFIX):]).parts
+        if len(parts) == 1 and Path(parts[0]).suffix.lower() in MAP_SUFFIXES:
+            out.append(info)
+    return out
+
+
+def image_members(members: list[zipfile.ZipInfo]) -> list[zipfile.ZipInfo]:
+    """``images/<カテゴリ>/<slug>.<拡張子>`` だけを拾う。**辞書と同じ 2 段。**
+
+    **地図（1 段）と違うのは、鍵がエントリだから** —— 名前だけを鍵にすると、
+    カテゴリ違いの同名が同じ画像を指す（`store` の置き場所と同じ理由）。
+    拡張子で絞る理由と、無くても形が違うことにはならない点は `map_members` と同じ。
+    **SVG は通さない**（配る口 `GET /api/entry-image` が出し方で守っていない側）。
+    """
+    out = []
+    for info in members:
+        if info.is_dir() or not info.filename.startswith(IMAGES_PREFIX):
+            continue
+        parts = Path(info.filename[len(IMAGES_PREFIX):]).parts
+        if len(parts) == 2 and Path(parts[1]).suffix.lower() in IMAGE_SUFFIXES:
+            out.append(info)
+    return out
+
+
 def split_member(name: str) -> tuple[str, str]:
     """``glossary/人物/寒月.md`` → ``("人物", "寒月")``。"""
     parts = Path(name[len(GLOSSARY_PREFIX):]).parts
@@ -113,10 +167,14 @@ def open_archive(
 
 
 def inspect(data: bytes, dest: Path, *, max_bytes: int | None = None) -> dict:
-    """取り込む前に中身を確かめる。``{entries, categories, has_manifest}``。
+    """取り込む前に中身を確かめる。``{entries, categories, maps, images, has_manifest}``。
 
     **辞書の zip かを見る。** アプリ本体の zip を取り込ませると辞書が空で
     置き換わるので、形が違うものはここで止める。
+
+    **絵の有無は正体の判断に使わない。** 絵だけの zip を「辞書の zip」として
+    通すと、置き換えで**辞書が空になる**（アプリ本体の zip を弾いているのと
+    同じ理由）。数えるだけにして、判断は今までどおりエントリと目印で行う。
     """
     zf, members = open_archive(data, dest, max_bytes=max_bytes)
     with zf:
@@ -130,18 +188,23 @@ def inspect(data: bytes, dest: Path, *, max_bytes: int | None = None) -> dict:
         return {
             "entries": len(entries),
             "categories": len({split_member(m.filename)[0] for m in entries}),
+            "maps": len(map_members(members)),
+            "images": len(image_members(members)),
             "has_manifest": MANIFEST_NAME in names,
         }
 
 
 def manifest_bytes(*, app: str, entries: int, created_at: str, partial: bool = False,
-                   categories: list[str] | None = None) -> bytes:
+                   categories: list[str] | None = None, maps: int = 0,
+                   images: int = 0) -> bytes:
     """目印。**`app` は書き出した側の名前**（受け取る側は形だけを見る）。"""
     return json.dumps(
         {
             "app": app,
             "kind": "glossary",
             "entries": entries,
+            "maps": maps,
+            "images": images,
             # 一部だけ書き出したことは中身にも残す（受け取った側が
             # 「これで全部」と思わないように）
             "partial": partial,
