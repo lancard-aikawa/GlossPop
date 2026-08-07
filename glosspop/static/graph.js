@@ -62,6 +62,9 @@ const TEMPLATE = `
   <span class="spacer"></span>
   <span class="status" id="status"></span>
 </div>
+<!-- 地図に出すものの一覧。**チェックを外したぶんは必ず数えて凡例に出す**
+     （黙って欠けた図を出さない、という約束はここでも同じ）。地図のときだけ出す -->
+<div class="map-layers" id="mapLayers" hidden></div>
 <p class="notice" id="notes" hidden></p>
 <!-- 拡大縮小のボタンは**図の上に重ねる**。ツールバーへ足すと、狭い画面で
      すでに折り返している行がもう 1 段増える -->
@@ -124,7 +127,7 @@ const TEMPLATE = `
 `;
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
-let mapPick;
+let mapPick, mapLayers;
 let detailNode;
 let modeSelect;
 
@@ -1103,6 +1106,7 @@ function draw(graph) {
       center: egoCenter,
       onCenter: moveCenter,
       mapName,
+      hidden: mapHidden.get(mapName),
       // 絵の縦横比は読み込むまで分からない。届いたら入れ物に合わせ直す
       onResize: () => fitView(),
     })
@@ -1126,6 +1130,9 @@ function draw(graph) {
     // 見せ方が「出していないもの」を数えていれば、そのまま凡例へ通す
     // （**ここで落とすと黙って欠けた図になる**。実際に一度落とした）
     note: drawn.note || "",
+    // 地図が「この絵に置ける語」を返していれば、そのままチェックの一覧へ通す
+    // （**ここで落とすと一覧が空になり、外したものを戻せなくなる**。実際に落とした）
+    items: drawn.items || [],
   };
 }
 
@@ -1484,6 +1491,12 @@ let mapFellBack = false;
 const MAP_KEY = "glosspop.graphMap";
 let mapName = "";
 
+//: 地図で**チェックを外した語**（絵ごと）。**外したほうを覚える**のが肝 ——
+//: 「出すもの」を覚えると、あとから足した語が黙って出なくなる
+//: （`categories.reorder()` が送られなかったカテゴリを後ろに残すのと同じ考え方）
+const MAP_HIDDEN_KEY = "glosspop.graphMapHidden";
+let mapHidden = new Map();
+
 //: URL で語を名指しされたので、覚えている見せ方を押しのけて中心の図で開いたか。
 //: これも黙ってやらない（同じ理由）
 let centeredByUrl = false;
@@ -1521,6 +1534,82 @@ function moveCenter(ref) {
 }
 
 /** 受け取ったグラフを描いて、凡例と注意書きを添える。 */
+/** 覚えている「外したもの」を読む。読めなければ空（＝全部出す側に倒す）。 */
+function rememberedHidden() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MAP_HIDDEN_KEY) || "{}");
+    return new Map(Object.entries(raw).map(([k, v]) => [k, new Set(v)]));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveHidden() {
+  try {
+    const plain = {};
+    for (const [key, set] of mapHidden) if (set.size) plain[key] = [...set];
+    localStorage.setItem(MAP_HIDDEN_KEY, JSON.stringify(plain));
+  } catch {
+    /* 使えない環境でも、その画面では効く */
+  }
+}
+
+/**
+ * 地図に出すものの一覧（チェック）。**地図のときだけ出す。**
+ *
+ * **一覧は「その絵に置ける語」全部**（外したものも並べる）—— 外したものが消えると
+ * 戻す手段が無くなる。**カテゴリで束ねて並べる**ので「説だけ全部外す」ができる。
+ *
+ * **外したほうを覚える。** 「出すもの」を覚えると、あとから足した語が黙って
+ * 出なくなる（新しく書いた語は必ず出る側に倒す）。
+ */
+function paintMapLayers(drawn) {
+  const items = drawn.items || [];
+  mapLayers.hidden = mode !== "map" || !items.length;
+  if (mapLayers.hidden) return;
+  const off = mapHidden.get(mapName) || new Set();
+
+  const toggle = (refs, on) => {
+    const set = new Set(mapHidden.get(mapName) || []);
+    for (const ref of refs) {
+      if (on) set.delete(ref);
+      else set.add(ref);
+    }
+    mapHidden.set(mapName, set);
+    saveHidden();
+    if (lastGraph) paintGraph(lastGraph);
+  };
+
+  const groups = new Map();
+  for (const item of items) {
+    if (!groups.has(item.category)) groups.set(item.category, []);
+    groups.get(item.category).push(item);
+  }
+
+  const parts = [el("span", { class: "hint", text: "地図に出すもの:" })];
+  for (const [category, list] of groups) {
+    const refs = list.map((i) => i.ref);
+    const allOn = refs.every((r) => !off.has(r));
+    // カテゴリの見出しそのものがまとめて切り替えるボタン（「説だけ外す」ができる）。
+    // **半端に選ばれているときは「全部出す」に倒す** —— 迷ったら出す側、が
+    // この辞書の約束（黙って欠けさせない）。全部出ているときだけ全部外す
+    parts.push(el("button", {
+      type: "button",
+      class: "chip",
+      text: `${category || "未分類"} ${refs.filter((r) => !off.has(r)).length}/${refs.length}`,
+      title: allOn ? "このカテゴリをまとめて外す" : "このカテゴリをまとめて出す",
+      onclick: () => toggle(refs, !allOn),
+    }));
+    for (const item of list) {
+      const box = el("input", { type: "checkbox" });
+      box.checked = !off.has(item.ref);
+      box.addEventListener("change", () => toggle([item.ref], box.checked));
+      parts.push(el("label", { class: "check" }, [box, el("span", { text: item.term })]));
+    }
+  }
+  mapLayers.replaceChildren(...parts);
+}
+
 /** 絵の選択肢を作る。**地図のとき、絵が 2 枚以上あるときだけ出す。** */
 function paintMapOptions(graph) {
   const maps = graph.maps || [];
@@ -1537,6 +1626,7 @@ function paintGraph(graph) {
   showDetail("");
   const drawn = draw(graph);
   paintMapOptions(graph);
+  paintMapLayers(drawn);
   paintNotes(graph);
   setStatus(statusNode, `${graph.nodes.length} 語 / ${graph.edges.length} 本の関係`);
   const common =
@@ -1629,6 +1719,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   zoomBar = host.querySelector("#zoom");
   modeSelect = host.querySelector("#mode");
   mapPick = host.querySelector("#mapPick");
+  mapLayers = host.querySelector("#mapLayers");
   detailNode = host.querySelector("#detail");
   notes = host.querySelector("#notes");
   legend = host.querySelector("#legend");
@@ -1656,6 +1747,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   if (egoCenter) mode = "ego";
   syncModeOptions();
   mapName = rememberedMap();
+  mapHidden = rememberedHidden();
   mapPick.addEventListener("change", () => {
     mapName = mapPick.value;
     try {

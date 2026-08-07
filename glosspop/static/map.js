@@ -97,7 +97,7 @@ const asPoints = (pts) => pts.map((q) => `${q.x},${q.y}`).join(" ");
  */
 export function buildMap(graph, opts = {}) {
   const { nodes, edges, maps = [] } = graph;
-  const { onEdge, onResize, mapName } = opts;
+  const { onEdge, onResize, mapName, hidden } = opts;
 
   // **どの絵を出すかは、出ている語から決める。** いちばん多く点が乗る絵を既定にし、
   // 選ばれているものは必ず注意書きに出す（相関図の範囲と同じ約束）
@@ -105,7 +105,13 @@ export function buildMap(graph, opts = {}) {
     || [...maps].sort((a, b) => b.count - a.count)[0];
 
   const byRef = new Map(nodes.map((n) => [n.ref, n]));
-  const pos = placed(nodes, chosen);
+  // **一覧は絞る前に作る。** 外したものも並べないと、チェックを戻せなくなる
+  const all = placed(nodes, chosen);
+  const items = [...all].map(([ref, p]) => ({
+    ref, term: p.node.term || ref, category: p.node.category || "", kind: p.kind,
+  }));
+  const pos = new Map([...all].filter(([ref]) => !hidden?.has(ref)));
+  const unchecked = all.size - pos.size;
   const height = Math.round(W * GUESS_RATIO);
   const box = { x: -PAD, y: -PAD, w: W + PAD * 2, h: height + PAD * 2 };
 
@@ -276,18 +282,25 @@ export function buildMap(graph, opts = {}) {
   for (const p of pos.values()) kinds[p.kind]++;
   const others = maps.filter((m) => m !== chosen);
   const noCoords = nodes.filter((n) => !n.map || !n.shape).length;
-  const elsewhere = nodes.length - pos.size - noCoords;
+  const elsewhere = nodes.length - all.size - noCoords;
   const note = [
     `「${chosen.name}」の上に ${pos.size} 語を置いています`
     + `（点 ${kinds.point} / 線 ${kinds.path} / 領域 ${kinds.area}）。`,
+    unchecked ? `チェックを外した ${unchecked} 語は出していません。` : "",
     noCoords ? `座標が書かれていない ${noCoords} 語は出していません。` : "",
     elsewhere ? `別の絵にいる ${elsewhere} 語は出していません。` : "",
     offEdges ? `片端が地図に無い関係を ${offEdges} 本伏せています。` : "",
     others.length ? `ほかに ${others.map((m) => `「${m.name}」`).join("")} があります。` : "",
-    pos.size ? "" : "この絵に置かれた語がありません。",
+    all.size ? "" : "この絵に置かれた語がありません。",
+    all.size && !pos.size ? "すべてチェックが外れています。" : "",
   ].filter(Boolean).join("");
 
-  return { root, box, lonely: 0, tucked: 0, note, map: `${chosen.scope}/${chosen.name}` };
+  return {
+    root, box, lonely: 0, tucked: 0, note,
+    map: `${chosen.scope}/${chosen.name}`,
+    // 呼ぶ側がチェックの一覧を作れるように、**この絵に置ける語**を全部返す
+    items,
+  };
 }
 
 /** 1 つの語に乗せている間、その語の関係だけを濃く出す（他の見せ方と同じ作法）。 */

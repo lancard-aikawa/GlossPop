@@ -1206,6 +1206,17 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
    画像も線も語も一緒に動く（CSS の背景にすると 2 つを別々に動かすことになる）。
    点は丸と名前で、**箱にしない** —— 箱で地形を覆うと位置で置いた意味が減る。
    名前の板は `.rel-node rect` の見た目をそのまま借りる（**写しを作らない**）。 */
+/* 地図に出すものの一覧。**行のほうを折り返す**（ボタンとラベルは折り返さない、
+   という約束はここでも同じ）。狭い画面では 1 語ずつ縦に積まれるだけで済む。 */
+.map-layers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0 0 8px;
+}
+.map-layers .check { width: auto; }
+
 .rel-map-bg { pointer-events: none; }
 .rel-map-pin circle { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
 .rel-map-pin a:hover circle { fill: var(--fg); }

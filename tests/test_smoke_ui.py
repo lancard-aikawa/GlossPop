@@ -626,6 +626,56 @@ def test_the_map_draws_points_lines_and_areas(page, server, seeded):
     assert order == ["area", "path", "point"], order
 
 
+def test_the_map_can_hide_shapes_with_checkboxes(page, server, seeded):
+    """一覧のチェックで、出すものを選べる。
+
+    **外したものも一覧に残す**（消すと戻せない）。**外した数は凡例に出す**
+    （黙って欠けた図を出さない）。カテゴリの印を押すとまとめて切り替わる。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition,
+        map="てすと図", pin=[0.62, 0.44],
+    ), ref=b.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+
+    page.uncheck("#mapLayers label:has-text('カムパネルラ') input")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 1
+    # **外したものは一覧に残る**（消すと戻せない）
+    assert page.locator("#mapLayers label").count() == 2
+    assert "チェックを外した 1 語" in (page.text_content("#legend") or "")
+
+    # カテゴリの印でまとめて切り替わる。**半端なときは「全部出す」に倒す**
+    # （迷ったら出す側、が約束。ここを「全部外す」にすると、1 つ外しただけの
+    # つもりで押した人が図を丸ごと失う）
+    page.click("#mapLayers button.chip")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+
+    # 全部出ているときだけ、押すと全部外れる
+    page.click("#mapLayers button.chip")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 0
+    assert "すべてチェックが外れています" in (page.text_content("#legend") or "")
+
+    # 戻せる（外したほうを覚えているので、開き直しても状態は残る）
+    page.click("#mapLayers button.chip")
+    page.wait_for_timeout(300)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 2
+
+
 def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded):
     """座標が 1 つも無ければ段の図に落とすが、**黙って差し替えない。**
 
