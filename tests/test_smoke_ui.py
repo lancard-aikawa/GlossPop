@@ -596,7 +596,7 @@ def test_the_map_draws_points_lines_and_areas(page, server, seeded):
     ), ref=a.ref)
     store.save(EntryDraft(
         term=b.term, category=b.category, definition=b.definition,
-        map="てすと図", path=[[0.1, 0.1], [0.5, 0.2], [0.9, 0.1]],
+        map="てすと図", line=[[0.1, 0.1], [0.5, 0.2], [0.9, 0.1]],
     ), ref=b.ref)
     store.save(EntryDraft(
         term="ザネリ", category="登場人物", definition="級友。",
@@ -610,7 +610,7 @@ def test_the_map_draws_points_lines_and_areas(page, server, seeded):
     page.wait_for_timeout(200)
 
     assert page.locator("svg.rel-map .rel-map-point circle").count() == 1
-    assert page.locator("svg.rel-map .rel-map-path polyline.rel-map-path").count() == 1
+    assert page.locator("svg.rel-map .rel-map-line polyline.rel-map-route").count() == 1
     assert page.locator("svg.rel-map .rel-map-area polygon").count() == 1
     # 内訳も凡例に出す（何を出したのかを黙らない）
     assert "点 1 / 線 1 / 領域 1" in (page.text_content("#legend") or "")
@@ -619,11 +619,11 @@ def test_the_map_draws_points_lines_and_areas(page, server, seeded):
     order = page.evaluate(
         "() => [...document.querySelector('svg.rel-map').children]"
         ".map((g) => g.querySelector('.rel-node')?.classList.contains('rel-map-area') ? 'area'"
-        "  : g.querySelector('.rel-node')?.classList.contains('rel-map-path') ? 'path'"
+        "  : g.querySelector('.rel-node')?.classList.contains('rel-map-line') ? 'line'"
         "  : g.querySelector('.rel-node')?.classList.contains('rel-map-point') ? 'point' : '')"
         ".filter(Boolean)"
     )
-    assert order == ["area", "path", "point"], order
+    assert order == ["area", "line", "point"], order
 
 
 def test_the_map_can_hide_shapes_with_checkboxes(page, server, seeded):
@@ -750,6 +750,54 @@ def test_a_map_image_can_be_uploaded_and_deleted(page, server, seeded):
     page.click("#mapDialog [data-ref=close]")
     page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
     assert len(store.find_by_surface("ジョバンニ")) == 1
+
+
+def test_a_shape_can_be_dragged_and_placed_on_the_map(page, server, seeded):
+    """地図の上で掴んで動かす / 置く。**地図だけの例外**（→ docs/design-notes.md）。
+
+    相関図で「掴んで動かす」を捨てた理由は「座標を書く場所が無い」だったが、
+    地図はまさにその場所を作る図なので、ここでは正当化される。
+    **他の見せ方へ広げないこと。**
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+    # **絵の名前だけ書いて形が無い語 = 置き待ち**（分類ではなく、書いてある意思表示）
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition, map="てすと図",
+    ), ref=b.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    # 閲覧中は掴めない（うっかり動かさない）
+    assert page.locator("svg.rel-map .rel-map-handle").count() == 0
+    assert "置きたいと書いてある語が 1 語" in (page.text_content("#legend") or "")
+
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.locator("svg.rel-map .rel-map-handle").first.wait_for(timeout=10000)
+    handle = page.locator("svg.rel-map .rel-map-handle").first
+    box = handle.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, box["y"] + 60, steps=8)
+    page.mouse.up()
+    page.wait_for_timeout(600)
+    moved = store.get(a.ref).pin
+    assert moved != [0.24, 0.30] and len(moved) == 2, moved
+
+    # まだ置いていない語を選び、絵の上を押すと置ける
+    page.click("#mapLayers [data-ref=mapPending]")
+    page.wait_for_timeout(300)
+    stage = page.locator("svg.rel-map").bounding_box()
+    page.mouse.click(stage["x"] + stage["width"] * 0.6, stage["y"] + stage["height"] * 0.5)
+    page.wait_for_timeout(600)
+    assert len(store.get(b.ref).pin) == 2, store.get(b.ref).pin
 
 
 def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded):

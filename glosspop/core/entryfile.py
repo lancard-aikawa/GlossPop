@@ -41,7 +41,7 @@ FM_KEYS = (
     "first_locator",
     "map",
     "pin",
-    "path",
+    "line",
     "area",
     "former_refs",
     "created_at",

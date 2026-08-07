@@ -175,6 +175,22 @@ class RelationsApplyRequest(BaseModel):
     relations: list[RelationItem] = []
 
 
+class MapShapeRequest(BaseModel):
+    """地図の上の形だけを書き換える。
+
+    **エントリ全体をクライアントに組み立て直させない。** 相関図が持っているのは
+    ノードの一部（用語名・カテゴリ・形）だけなので、そこから `EntryDraft` を作って
+    PUT させると**本文も関係も落ちる** —— 関係の書き込みを `/api/relations` に
+    まとめたのと同じ理由で、サーバ側で読み直して差し替える。
+    """
+
+    #: 絵の名前。空なら**いまの値のまま**（形だけ動かすとき）
+    map: str | None = None
+    #: point | line | area。空文字なら**形を消す**（地図から外す）
+    kind: str = ""
+    points: list[list[float]] = []
+
+
 class AISettingsRequest(BaseModel):
     """AI の選択。**省略した項目は触らない**（None と空文字を区別する）。
 
@@ -1220,6 +1236,34 @@ def update_entry(ref: str, draft: EntryDraft) -> dict:
     except store.StoreError as exc:
         raise HTTPException(404, str(exc)) from exc
     return _entry_payload(entry)
+
+
+@app.put("/api/map-shape/{ref:path}")
+def put_map_shape(ref: str, req: MapShapeRequest) -> dict:
+    """1 エントリの地図の形を差し替える。
+
+    **形は必ず 1 つだけになる** —— 送られた種別を書き、残り 2 つは空にする
+    （画面から `two_map_shapes` を作らせない）。**書く直前に読み直す**ので、
+    本文・関係・別名はそのまま残る。
+    """
+    entry = store.get(ref)
+    if entry is None:
+        raise HTTPException(404, f"用語が見つかりません: {ref}")
+    kinds = {"point": "pin", "line": "line", "area": "area"}
+    if req.kind and req.kind not in kinds:
+        raise HTTPException(400, f"不明な形です: {req.kind}")
+
+    data = entry.model_dump()
+    data["map"] = entry.map if req.map is None else req.map.strip()
+    data["pin"], data["path"], data["area"] = [], [], []
+    if req.kind:
+        points = req.points
+        data[kinds[req.kind]] = points[0] if req.kind == "point" and points else points
+    try:
+        saved = store.save(EntryDraft.model_validate(data), ref=ref)
+    except store.StoreError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return _entry_payload(saved)
 
 
 @app.post("/api/move/{ref:path}")

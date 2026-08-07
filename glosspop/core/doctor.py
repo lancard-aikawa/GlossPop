@@ -43,7 +43,7 @@ CHECKS: dict[str, dict[str, str]] = {
     },
     "two_map_shapes": {
         "label": "地図の形が 2 つ以上",
-        "hint": "pin（点）・path（線）・area（領域）は 1 つだけ書いてください。"
+        "hint": "pin（点）・line（線）・area（領域）は 1 つだけ書いてください。"
                 "いまは細かいほう（領域 → 線 → 点）が使われています。",
     },
 }
@@ -107,7 +107,7 @@ def check(entries: list[Entry]) -> dict:
         if entry.map_shape_count > 1:
             written = "・".join(
                 name for name, value in
-                (("pin", entry.pin), ("path", entry.path), ("area", entry.area)) if value
+                (("pin", entry.pin), ("line", entry.line), ("area", entry.area)) if value
             )
             issues.append(_issue(
                 "two_map_shapes", WARN, entry, f"{written} が同時に書かれています",

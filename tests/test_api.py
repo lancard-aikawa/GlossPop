@@ -1745,20 +1745,20 @@ class TestTheMapImage:
         self._put()
         client.post("/api/entries", json={
             "term": "街道", "category": "場所", "definition": "道。",
-            "map": "ほんの図", "path": [[0.1, 0.2], [0.4, 0.5], [0.8, 0.3]],
+            "map": "ほんの図", "line": [[0.1, 0.2], [0.4, 0.5], [0.8, 0.3]],
         })
         client.post("/api/entries", json={
             "term": "国", "category": "場所", "definition": "領域。",
             "map": "ほんの図", "area": [[0, 0], [1, 0], [0.5, 1]],
         })
         shapes = {n["term"]: n["shape"]["kind"] for n in client.get("/api/graph").json()["nodes"]}
-        assert shapes == {"街道": "path", "国": "area"}
+        assert shapes == {"街道": "line", "国": "area"}
 
     def test_too_few_points_is_emptied(self, client):
         """線は 2 点、領域は 3 点から。足りなければ**丸ごと空**（半端を描かない）。"""
         client.post("/api/entries", json={
             "term": "街道", "category": "場所", "definition": "道。",
-            "map": "ほんの図", "path": [[0.1, 0.2]],
+            "map": "ほんの図", "line": [[0.1, 0.2]],
         })
         assert client.get("/api/graph").json()["nodes"][0]["shape"] is None
 
@@ -1862,3 +1862,77 @@ class TestUploadingAMapImage:
         assert client.delete(
             "/api/map", params={"name": "ほんの図", "scope": "でたらめ"}
         ).status_code == 400
+
+
+class TestMovingAShapeOnTheMap:
+    """地図の形だけを書き換える口 (`PUT /api/map-shape/{ref}`)。
+
+    **エントリ全体をクライアントに組み立て直させない。** 相関図が持っているのは
+    ノードの一部だけなので、そこから draft を作って PUT させると本文も関係も落ちる
+    （関係を `/api/relations` にまとめたのと同じ理由）。
+    """
+
+    def _make(self, client, **extra):
+        body = {
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "summary": "船の着くところ。", "aliases": ["みなと"], **extra,
+        }
+        return client.post("/api/entries", json=body).json()["ref"]
+
+    def test_a_point_can_be_placed_and_the_rest_is_kept(self, client):
+        ref = self._make(client)
+        res = client.put(
+            f"/api/map-shape/{ref}",
+            json={"map": "ほんの図", "kind": "point", "points": [[0.25, 0.5]]},
+        )
+        assert res.status_code == 200
+        body = client.get(f"/api/entries/{ref}").json()
+        assert body["map"] == "ほんの図" and body["pin"] == [0.25, 0.5]
+        # **本文も別名も残る**（ここが落ちるのが、draft を組み立て直させたときの事故）
+        assert body["definition"] == "船着き場。" and body["aliases"] == ["みなと"]
+
+    def test_switching_the_kind_clears_the_others(self, client):
+        """**形は必ず 1 つだけ。** 画面から `two_map_shapes` を作らせない。"""
+        ref = self._make(client, map="ほんの図", pin=[0.1, 0.2])
+        client.put(f"/api/map-shape/{ref}", json={"kind": "line", "points": [[0, 0], [1, 1]]})
+        node = client.get("/api/graph").json()["nodes"][0]
+        assert node["shape"] == {"kind": "line", "points": [[0.0, 0.0], [1.0, 1.0]]}
+        assert not client.get("/api/doctor").json()["issues"]
+
+    def test_the_map_name_is_kept_when_not_sent(self, client):
+        """形だけ動かすときに絵の名前を送らせない（送らせると消し忘れる）。"""
+        ref = self._make(client, map="ほんの図", pin=[0.1, 0.2])
+        client.put(f"/api/map-shape/{ref}", json={"kind": "point", "points": [[0.3, 0.4]]})
+        assert client.get(f"/api/entries/{ref}").json()["map"] == "ほんの図"
+
+    def test_an_empty_kind_takes_it_off_the_map(self, client):
+        ref = self._make(client, map="ほんの図", pin=[0.1, 0.2])
+        client.put(f"/api/map-shape/{ref}", json={"kind": ""})
+        body = client.get(f"/api/entries/{ref}").json()
+        assert body["pin"] == [] and body["line"] == [] and body["area"] == []
+
+    def test_an_unknown_kind_and_a_missing_entry_are_refused(self, client):
+        ref = self._make(client)
+        assert client.put(f"/api/map-shape/{ref}", json={"kind": "まる"}).status_code == 400
+        assert client.put(
+            "/api/map-shape/場所/ない", json={"kind": "point", "points": [[0, 0]]}
+        ).status_code == 404
+
+    def test_the_file_path_does_not_leak_into_the_line(self, client):
+        """**`path` という名前を使わない理由。**
+
+        `_entry_payload` は保存先を `path` に入れる。座標の項目を `path` にすると、
+        `/api/entries/{ref}` が返す値がパス文字列になり、**エディタから保存し直すと
+        線が黙って消える**（`at` が時系列の文字位置とぶつかったのと同じ形）。
+        """
+        ref = self._make(client)
+        client.put(
+            f"/api/map-shape/{ref}",
+            json={"map": "ほんの図", "kind": "line", "points": [[0.1, 0.2], [0.3, 0.4]]},
+        )
+        body = client.get(f"/api/entries/{ref}").json()
+        assert body["line"] == [[0.1, 0.2], [0.3, 0.4]]
+        assert body["path"].endswith(".md")          # こちらは保存先のまま
+        # 返ってきたものをそのまま保存し直しても線が残る
+        assert client.put(f"/api/entries/{ref}", json=body).status_code == 200
+        assert client.get(f"/api/entries/{ref}").json()["line"] == [[0.1, 0.2], [0.3, 0.4]]

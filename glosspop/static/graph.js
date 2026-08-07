@@ -1141,6 +1141,13 @@ function draw(graph) {
       onCenter: moveCenter,
       mapName,
       hidden: mapHidden.get(mapName),
+      editing: mapEditing,
+      placing: mapPlacing,
+      onMove: saveMapShape,
+      onPlace: (ref, points) => {
+        mapPlacing = "";
+        saveMapShape(ref, "point", points);
+      },
       labels: !mapNoLabels.has(mapName),
       // 絵の縦横比は読み込むまで分からない。届いたら入れ物に合わせ直す
       onResize: () => fitView(),
@@ -1168,6 +1175,7 @@ function draw(graph) {
     // 地図が「この絵に置ける語」を返していれば、そのままチェックの一覧へ通す
     // （**ここで落とすと一覧が空になり、外したものを戻せなくなる**。実際に落とした）
     items: drawn.items || [],
+    pending: drawn.pending || [],
   };
 }
 
@@ -1538,6 +1546,12 @@ let mapHidden = new Map();
 const MAP_LABELS_KEY = "glosspop.graphMapNoLabels";
 let mapNoLabels = new Set();
 
+//: 地図を編集中か（丸を掴んで動かせる）。**覚えない** —— 開くたびに閲覧へ戻す。
+//: 見せ方や絵と違って、うっかり動かすほうの害が大きい
+let mapEditing = false;
+//: 「次に絵を押したらここへ置く」語。1 回置いたら空に戻す
+let mapPlacing = "";
+
 //: URL で語を名指しされたので、覚えている見せ方を押しのけて中心の図で開いたか。
 //: これも黙ってやらない（同じ理由）
 let centeredByUrl = false;
@@ -1686,6 +1700,27 @@ async function deleteMapImage(refs, item) {
   }
 }
 
+
+/**
+ * 動かした形を書き戻す。**専用の口を使う**（`PUT /api/map-shape/{ref}`）。
+ *
+ * 相関図が持っているのはノードの一部だけなので、ここから `EntryDraft` を組み立てて
+ * PUT すると**本文も関係も落ちる** —— サーバ側で読み直して差し替えさせる
+ * （関係の書き込みを `/api/relations` にまとめたのと同じ理由）。
+ */
+async function saveMapShape(ref, kind, points) {
+  try {
+    await api(`/api/map-shape/${encodePath(ref)}`, {
+      method: "PUT",
+      body: { kind, points },
+    });
+    setStatus(statusNode, "地図の位置を保存しました");
+    await refresh();
+  } catch (err) {
+    setStatus(statusNode, err.message, "error");
+  }
+}
+
 /** 覚えている「外したもの」を読む。読めなければ空（＝全部出す側に倒す）。 */
 function rememberedHidden() {
   try {
@@ -1726,7 +1761,9 @@ function saveHidden() {
 function paintMapLayers(drawn) {
   const items = drawn.items || [];
   mapEdit.hidden = mode !== "map";
-  mapLayers.hidden = mode !== "map" || !items.length;
+  // **置ける語が 1 つも無くても出す** —— 「置く」から未配置の語へ行けるので、
+  // ここを隠すと最初の 1 つを置く道が無くなる（🖼 絵 を隠さないのと同じ話）
+  mapLayers.hidden = mode !== "map" || !(items.length || (drawn.pending || []).length);
   if (mapLayers.hidden) return;
   const off = mapHidden.get(mapName) || new Set();
 
@@ -1761,7 +1798,20 @@ function paintMapLayers(drawn) {
     }
     if (lastGraph) paintGraph(lastGraph);
   });
+  // **編集は覚えない。** 開くたびに閲覧へ戻す（うっかり動かすほうの害が大きい）
+  const editBox = el("input", { type: "checkbox" });
+  editBox.checked = mapEditing;
+  editBox.addEventListener("change", () => {
+    mapEditing = editBox.checked;
+    mapPlacing = "";
+    if (lastGraph) paintGraph(lastGraph);
+  });
   const parts = [
+    el("label", {
+      class: "check",
+      "data-ref": "mapEdit",
+      title: "丸を掴んで位置を動かせるようにする（離すと保存されます）",
+    }, [editBox, el("span", { text: "置く" })]),
     el("label", {
       class: "check",
       "data-ref": "mapNames",
@@ -1788,6 +1838,25 @@ function paintMapLayers(drawn) {
       box.addEventListener("change", () => toggle([item.ref], box.checked));
       parts.push(el("label", { class: "check", "data-ref": "mapItem" },
         [box, el("span", { text: item.term })]));
+    }
+  }
+  // **まだ置いていない語**（絵の名前だけ書いてある）。押してから絵を押すと置く。
+  // 分類していない —— 「この絵に置きたい」と書いてあるものだけが並ぶ
+  const pending = drawn.pending || [];
+  if (mapEditing && pending.length) {
+    parts.push(el("span", { class: "hint", text: "まだ置いていない:" }));
+    for (const item of pending) {
+      parts.push(el("button", {
+        type: "button",
+        class: mapPlacing === item.ref ? "chip primary" : "chip",
+        "data-ref": "mapPending",
+        text: item.term,
+        title: "押してから絵の上を押すと、そこへ置きます",
+        onclick: () => {
+          mapPlacing = mapPlacing === item.ref ? "" : item.ref;
+          if (lastGraph) paintGraph(lastGraph);
+        },
+      }));
     }
   }
   mapLayers.replaceChildren(...parts);

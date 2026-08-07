@@ -199,9 +199,13 @@ class EntryBase(BaseModel):
     #: ``pin`` は**絵の幅を 1 とした比**。縦横それぞれに 0〜1 を割り当てると、
     #: 縦横比の違う絵へ差し替えたときに点が歪む。
     #:
-    #: **``at`` という名前は使えない。** 相関図のノードでは `timeline.annotate()` が
-    #: ``at``（本文中の文字位置）を入れており、``?doc=`` のときに**上書きされる**
-    #: —— 地図を開く主な経路でちょうど壊れる（実際に踏んだ）。
+    #: **``at`` も ``path`` も名前として使えない。どちらも実際に踏んだ。**
+    #:
+    #: - ``at`` は `timeline.annotate()` がノードに入れる**本文中の文字位置**と
+    #:   ぶつかり、``?doc=`` のとき上書きされる（地図を開く主な経路で壊れる）
+    #: - ``path`` は `_entry_payload` が入れる**保存先のファイルパス**とぶつかる。
+    #:   `/api/entries/{ref}` が座標ではなくパス文字列を返すので、**エディタから
+    #:   保存し直すと線が黙って消える**
     #:
     #: **形は 3 つ。書き方が種別の宣言そのもの**なので、フラグを別に持たない
     #: （持つと二重になって必ずずれる）。「最初と最後が同じなら領域」で推測する
@@ -209,7 +213,7 @@ class EntryBase(BaseModel):
     #: 領域に化けるので採らない。
     map: str = ""               # <辞書>/maps/<名前>.<拡張子> の <名前>
     pin: list[float] = Field(default_factory=list)          # 点 [x, y]
-    path: list[list[float]] = Field(default_factory=list)   # 線 [[x, y], …]
+    line: list[list[float]] = Field(default_factory=list)   # 線 [[x, y], …]
     area: list[list[float]] = Field(default_factory=list)   # 領域 [[x, y], …]
 
     @field_validator("pin", mode="before")
@@ -222,7 +226,7 @@ class EntryBase(BaseModel):
         """
         return _point(value) or []
 
-    @field_validator("path", "area", mode="before")
+    @field_validator("line", "area", mode="before")
     @classmethod
     def _clean_points(cls, value: object, info) -> list[list[float]]:
         """点の並び。**読めない点は落とし、足りなければ丸ごと空にする。**
@@ -246,7 +250,7 @@ class EntryBase(BaseModel):
         複数書いてあるときは細かいほう（領域 → 線 → 点）を採るが、**黙って
         選んでいるわけではない** —— 点検が「地図の形が 2 つ」として挙げる。
         """
-        for kind, value in (("area", self.area), ("path", self.path)):
+        for kind, value in (("area", self.area), ("line", self.line)):
             if value:
                 return {"kind": kind, "points": [list(p) for p in value]}
         if self.pin:
@@ -256,7 +260,7 @@ class EntryBase(BaseModel):
     @property
     def map_shape_count(self) -> int:
         """``pin`` / ``path`` / ``area`` のうち幾つ書かれているか（点検が見る）。"""
-        return sum(1 for v in (self.pin, self.path, self.area) if v)
+        return sum(1 for v in (self.pin, self.line, self.area) if v)
 
     @model_validator(mode="before")
     @classmethod

@@ -100,7 +100,10 @@ export function buildMap(graph, opts = {}) {
   const { nodes, edges, maps = [] } = graph;
   // ``labels`` は**一言の層**の名前で既に使っている（下）ので、受け取り側で
   // 名前を変える —— 同じ関数の中で 2 つ宣言すると読み込みごと落ちる（実際に踏んだ）
-  const { onEdge, onResize, mapName, hidden, labels: showNames = true } = opts;
+  const {
+    onEdge, onResize, mapName, hidden, labels: showNames = true,
+    editing = false, placing = "", onMove, onPlace,
+  } = opts;
 
   // **どの絵を出すかは、出ている語から決める。** いちばん多く点が乗る絵を既定にし、
   // 選ばれているものは必ず注意書きに出す（相関図の範囲と同じ約束）
@@ -113,6 +116,12 @@ export function buildMap(graph, opts = {}) {
   const items = [...all].map(([ref, p]) => ({
     ref, term: p.node.term || ref, category: p.node.category || "", kind: p.kind,
   }));
+  // **絵の名前だけ書いて形が無い語 = 置き待ち。** 分類していない ——
+  // 「この絵に置きたい」と書いてあるものだけを出すので、辞書全体は並ばない
+  const pending = nodes
+    .filter((n) => n.map === chosen?.name && (n.scope || "global") === chosen?.scope)
+    .filter((n) => !n.shape)
+    .map((n) => ({ ref: n.ref, term: n.term || n.ref, category: n.category || "" }));
   const pos = new Map([...all].filter(([ref]) => !hidden?.has(ref)));
   const unchecked = all.size - pos.size;
   const height = Math.round(W * GUESS_RATIO);
@@ -232,19 +241,19 @@ export function buildMap(graph, opts = {}) {
   // どれも名前は真ん中あたりに板を敷いて置く（箱で地形を覆わない）。
   // **重ねる順は 領域 → 線 → 点** —— 領域を後に描くと点を塗りつぶす
   const nodeGroups = new Map();
-  const layers = { area: svg("g"), path: svg("g"), point: svg("g") };
+  const layers = { area: svg("g"), line: svg("g"), point: svg("g") };
   for (const [ref, p] of pos) {
     const node = p.node;
     const term = node.term || ref;
     const label = clip(term, NAME_MAX);
     const body = [];
     if (p.kind === "area") {
-      body.push(svg("polygon", { class: "rel-map-area", points: asPoints(p.pts) }));
-    } else if (p.kind === "path") {
+      body.push(svg("polygon", { class: "rel-map-fill", points: asPoints(p.pts) }));
+    } else if (p.kind === "line") {
       // 線は細くて押せない。透明な太い線を重ねて当たり判定にする（辺と同じ作法）
       body.push(
         svg("polyline", { class: "rel-map-hit", points: asPoints(p.pts) }),
-        svg("polyline", { class: "rel-map-path", points: asPoints(p.pts) }),
+        svg("polyline", { class: "rel-map-route", points: asPoints(p.pts) }),
       );
     } else {
       body.push(svg("circle", { cx: p.x, cy: p.y, r: DOT_R }));
@@ -279,23 +288,37 @@ export function buildMap(graph, opts = {}) {
         }),
       ]),
     ]);
+    p.group = group;
     layers[p.kind].append(group);
     nodeGroups.set(ref, group);
   }
-  root.append(layers.area, layers.path, layers.point);
+  root.append(layers.area, layers.line, layers.point);
 
   installFocus(root, nodeGroups, touching);
+  if (editing) installHandles(root, pos, onMove);
+  if (placing) {
+    // **置くのは絵の上を 1 回押すだけ。** armed の間だけ効く（間違って置かない）
+    root.classList.add("is-placing");
+    root.addEventListener("click", (ev) => {
+      const at = toUser(root, ev);
+      if (at) onPlace?.(placing, [[at.x / W, at.y / W]]);
+    }, { once: true });
+  }
 
   // **出していないものは全部数える。** どの絵を出しているかも必ず書く
-  const kinds = { point: 0, path: 0, area: 0 };
+  const kinds = { point: 0, line: 0, area: 0 };
   for (const p of pos.values()) kinds[p.kind]++;
   const others = maps.filter((m) => m !== chosen);
   const noCoords = nodes.filter((n) => !n.map || !n.shape).length;
   const elsewhere = nodes.length - all.size - noCoords;
   const note = [
     `「${chosen.name}」の上に ${pos.size} 語を置いています`
-    + `（点 ${kinds.point} / 線 ${kinds.path} / 領域 ${kinds.area}）。`,
+    + `（点 ${kinds.point} / 線 ${kinds.line} / 領域 ${kinds.area}）。`,
     showNames ? "" : "名前は消しています（乗せると出ます）。",
+    editing ? "丸を掴むと動かせます（矢印キーでも。離すと保存されます）。" : "",
+    placing ? "絵の上を押すとそこへ置きます。" : "",
+    !editing && pending.length
+      ? `この絵に置きたいと書いてある語が ${pending.length} 語あります（「置く」から）。` : "",
     unchecked ? `チェックを外した ${unchecked} 語は出していません。` : "",
     noCoords ? `座標が書かれていない ${noCoords} 語は出していません。` : "",
     elsewhere ? `別の絵にいる ${elsewhere} 語は出していません。` : "",
@@ -310,7 +333,100 @@ export function buildMap(graph, opts = {}) {
     map: `${chosen.scope}/${chosen.name}`,
     // 呼ぶ側がチェックの一覧を作れるように、**この絵に置ける語**を全部返す
     items,
+    // まだ置いていない語（絵の名前だけ書いてある）。置く動線はこれで作る
+    pending,
   };
+}
+
+
+/** 画面の座標を絵の座標へ。**`getScreenCTM()` の逆行列**で拡大縮小と移動を吸収する。 */
+function toUser(root, ev) {
+  const ctm = root.getScreenCTM();
+  if (!ctm) return null;
+  const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(ctm.inverse());
+  return { x: p.x, y: p.y };
+}
+
+/**
+ * 頂点を掴んで動かせるようにする。**地図だけの例外。**
+ *
+ * 相関図で「ノードを掴んで動かす」を捨てた理由は**「座標を書く場所が無い」**
+ * だった（→ docs/design-notes.md）。地図はまさにその場所を作る図なので、
+ * ここでは正当化される —— **段の図や他の見せ方へ広げないこと。**
+ *
+ * **掴みは動き出してから `setPointerCapture` する。** `pointerdown` で捕まえると
+ * 以後のポインタ事象が付け替えられ、**中の線を押しても編集ダイアログが開かなくなる**
+ * （拡大縮小の掴みで実際に踏んだ）。
+ */
+function installHandles(root, pos, onMove) {
+  const layer = svg("g", { class: "rel-map-handles" });
+  for (const [ref, p] of pos) {
+    p.pts.forEach((q, i) => {
+      const dot = svg("circle", {
+        class: "rel-map-handle", cx: q.x, cy: q.y, r: 9,
+        tabindex: "0", role: "button",
+        "aria-label": `${p.node.term || ref} の位置を動かす`,
+      });
+      dot.append(svg("title", { text: `${p.node.term || ref}（掴んで動かせます）` }));
+      let moved = false;
+      const down = (ev) => {
+        if (ev.button !== 0) return;
+        // **図全体の移動と取り合わない。** 掴んでいる間は親へ渡さない
+        ev.stopPropagation();
+        moved = false;
+        const move = (e2) => {
+          const at = toUser(root, e2);
+          if (!at) return;
+          moved = true;
+          p.pts[i] = at;
+          dot.setAttribute("cx", at.x);
+          dot.setAttribute("cy", at.y);
+          redraw(p);
+        };
+        const up = () => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+          if (moved) onMove?.(ref, p.kind, p.pts.map((s) => [s.x / W, s.y / W]));
+        };
+        // **window で受ける。** 丸に付けると、指が丸から出た時点で届かなくなる
+        // （実際に踏んだ）。`setPointerCapture` は使わない —— 拡大縮小の掴みで
+        // 「中の線を押しても click が届かない」を踏んだのと同じ道具なので、
+        // **要らないなら持ち出さない**
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      };
+      dot.addEventListener("pointerdown", down);
+      // キーボードでも動かせる（矢印。**掴めない人を締め出さない**）
+      dot.addEventListener("keydown", (ev) => {
+        const step = ev.shiftKey ? 20 : 4;
+        const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0],
+          ArrowUp: [0, -step], ArrowDown: [0, step] }[ev.key];
+        if (!d) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        p.pts[i] = { x: p.pts[i].x + d[0], y: p.pts[i].y + d[1] };
+        dot.setAttribute("cx", p.pts[i].x);
+        dot.setAttribute("cy", p.pts[i].y);
+        redraw(p);
+        onMove?.(ref, p.kind, p.pts.map((s) => [s.x / W, s.y / W]));
+      });
+      layer.append(dot);
+    });
+  }
+  root.append(layer);
+}
+
+/** 動かしている最中の見た目を追従させる（保存は離したとき）。 */
+function redraw(p) {
+  const points = asPoints(p.pts);
+  for (const node of p.group?.querySelectorAll("polygon, polyline") || []) {
+    node.setAttribute("points", points);
+  }
+  const dot = p.group?.querySelector("circle");
+  if (dot && p.kind === "point") {
+    dot.setAttribute("cx", p.pts[0].x);
+    dot.setAttribute("cy", p.pts[0].y);
+  }
 }
 
 /** 1 つの語に乗せている間、その語の関係だけを濃く出す（他の見せ方と同じ作法）。 */

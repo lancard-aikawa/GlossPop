@@ -1224,10 +1224,12 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 /* 形は 3 つ。**領域は必ず半透明**にする —— 塗りつぶすと、重なった側とその下の
    地形が両方読めなくなる（重ねる順は 領域 → 線 → 点。JS 側で層を分けてある）。
    線は細くて押せないので、透明な太い線を下に重ねて当たり判定にする（辺と同じ作法）。 */
-.rel-map-area { fill: var(--accent); fill-opacity: 0.18; stroke: var(--accent); stroke-width: 2; }
-.rel-map-pin a:hover .rel-map-area { fill-opacity: 0.32; }
-.rel-map-path { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
-.rel-map-pin a:hover .rel-map-path { stroke: var(--fg); }
+/* **描く要素のクラスは種別のクラスと分ける。** 同じ名前にすると `<g>` にも
+   付いて、`fill` が継承で効いてしまう（気付きにくい効き方をする）。 */
+.rel-map-fill { fill: var(--accent); fill-opacity: 0.18; stroke: var(--accent); stroke-width: 2; }
+.rel-map-pin a:hover .rel-map-fill { fill-opacity: 0.32; }
+.rel-map-route { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
+.rel-map-pin a:hover .rel-map-route { stroke: var(--fg); }
 .rel-map-hit {
   fill: none;
   stroke: transparent;
@@ -1548,3 +1550,16 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   border-radius: 4px;
   flex-shrink: 0;
 }
+
+/* 掴んで動かすための丸。**地図だけの例外**（→ docs/design-notes.md）。
+   **縮小しても押せる大きさを保つ**（当たり判定と同じ理由）。 */
+.rel-map-handle {
+  fill: var(--panel);
+  stroke: var(--accent);
+  stroke-width: 2;
+  cursor: grab;
+  vector-effect: non-scaling-stroke;
+}
+.rel-map-handle:hover,
+.rel-map-handle:focus { fill: var(--accent); outline: none; }
+.rel-map.is-placing { cursor: crosshair; }
