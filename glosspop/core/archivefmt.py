@@ -13,6 +13,7 @@ GlossPopApp（利用者ごとのディレクトリ）の仕事で、ここが持
 ```
 glossary/<カテゴリ>/<slug>.md   … 辞書。**2 段と決まっている**
 maps/<名前>.<拡張子>            … 地図の絵。**1 段**（あってもなくてもよい）
+images/<カテゴリ>/<slug>.<拡張子> … 用語ごとの画像。**辞書と同じ 2 段**
 categories.yaml                 … カテゴリマスター（GlossPop だけが入れる）
 glosspop-export.json            … 目印
 ```
@@ -32,11 +33,12 @@ import json
 import zipfile
 from pathlib import Path
 
-from .models import MAP_SUFFIXES
+from .imagefmt import IMAGE_SUFFIXES, MAP_SUFFIXES
 
 #: zip の中の置き場所。展開時もこの名前で探す
 GLOSSARY_PREFIX = "glossary/"
 MAPS_PREFIX = "maps/"
+IMAGES_PREFIX = "images/"
 CATEGORIES_NAME = "categories.yaml"
 
 #: 書き出したものだと分かる目印。中身も検証に使う
@@ -116,6 +118,24 @@ def map_members(members: list[zipfile.ZipInfo]) -> list[zipfile.ZipInfo]:
     return out
 
 
+def image_members(members: list[zipfile.ZipInfo]) -> list[zipfile.ZipInfo]:
+    """``images/<カテゴリ>/<slug>.<拡張子>`` だけを拾う。**辞書と同じ 2 段。**
+
+    **地図（1 段）と違うのは、鍵がエントリだから** —— 名前だけを鍵にすると、
+    カテゴリ違いの同名が同じ画像を指す（`store` の置き場所と同じ理由）。
+    拡張子で絞る理由と、無くても形が違うことにはならない点は `map_members` と同じ。
+    **SVG は通さない**（配る口 `GET /api/entry-image` が出し方で守っていない側）。
+    """
+    out = []
+    for info in members:
+        if info.is_dir() or not info.filename.startswith(IMAGES_PREFIX):
+            continue
+        parts = Path(info.filename[len(IMAGES_PREFIX):]).parts
+        if len(parts) == 2 and Path(parts[1]).suffix.lower() in IMAGE_SUFFIXES:
+            out.append(info)
+    return out
+
+
 def split_member(name: str) -> tuple[str, str]:
     """``glossary/人物/寒月.md`` → ``("人物", "寒月")``。"""
     parts = Path(name[len(GLOSSARY_PREFIX):]).parts
@@ -147,7 +167,7 @@ def open_archive(
 
 
 def inspect(data: bytes, dest: Path, *, max_bytes: int | None = None) -> dict:
-    """取り込む前に中身を確かめる。``{entries, categories, maps, has_manifest}``。
+    """取り込む前に中身を確かめる。``{entries, categories, maps, images, has_manifest}``。
 
     **辞書の zip かを見る。** アプリ本体の zip を取り込ませると辞書が空で
     置き換わるので、形が違うものはここで止める。
@@ -169,12 +189,14 @@ def inspect(data: bytes, dest: Path, *, max_bytes: int | None = None) -> dict:
             "entries": len(entries),
             "categories": len({split_member(m.filename)[0] for m in entries}),
             "maps": len(map_members(members)),
+            "images": len(image_members(members)),
             "has_manifest": MANIFEST_NAME in names,
         }
 
 
 def manifest_bytes(*, app: str, entries: int, created_at: str, partial: bool = False,
-                   categories: list[str] | None = None, maps: int = 0) -> bytes:
+                   categories: list[str] | None = None, maps: int = 0,
+                   images: int = 0) -> bytes:
     """目印。**`app` は書き出した側の名前**（受け取る側は形だけを見る）。"""
     return json.dumps(
         {
@@ -182,6 +204,7 @@ def manifest_bytes(*, app: str, entries: int, created_at: str, partial: bool = F
             "kind": "glossary",
             "entries": entries,
             "maps": maps,
+            "images": images,
             # 一部だけ書き出したことは中身にも残す（受け取った側が
             # 「これで全部」と思わないように）
             "partial": partial,

@@ -265,6 +265,12 @@ def apply(
         "created_at": min(keep.created_at, drop.created_at),
         "updated_at": now_iso(),
     })
+    # **画像は残す側に無いときだけ引き継ぐ。** 消える側にしか無い画像を落とすと、
+    # まとめた結果として**絵が消える**（別名を引き継ぐのと同じ理由）。両方に
+    # あるときは残す側を採る —— 選ばせないのは、統合の項目を増やさないため
+    # （消える側のぶんは `store.write()` → `delete()` が片付ける）。
+    if store.image_file(keep.ref) is None:
+        store.move_image(drop.ref, keep.ref)
     return store.write(updated, replacing=drop.ref)
 
 

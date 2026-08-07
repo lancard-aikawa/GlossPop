@@ -839,6 +839,18 @@ body.overlaid .layout { pointer-events: none; }
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* 用語ごとの画像のサムネイル。**顔と違って語ごとに違う**ので一覧に出す。
+   カードの高さを揃えるため、左に小さく置いて本文を回り込ませる。 */
+.card.has-thumb { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 10px; }
+.card-thumb {
+  grid-row: 1 / span 2;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius);
+  object-fit: cover;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
 
 /* --------------------------------------------------------- entry detail */
 
@@ -865,6 +877,22 @@ body.overlaid .layout { pointer-events: none; }
 }
 .entry-head .aliases { font-size: var(--fs-12); color: var(--fg-dim); margin: 6px 0 0; }
 .entry-head .summary { margin: 10px 0 0; font-size: var(--fs-15); }
+
+/* 用語ごとの画像。**顔（右上の丸）とは別物**なので、丸くも小さくもしない ——
+   その語そのものの絵なので、読める大きさで出す。**高さは頭打ちにする**
+   （縦長の画像で本文が画面の外へ押し出されないように）。 */
+.entry-image { margin: 12px 0 0; clear: both; }
+.entry-image .entry-photo {
+  display: block;
+  max-width: min(100%, 420px);
+  max-height: 320px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  object-fit: contain;
+}
+/* 入れる前は押す口だけ。**画像が無くてもボタンは出す** —— 隠すと入れる道が消える */
+.entry-image .toolbar { margin-top: 8px; }
 
 .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 /* 丸い粒が割れると印に見えなくなるので、こちらも折り返さない

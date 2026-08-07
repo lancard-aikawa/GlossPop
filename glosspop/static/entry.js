@@ -377,6 +377,73 @@ function relationsSection(entry) {
   return section("関係", parts);
 }
 
+/**
+ * 用語ごとの画像。**語り手の顔とは別物**（顔は「誰が書いているか」で辞書に 1 枚）。
+ *
+ * **受け取る口の規則は顔と同じ**（生のバイト列で送る・ファイル名は使わない・
+ * 拡張子はサーバが中身から決める）。ここが持つのは選ばせ方と文言だけ。
+ * **SVG は選ばせない** —— サーバも通さないので、選べると「入れたのに断られた」になる。
+ */
+function imagePanel(entry) {
+  const box = el("div", { class: "entry-image", "data-ref": "imagePanel" });
+  const status = el("span", { class: "status" });
+  const file = el("input", {
+    type: "file",
+    accept: "image/png,image/jpeg,image/webp,image/gif",
+    "data-ref": "imageFile",
+    hidden: true,
+  });
+
+  const send = async (method, body) => {
+    setStatus(status, method === "DELETE" ? "消しています" : "入れています", "busy");
+    try {
+      const res = await fetch(
+        `/api/entry-image?ref=${encodePath(entry.ref)}`,
+        { method, body, headers: body ? { "Content-Type": "application/octet-stream" } : {} }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+      setStatus(status, "");
+      // **吹き出しも一覧も同じ絵を出す**ので、覚えているぶんを捨てる
+      invalidatePopupCache();
+      await reload(entry.ref);
+    } catch (err) {
+      setStatus(status, err.message, "error");
+    }
+  };
+
+  file.addEventListener("change", () => {
+    const picked = file.files?.[0];
+    file.value = "";                       // 同じファイルをもう一度選べるように
+    if (picked) send("POST", picked);
+  });
+
+  if (entry.image_url) {
+    box.append(el("img", { class: "entry-photo", src: entry.image_url, alt: "" }));
+  }
+  box.append(el("div", { class: "toolbar" }, [
+    el("button", {
+      type: "button",
+      "data-ref": "imagePick",
+      text: entry.image_url ? "画像を差し替え" : "🖼 画像を入れる",
+      title: "PNG / JPEG / GIF / WebP（4 MB まで）",
+      onclick: () => file.click(),
+    }),
+    entry.image_url ? el("button", {
+      type: "button",
+      class: "danger",
+      "data-ref": "imageDrop",
+      text: "画像を消す",
+      // **確認を取る。** 画像は控えに入るが、1 件ずつ戻す口は無い
+      onclick: () => confirm(`「${entry.term}」の画像を消します。よろしいですか？`)
+        && send("DELETE", null),
+    }) : null,
+    file,
+    status,
+  ]));
+  return box;
+}
+
 function render(entry) {
   current = entry;
   const head = el("div", { class: "entry-head" }, [
@@ -402,6 +469,9 @@ function render(entry) {
     head.append(el("p", { class: "aliases", text: `別名: ${entry.aliases.join(" / ")}` }));
   }
   if (entry.summary) head.append(el("p", { class: "summary", text: entry.summary }));
+  // **用語ごとの画像は本文の前**（顔は見出しの横）。**主戦場はここ** ——
+  // 吹き出しは狭くて顔と取り合うので、大きく出せるのは用語ページだけ
+  head.append(imagePanel(entry));
   if (entry.tags?.length) {
     // タグで絞り込む (`?q=` に流すと、そのタグ名が本文に出るだけの語まで拾う)
     head.append(el("div", { class: "chips" }, entry.tags.map((t) => chip(`#${t}`, `/glossary?tag=${encodeURIComponent(t)}`))));

@@ -75,6 +75,7 @@ def test_core_has_the_modules_we_expect():
         "documents",
         "entryfile",
         "htmlclean",
+        "imagefmt",
         "linker",
         "models",
         "relations",

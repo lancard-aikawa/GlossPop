@@ -62,10 +62,12 @@ from .core.archivefmt import (
     safe_members,
     GLOSSARY_PREFIX,
     MANIFEST_NAME,
+    IMAGES_PREFIX,
     MAPS_PREFIX,
     MAX_ARCHIVE_BYTES,
     ArchiveFormatError,
     entry_members,
+    image_members,
     manifest_bytes,
     map_members,
 )
@@ -119,9 +121,12 @@ def export_bytes(only: list[str] | None = None) -> bytes:
                 rel = path.relative_to(root).as_posix()
                 zf.writestr(f"{GLOSSARY_PREFIX}{rel}", path.read_bytes())
                 count += 1
-        images = _export_maps(picked)
-        for path in images:
+        maps = _export_maps(picked)
+        for path in maps:
             zf.writestr(f"{MAPS_PREFIX}{path.name}", path.read_bytes())
+        photos = _export_images(picked)
+        for ref, path in photos:
+            zf.writestr(f"{IMAGES_PREFIX}{ref}{path.suffix.lower()}", path.read_bytes())
         master = _export_categories(picked)
         if master is not None:
             zf.writestr(CATEGORIES_NAME, master)
@@ -133,7 +138,8 @@ def export_bytes(only: list[str] | None = None) -> bytes:
                 created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                 partial=picked is not None,
                 categories=sorted(picked) if picked is not None else [],
-                maps=len(images),
+                maps=len(maps),
+                images=len(photos),
             ),
         )
     return buf.getvalue()
@@ -158,6 +164,21 @@ def _export_maps(picked: set[str] | None) -> list[Path]:
         if e.scope == GLOBAL_SCOPE and e.category in picked and e.map
     }
     return [p for p in files if p.stem in wanted]
+
+
+def _export_images(picked: set[str] | None) -> list[tuple[str, Path]]:
+    """zip に入れる用語ごとの画像。``(ref, パス)`` の並び。
+
+    地図と同じ扱い（**入れないと渡した先で画像だけ消える**）だが、**鍵がエントリ**
+    なので絞り方が違う —— 一部だけのときは**選んだカテゴリの語のぶん**。
+    """
+    photos = store.list_images(GLOBAL_SCOPE)
+    if picked is None:
+        return sorted(photos.items())
+    return sorted(
+        (ref, path) for ref, path in photos.items()
+        if ref.rpartition("/")[0] in picked
+    )
 
 
 def _export_categories(picked: set[str] | None) -> bytes | None:
@@ -207,11 +228,15 @@ def export_plan(only: list[str] | None = None) -> dict:
             if target is not None and target.ref not in refs:
                 dangling.append(f"{entry.term} → {target.term}")
     # 絵は圧縮が効かないので、**枚数と一緒に大きさも出す**（zip の上限に効く）
-    images = _export_maps(picked)
+    maps = _export_maps(picked)
+    photos = [path for _, path in _export_images(picked)]
     return {
         "entries": len(inside),
-        "maps": len(images),
-        "maps_bytes": sum(p.stat().st_size for p in images if p.exists()),
+        "maps": len(maps),
+        "images": len(photos),
+        "maps_bytes": sum(
+            p.stat().st_size for p in [*maps, *photos] if p.exists()
+        ),
         "categories": sorted(picked) if picked is not None else sorted(
             {e.category for e in entries}
         ),
@@ -436,6 +461,8 @@ def plan(data: bytes, mode: str = "merge") -> dict:
     unchanged = 0
     maps_added: list[str] = []
     maps_updated: list[str] = []
+    images_added: list[str] = []
+    images_updated: list[str] = []
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         members = safe_members(zf, root.parent)
         for member in _entry_members(zf, members):
@@ -454,6 +481,10 @@ def plan(data: bytes, mode: str = "merge") -> dict:
         for member in map_members(members):
             name = Path(member.filename[len(MAPS_PREFIX):]).name
             (maps_updated if _map_here(name) else maps_added).append(name)
+        # 用語ごとの画像も同じ扱い（足すか上書きするかだけ）。**鍵は ref**
+        for member in image_members(members):
+            ref = _image_ref(member.filename)
+            (images_updated if store.image_file(ref) else images_added).append(ref)
 
     # **消えるのは置き換えのときだけ。** 併合は手元にしか無い語をそのまま残す。
     # **絵はどちらでも消えない**（→ このモジュールの説明）
@@ -467,6 +498,11 @@ def plan(data: bytes, mode: str = "merge") -> dict:
         "maps_updated": _cut(maps_updated),
         "maps_added_count": len(maps_added),
         "maps_updated_count": len(maps_updated),
+        "images": info.get("images", 0),
+        "images_added": _cut(images_added),
+        "images_updated": _cut(images_updated),
+        "images_added_count": len(images_added),
+        "images_updated_count": len(images_updated),
         "added": _cut(added),
         "updated": _cut(updated),
         "removed": _cut(removed),
@@ -489,6 +525,11 @@ def _map_here(name: str) -> bool:
     （名前が同じものは 1 枚しか出せない → `store.map_file()` の探索順）。
     """
     return store.map_file(GLOBAL_SCOPE, Path(name).stem) is not None
+
+
+def _image_ref(member_name: str) -> str:
+    """``images/人物/寒月.png`` → ``人物/寒月``（全体の辞書の ref）。"""
+    return Path(member_name[len(IMAGES_PREFIX):]).with_suffix("").as_posix()
 
 
 def _check_mode(mode: str) -> str:
@@ -534,8 +575,10 @@ def import_bytes(data: bytes, mode: str = "replace") -> dict:
         categories_data = zf.read(CATEGORIES_NAME) if CATEGORIES_NAME in {
             m.filename for m in members
         } else None
-        images = [(Path(m.filename[len(MAPS_PREFIX):]).name, zf.read(m))
-                  for m in map_members(members)]
+        pictures = [(Path(m.filename[len(MAPS_PREFIX):]).name, zf.read(m))
+                    for m in map_members(members)]
+        photos = [(_image_ref(m.filename), Path(m.filename).suffix.lower(), zf.read(m))
+                  for m in image_members(members)]
 
     leftover: str | None = None
     try:
@@ -556,12 +599,28 @@ def import_bytes(data: bytes, mode: str = "replace") -> dict:
 
     if categories_data is not None:
         _write_categories(categories_data, mode)
-    _write_maps(images)
+    _write_maps(pictures)
+    _write_images(photos)
 
     # 保存先は変わらないので再起動は要らない。読み直しの合図だけ出す
     store.invalidate()
     categories.invalidate()
     return {**report, "backup": str(backup), "leftover": leftover}
+
+
+def _write_images(photos: list[tuple[str, str, bytes]]) -> None:
+    """用語ごとの画像を置く。**足すか上書きするかだけ**（地図とまったく同じ約束）。
+
+    名前は `store.image_path()` に通す —— zip の中の ref は外から来た文字列なので、
+    組み立てた結果が置き場所の中にあることを**書く直前にもう一度**確かめさせる。
+    """
+    for ref, suffix, data in photos:
+        target = store.image_path(ref, suffix)
+        if target is None:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        store.clear_other_images(ref, target)
 
 
 def _write_maps(images: list[tuple[str, bytes]]) -> None:

@@ -52,7 +52,8 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen |
 ### `glosspop/core/` は「どのマシンか」を知らない
 
 `models` `htmlclean` `render` `linker` `relations` `documents` `timeline` `doctor`
-`entryfile`（エントリのファイル形式）`archivefmt`（zip の形と安全規則）の 10 個は
+`entryfile`（エントリのファイル形式）`archivefmt`（zip の形と安全規則）
+`imagefmt`（画像の拡張子と見分け方）の 11 個は
 `glosspop/core/` にある。**入力から出力を作るだけ**で、辞書の置き場所 (`store`)・
 開いているフォルダ・設定ファイル (`config`) を一切知らない。
 
@@ -531,6 +532,27 @@ DOTALL で書いたら 4 万字の作品でハングした（`.` が行をまた
   📁 はフォルダに `.glosspop` を作りうるので、モデルを選び直したついでに書かれると
   「開いただけのフォルダを汚さない」が崩れる。空文字はファイルごと消す
 
+**用語ごとの画像 (`images/<カテゴリ>/<slug>.<拡張子>`) は顔とは別の軸。**
+顔は「誰が書いているか」で辞書に 1 枚、こちらは**その語そのもの**で語ごと。
+守ること 5 つ:
+
+- **鍵は ref（2 段）。名前だけにしない** —— `images/<slug>` にすると
+  **カテゴリ違いの同名が同じ画像を指す**（`find_by_surface()` がリストを返す理由と
+  同じ話）。「カテゴリを移すと取り残される」は**移す側で塞ぐ**（`store.move()` が
+  画像も動かし、`delete()` は消し、`merge` は残す側に無いときだけ引き継ぐ）
+- **見分けは `core.imagefmt.sniff()` 1 か所**（顔・地図・用語で共用）。写しを作ると、
+  対応形式を足したときに**片方だけ通る** —— 実際 `persona_types` が返す一覧は
+  WebP を落としていて、受け入れる側とずれていた。**SVG を通すかは呼ぶ側が決める**
+  （地図だけが出し方で担保している）
+- **一覧には出す。** 顔を出さない理由は「辞書に 1 枚なので同じ絵が並ぶだけ」で、
+  **語ごとに違うこちらには当てはまらない**。ただし数千枚になりうるので
+  `loading="lazy"` を外さないこと。**URL は `_image_index()` が 1 回の走査で作る**
+  （語ごとに `image_file()` を呼ぶと 3000 語で 15,000 回 stat が飛ぶ）
+- **吹き出しでは用語の画像が顔に勝つ**（同じ場所を取り合うので、その語の絵を優先）。
+  判断は `popup.js` の `faceOf()` / `hasFace()` の 2 つだけで、呼ぶ側に書かない
+- **zip には入れるが、取り込みでは消さない**（地図とまったく同じ約束）。
+  `images/` は 2 段、`maps/` は 1 段 —— **同じ prefix にまとめない**
+
 **語り手の顔 (`persona.*`) はエントリの居場所につく。文体とは基準が違う。**
 文体は「いま読んでいるフォルダ」（これから書くときの指定だから）、顔は
 「そのエントリがどの辞書にあるか」（すでに書かれたものの出どころだから）。
@@ -922,6 +944,33 @@ renderer / gpu）も数に入るので、ブラウザ本体だけを見ること
   書き換えず、押しのけたことを注意書きに出す**（`?ref=` と同じ約束）。地図では
   名指しされた語を光らせて枠へ入れる（`spotlight()`）—— 座標が与えられている図は
   中心の図のように組み替えられないので、**広い絵の隅に置かれた語を見失う**
+
+**「ここまで読んだぶん」は単位を揃えずに作る**（`reading.js`）。読書位置は
+`progress.js` が**描画ブロックの添字**、サーバは**文字位置**で、換算する道は無い ——
+**近いはずの数字で埋めると「ここまで読んだ」が静かに嘘になる**（ネタバレ抑止に使う
+値なので許されない）。代わりに**本文の自動リンクそのもの**を見る（`Linker` の出力
+なので判断が二重にならない）。守ること 4 つ:
+
+- **線は画面の下端**（`readBlock()`）。`progress.js` の `topBlockOf()`（再開する位置、
+  上端）とは**別の問い**なので分けてある —— 上端で切ると、**画面に見えている語が
+  図に出ない**
+- **決めきれない語は入れず、数えて出す**（`data-count` が 2 以上のリンク）。入れる
+  ほうへ倒すと、**まだ会っていない人物の関係が出る**
+- **ビューアは値ではなく関数を渡す**（`provideReading()`）。覆いは何度でも開き直される
+  ので、押した時点の位置が要る。登録者が居なければ**チェックごと出さない**
+- **覚えない**（開くたびに全体へ戻す）。伏せたまま開き直すと「関係が消えた」と読まれる
+
+**図の書き出しは `graph-export.js` の 1 か所**（見せ方ごとに書かない —— どれも
+`{ root, box }` を返すので、入り口は 1 つで済む）。守ること 3 つ:
+
+- **見た目は焼き込む**（`getComputedStyle()` → `style` 属性）。クラス名だけ持って
+  出ると、外では `style.css` も CSS 変数も引けず**素の黒い線と黒い文字**になる。
+  CSS を丸ごと貼る形にしないのは、**変数の解決とセレクタの取捨を再実装する**ことに
+  なるため
+- **外部の画像は data URI に畳む**（地図の絵）。`/api/map?...` のままでは
+  **こちらのサーバが動いていないと出ない** —— 渡した相手には絶対に出ない
+- **保存するのは図の全体**（`contentBox`）で、いまの拡大率ではない。拡大は見るための
+  操作であって図の範囲ではない
 
 **乗せたもの／焦点が当たったものの説明は、図の下の枠に出す**（`installDetail()`）。
 **高さは常に同じ**にすること —— 出たり消えたりで下の凡例まで動くと読みにくい
@@ -1498,18 +1547,20 @@ Playwright を動かして確かめる。
 | 描画前に当てる設定（テーマ・文字の大きさ） | `base.js` のキーと値、**5 つの HTML の head のインライン script**（写しなので全部） |
 | 文字の大きさ（`--fs-base` と段階） | `style.css` の `:root`、`settings.js` の `<option>`、MANUAL の「文字の大きさ」の表。**周りの px は触らない** |
 | ビューアの左パネルの構成 | MANUAL の「左パネルの構成」（開き方の一覧・横断検索・フォルダを開く の各節も参照している）、`tests/test_smoke_ui.py` の `open_other_source()` / `open_content_search()` |
-| ペルソナの顔 (`config.PERSONA_*` / `ai._PERSONA_SNIFF`) | MANUAL の「語り手の顔」、`samples/README.md`、`docs/voices.md`、`ai-style.js` の `accept`。**画像を配る口は `GET /api/persona`、受け取る口は `POST /api/persona` の 1 つずつだけ** |
+| ペルソナの顔 (`config.PERSONA_*` / `core.imagefmt`) | MANUAL の「語り手の顔」、`samples/README.md`、`docs/voices.md`、`ai-style.js` の `accept`。**画像を配る口は `GET /api/persona`、受け取る口は `POST /api/persona` の 1 つずつだけ** |
 | 文体 (`ai.STYLE_PRESETS` / 効く範囲 / 置き場所) | `ai-style.js`（画面は⚙とサイドバーで共用）、MANUAL の「文体（口調）」の 2 つの表、`docs/voices.md`（効く範囲の表を載せている）。**例は `ai.py` が正**（`settings.js` に写しを置かない） |
 | AI の提供元・モデル・思考の深さ | `llm.py`（`PROVIDERS` / `EFFORTS` / `CLAUDE_MODELS`）、MANUAL の「使う AI」と環境変数の表、`settings.js` の「AI」節、README の「AI について」 |
 | 更新まわりの挙動 | MANUAL の「更新のしかた」、`packaging/release-intro.md` の「更新するとき」 |
 | 自動リンクの規則 | MANUAL.md の「自動リンクの規則」、`content/ようこそ.md` |
 | カテゴリ名の制約 | `models.normalize_category()`、MANUAL、SKILL.md、`ai.build_prompt()` |
 | 画面 (`glossary` / `entry` / `graph` / `doctor`) の中身 | そのモジュールの `TEMPLATE`（**HTML 側には写しを置かない**）。新しい画面を足したら `overlay.js` の `ROUTES` |
+| 読書位置の扱い | `progress.js`（再開する位置）と `reading.js`（読んだところ）は**別の問い**。混ぜないこと |
 | 相関図の形の規則（段・孤立語・並び・帯の折り返し） | `graph-model.js`（**1 つの見せ方だけに写しを作らない** —— `graph.js` / `fabric.js` / `matrix.js` / `ego.js` / `timeline.js` が同じものを読む） |
 | 地図の形 (`pin` / `line` / `area`) | `models.EntryBase` と `map_shape`、`entryfile.FM_KEYS`、`relations._node`、`app.put_map_shape` の `kinds`、`map.js` の `LEAST` / `KIND_WORDS` / `fitToKind`、`entry.js` の `mapLink()`、`doctor` の地図の 4 つ、MANUAL の「地図に置く」と点検の表、SKILL.md の表。**`at` と `path` は名前に使えない**（時系列の文字位置・`_entry_payload` の保存先とぶつかる） |
-| 地図の絵の置き場所 / 配る口 | `models.MAP_SUFFIXES`（**正はここ 1 か所**。`store` の `maps_dir` / `map_file` / `map_path` と `archivefmt.map_members` が読む）、`app.MAP_TYPES` と `_MAP_SNIFF` / `_SVG_SIZED`、MANUAL の「地図に置く」。**配る口には `CSP: sandbox` と `nosniff` を付けたまま**にすること（SVG を通せる根拠がそこにしかない） |
-| zip に入れるもの（辞書・マスター・地図の絵） | `core.archivefmt`（**GlossPopApp と共有する形**）、`archive` の `_export_maps` / `_write_maps`、`settings.js` の下見の文言、MANUAL の「辞書の書き出し / 取り込み」。**取り込みで消える範囲を広げないこと** |
-| 相関図の見せ方を足した | `graph.js` の `MODES` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 6 つある」、CLAUDE.md のこの節 |
+| 地図の絵の置き場所 / 配る口 | `core.imagefmt`（**画像の拡張子と見分け方の正**。`store` の `maps_dir` / `map_file` / `map_path` と `archivefmt.map_members` が読む）、`app.IMAGE_TYPES` と `_SVG_SIZED`、MANUAL の「地図に置く」。**配る口には `CSP: sandbox` と `nosniff` を付けたまま**にすること（SVG を通せる根拠がそこにしかない） |
+| zip に入れるもの（辞書・マスター・地図の絵・用語ごとの画像） | `core.archivefmt`（**GlossPopApp と共有する形**）、`archive` の `_export_maps` / `_export_images` / `_write_maps` / `_write_images`、`settings.js` の下見の文言、MANUAL の「辞書の書き出し / 取り込み」。**取り込みで消える範囲を広げないこと** |
+| 用語ごとの画像 | `store` の `images_dir` / `image_file` / `image_path` / `list_images` / `move_image` / `delete_image`、`app` の `/api/entry-image` と `_image_url` / `_image_index`、`popup.js` の `faceOf()`、`glossary.js` の `card()`、`entry.js` の `imagePanel()`、MANUAL の「用語ごとの画像」 |
+| 相関図の見せ方を足した | `graph.js` の `MODES` と `MODE_WORDS` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 6 つある」、CLAUDE.md のこの節。**書き出し (`graph-export.js`) は触らなくてよい**（`{ root, box }` を返す限り） |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
 | exe のアイコン | `packaging/icons/*.svg` を直して `uv run python packaging/make-icons.py`。**`.ico` も一緒にコミットする**（ビルド時には作らない）。アプリ側は `static/favicon.svg` と揃える |
 | 画面の見た目（ビューア・一覧・用語ページ・相関図・抽出ダイアログ） | `docs/images/` の該当スクショ（README と MANUAL が貼っている。撮り直しは content/ を開いて 1280×820 のライトで撮る） |

@@ -1980,3 +1980,105 @@ class TestMovingAShapeOnTheMap:
         # 返ってきたものをそのまま保存し直しても線が残る
         assert client.put(f"/api/entries/{ref}", json=body).status_code == 200
         assert client.get(f"/api/entries/{ref}").json()["line"] == [[0.1, 0.2], [0.3, 0.4]]
+
+
+class TestTheEntryImage:
+    """用語ごとの画像の口 (`GET` / `POST` / `DELETE /api/entry-image`)。
+
+    **顔と同じ規則**（生のバイト列で受ける・ファイル名は使わない・拡張子は中身から・
+    上限を持つ・別の拡張子を片付ける・URL に更新時刻を入れる）に、**ref の検査**が
+    加わる —— 顔は決め打ちの名前で逃げられるが、こちらは語ごとに変わる。
+    """
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    GIF = b"GIF89a" + b"0" * 32
+
+    def _make(self, client, term="赤シャツ", category="人物"):
+        return client.post("/api/entries", json={
+            "term": term, "category": category, "summary": "教頭。", "definition": "本文。",
+        }).json()["ref"]
+
+    def _post(self, client, ref, data):
+        return client.post(
+            "/api/entry-image", params={"ref": ref}, content=data,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    def test_put_get_and_delete(self, client):
+        ref = self._make(client)
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404
+
+        res = self._post(client, ref, self.PNG)
+        assert res.status_code == 200
+        # **URL に更新時刻を入れる**（入れないと差し替えても古い画像が出る）
+        assert "v=" in res.json()["image_url"]
+
+        got = client.get("/api/entry-image", params={"ref": ref})
+        assert got.content == self.PNG
+        assert got.headers["content-type"] == "image/png"
+        # 置かれたものをそのまま配る口なので、出し方で守る側は緩めない
+        assert got.headers["content-security-policy"] == "sandbox"
+        assert got.headers["x-content-type-options"] == "nosniff"
+
+        assert client.delete("/api/entry-image", params={"ref": ref}).status_code == 200
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404
+
+    def test_the_extension_comes_from_the_content(self, client):
+        """**名乗りは使わない。** 送られてきたのが GIF なら GIF として置く。"""
+        ref = self._make(client)
+        self._post(client, ref, self.GIF)
+        assert client.get("/api/entry-image", params={"ref": ref}).headers["content-type"] \
+            == "image/gif"
+
+    def test_swapping_clears_the_other_suffix(self, client):
+        """残すと探索順で決まる画像が出て「差し替えたのに変わらない」になる。"""
+        ref = self._make(client)
+        self._post(client, ref, self.PNG)
+        self._post(client, ref, self.GIF)
+        assert store.image_file(ref).suffix == ".gif"
+        assert not list(store.image_file(ref).parent.glob("赤シャツ.png"))
+
+    def test_something_that_is_not_an_image_is_refused(self, client):
+        ref = self._make(client)
+        assert self._post(client, ref, b"<html>").status_code == 400
+
+    def test_svg_is_refused(self, client):
+        """**SVG は通さない**（顔と同じ線。地図だけが出し方で担保している）。"""
+        ref = self._make(client)
+        assert self._post(client, ref, b'<svg xmlns="http://www.w3.org/2000/svg"/>') \
+            .status_code == 400
+
+    def test_too_big_is_refused(self, client, monkeypatch):
+        ref = self._make(client)
+        monkeypatch.setattr(store, "IMAGE_MAX_BYTES", 16)
+        assert self._post(client, ref, self.PNG).status_code in (400, 413)
+
+    def test_an_unknown_term_is_refused(self, client):
+        """**置く先はエントリ。** 居ない語に置けると、孤児の画像が作れてしまう。"""
+        assert self._post(client, "人物/居ない人", self.PNG).status_code == 404
+
+    @pytest.mark.parametrize("ref", ["../persona", "人物/../../x", "人物", ""])
+    def test_a_ref_that_escapes_is_refused(self, client, ref):
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404
+
+    def test_the_entry_and_the_list_carry_the_url(self, client):
+        """用語ページ・吹き出し・一覧が同じ URL を見る（写しを作らない）。"""
+        ref = self._make(client)
+        self._post(client, ref, self.PNG)
+        assert "/api/entry-image" in client.get(f"/api/entries/{ref}").json()["image_url"]
+        cards = {c["term"]: c["image_url"] for c in client.get("/api/entries").json()}
+        assert "/api/entry-image" in cards["赤シャツ"]
+
+    def test_the_image_moves_with_the_category(self, client):
+        """画面から移しても追従する（`store.move()` が動かす）。"""
+        ref = self._make(client)
+        self._post(client, ref, self.PNG)
+        moved = client.post(f"/api/move/{ref}", json={"category": "主要人物"}).json()
+        assert client.get("/api/entry-image", params={"ref": moved["ref"]}).status_code == 200
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404
+
+    def test_deleting_the_entry_takes_the_image(self, client):
+        ref = self._make(client)
+        self._post(client, ref, self.PNG)
+        client.delete(f"/api/entries/{ref}")
+        assert client.get("/api/entry-image", params={"ref": ref}).status_code == 404

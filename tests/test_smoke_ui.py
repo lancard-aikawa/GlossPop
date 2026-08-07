@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import socket
 import threading
 import time
@@ -2856,3 +2857,179 @@ def test_the_first_only_option_moved_to_the_settings_and_still_works(page, serve
         "() => document.querySelectorAll('#doc a.gloss-link').length === 1",
         timeout=SETTLE_MS,
     )
+
+
+#: 用語ごとの画像に使う 1x1 の PNG（本物のバイト列。`imagefmt` が中身で見分ける）
+TINY_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+    "0000000a49444154789c6360000002000100ffff03000006000557bfabd4000000"
+    "0049454e44ae426082"
+)
+
+
+def test_a_term_can_have_its_own_image(page, server, seeded):
+    """用語ページから画像を入れると、**一覧のカードと吹き出しにも出る**。
+
+    **語り手の顔とは別物。** 顔は辞書に 1 枚なので一覧には出さない（同じ絵が
+    並ぶだけ）が、用語ごとの画像は語ごとに違うので見分けに効く。吹き出しでは
+    同じ場所を取り合うので、**その語の画像があればそちらを出す**。
+    """
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    pick = page.locator("[data-ref=imagePick]")
+    pick.wait_for(timeout=15000)
+    # **入れる前でもボタンは出る**（隠すと最初の 1 枚を入れる道が無くなる）
+    assert page.locator(".entry-photo").count() == 0
+
+    page.set_input_files(
+        "[data-ref=imageFile]",
+        files=[{"name": "j.png", "mimeType": "image/png", "buffer": TINY_PNG}],
+    )
+    page.locator(".entry-photo").wait_for(timeout=15000)
+    assert page.locator("[data-ref=imageDrop]").count() == 1
+
+    # 一覧のカードにサムネイルが出る
+    open_glossary(page, server, "?q=ジョバンニ")
+    page.locator(".card .card-thumb").first.wait_for(timeout=15000)
+
+    # 吹き出しでは顔ではなく**その語の画像**が出る
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    link = page.locator("a.gloss-link", has_text="ジョバンニ").first
+    link.wait_for(timeout=15000)
+    link.hover()
+    face = page.locator(".gloss-pop .pop-face.is-term")
+    face.wait_for(timeout=10000)
+    assert "/api/entry-image" in (face.get_attribute("src") or "")
+
+    # 消せる（確認を通す）
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    page.locator("[data-ref=imageDrop]").wait_for(timeout=15000)
+    page.on("dialog", lambda d: d.accept())
+    page.click("[data-ref=imageDrop]")
+    page.locator("[data-ref=imagePick]").wait_for(timeout=15000)
+    page.wait_for_function(
+        "() => document.querySelectorAll('.entry-photo').length === 0", timeout=10000
+    )
+
+
+def test_the_graph_can_be_saved_as_an_image(page, server, seeded):
+    """図を画像として保存できる（**6 つの見せ方すべてで同じ道**）。
+
+    **画面の SVG をそのまま出すと崩れる** —— 見た目は CSS のクラスと変数で
+    決まっていて、外に出た SVG からはどちらも引けない。計算済みの値を焼き込んで
+    いることを、**保存した中身**で確かめる（拡張子だけ見ても分からない）。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        relations=[{"to": b.ref, "label": "級友", "back": "級友"}],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+
+    page.select_option("#saveKind", "svg")
+    with page.expect_download(timeout=20000) as caught:
+        page.click("#saveImage")
+    download = caught.value
+    assert download.suggested_filename.endswith(".svg")
+    assert "登場人物" in download.suggested_filename
+
+    body = pathlib.Path(download.path()).read_text(encoding="utf-8")
+    # **寸法が要る**（外では入れ物が決めてくれない。地図の SVG を弾くのと同じ話）
+    assert "<svg" in body and "width=" in body and "viewBox=" in body
+    # **見た目が焼き込まれている。** クラス名だけ持って出ると素の黒い線になる
+    assert "stroke:" in body and "font-family:" in body
+    # 変数のまま出ていない（外では解決できない）
+    assert "var(--" not in body
+    # 一言も入っている（描いたものがそのまま入る）
+    assert "級友" in body
+
+    # PNG も出せる（貼る用）
+    page.select_option("#saveKind", "png")
+    with page.expect_download(timeout=20000) as caught:
+        page.click("#saveImage")
+    png = caught.value
+    assert png.suggested_filename.endswith(".png")
+    assert pathlib.Path(png.path()).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_saving_a_map_inlines_the_picture(page, server, seeded):
+    """地図を保存すると、**絵まで 1 枚に畳まれる**。
+
+    `/api/map?...` のままでは**こちらのサーバが動いていないと絵が出ない**
+    （渡した相手には絶対に出ない）ので、保存する意味が半分になる。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+
+    _open_map(page, server)
+    page.select_option("#saveKind", "svg")
+    with page.expect_download(timeout=20000) as caught:
+        page.click("#saveImage")
+    body = pathlib.Path(caught.value.path()).read_text(encoding="utf-8")
+
+    assert "/api/map" not in body            # 外を指したままにしない
+    assert "data:image/svg+xml;base64," in body or "data:image/" in body
+
+
+def test_the_graph_can_show_only_what_has_been_read(page, server, seeded):
+    """**ここまで読んだぶんだけ**（ビューアで読んでいるときだけ出る）。
+
+    単位を揃えない —— 読書位置はブロックの添字、サーバの位置は文字位置なので、
+    換算せず**本文のリンクそのもの**で「出てきた語」を決める（→ reading.js）。
+    伏せた数は必ず注意書きに出す。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        relations=[{"to": b.ref, "label": "級友"}],
+    ), ref=a.ref)
+    # 2 人が別の段落に出てくる本文にする（先頭だけ読んだ状態を作れるように）
+    doc = config.content_dir() / "銀河.md"
+    doc.write_text(
+        "# 午后の授業\n\n" + "ジョバンニは活版所で働いていた。\n\n"
+        + "\n\n".join(f"それから何日も過ぎた。{i}" for i in range(40))
+        + "\n\nカムパネルラは黙っていた。\n",
+        encoding="utf-8",
+    )
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=15000)
+    page.click("#docGraph")
+    page.locator(".overlay svg.rel-graph").wait_for(timeout=15000)
+
+    box = page.locator("#readSoFarBox")
+    box.wait_for(timeout=10000)
+    assert not box.is_hidden()          # ビューアの上に重ねているので出る
+
+    page.check("#readSoFar")
+    page.wait_for_function(
+        "() => (document.querySelector('#notes')?.textContent || '')"
+        ".includes('いま読んでいるところまで')",
+        timeout=10000,
+    )
+    notes = page.text_content("#notes") or ""
+    # 先頭しか読んでいないので、カムパネルラはまだ出ていない
+    assert "1 語だけを出しています" in notes, notes
+    assert "まだ出てきていない 1 語" in notes, notes
+
+    # 外せば全体に戻る（サーバへ行き直さずに）
+    page.uncheck("#readSoFar")
+    page.wait_for_function(
+        "() => !(document.querySelector('#notes')?.textContent || '')"
+        ".includes('いま読んでいるところまで')",
+        timeout=10000,
+    )
+
+
+def test_the_read_so_far_box_is_hidden_on_the_plain_graph_page(page, server, seeded):
+    """`/graph` を直接開いたときは出さない（どこまで読んだかを知らない）。"""
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph, #canvas .empty").first.wait_for(timeout=15000)
+    assert page.locator("#readSoFarBox").is_hidden()

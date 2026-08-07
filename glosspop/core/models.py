@@ -16,12 +16,9 @@ GLOBAL_SCOPE = "global"
 LOCAL_SCOPE = "local"
 SCOPES = (GLOBAL_SCOPE, LOCAL_SCOPE)
 
-#: 地図の絵として通す拡張子。**`map:` が名指しできるものの定義**なので、
-#: 置き場所 (`store`) と zip の形 (`archivefmt`) の**両方がここを読む** ——
-#: 写しを 2 つ持つと、拡張子を足したときに**片方だけ通って zip から静かに
-#: 落ちる**（絵は手元にあるのに、渡した先だけ地図が白い）。
-#: **SVG を通すのは地図だけ**（顔は通さない）。理由は配る口のほうにある → `app`。
-MAP_SUFFIXES = (".svg", ".png", ".webp", ".jpg", ".jpeg", ".gif")
+#: 画像の拡張子と見分け方は `core.imagefmt`（`MAP_SUFFIXES` / `IMAGE_SUFFIXES`）。
+#: **写しをここに置かない** —— 置き場所 (`store`)・zip の形 (`archivefmt`)・
+#: 受け取る口 (`app` / `ai`) が同じ判断をするので、1 か所から読む。
 
 #: ローカルエントリの ref に付ける接頭辞。
 #: カテゴリ名は「.」で始められない (normalize_category) ので実名と衝突しない

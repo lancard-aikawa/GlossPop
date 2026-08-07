@@ -30,7 +30,7 @@ from . import (
     updates,
     watchdog,
 )
-from .core import render, relations, documents, timeline, doctor
+from .core import render, relations, documents, timeline, doctor, imagefmt
 from .core.linker import Linker, entry_url
 from .core.models import (
     GLOBAL_SCOPE,
@@ -385,13 +385,38 @@ def _ai_state() -> dict:
     return data
 
 
-def _term_card(entry: Entry, *, personas: dict[str, str] | None = None) -> dict:
+def _image_index() -> dict[str, str]:
+    """``{ref: 画像の URL}``。**一覧のために 1 回だけ作る。**
+
+    語ごとに `store.image_file()` を呼ぶと、3000 語の一覧で**語数 × 拡張子の数**
+    だけ stat が飛ぶ（顔を 1 回だけ調べているのと同じ判断）。
+    """
+    out: dict[str, str] = {}
+    for scope in SCOPES:
+        for ref, path in store.list_images(scope).items():
+            try:
+                stamp = int(path.stat().st_mtime)
+            except OSError:
+                continue
+            out[ref] = f"/api/entry-image?ref={quote(ref)}&v={stamp}"
+    return out
+
+
+def _term_card(
+    entry: Entry,
+    *,
+    personas: dict[str, str] | None = None,
+    images: dict[str, str] | None = None,
+) -> dict:
     # **一覧では 1 回だけ調べて配る。** エントリごとに調べると、3000 語の一覧で
     # 拡張子の数だけ stat が飛ぶ（辞書は 2 つしかないので 1 回で足りる）
     persona = (personas or {}).get(entry.scope)
     if persona is None:
         persona = _persona_url(entry.scope)
     return {
+        # **一覧には顔を出さないが、用語ごとの画像は出す。** 顔は辞書に 1 枚なので
+        # 同じ絵が何十個も並ぶだけだが、こちらは語ごとに違う（＝見分けに効く）
+        "image_url": (images if images is not None else _image_index()).get(entry.ref, ""),
         "ref": entry.ref,
         "slug": entry.slug,
         "term": entry.term,
@@ -433,6 +458,9 @@ def _entry_payload(entry: Entry, *, linker: Linker | None = None) -> dict:
     # こちらは「すでに書かれたものの出どころ」なので基準が違う）。揃えると、
     # 小説のフォルダを開いている間だけ全体辞書の用語にもその顔が付く
     data["persona_url"] = _persona_url(entry.scope)
+    # **用語ごとの画像は顔とは別**（顔は「誰が書いているか」、こちらは「その語」）。
+    # 吹き出しでは同じ場所を取り合うので、**用語の画像があればそちらを出す**
+    data["image_url"] = _image_url(entry.ref)
     # 実際の保存先。グローバルとローカルでルートが違うので、組み立てを UI に任せない
     data["path"] = str(store.path_for_ref(entry.ref))
     data["definition_html"] = definition_html
@@ -1171,6 +1199,7 @@ def list_entries(
 ) -> list[dict]:
     needle = q.strip().casefold()
     personas = {s: _persona_url(s) for s in SCOPES}
+    images = _image_index()
     out = []
     for e in store.load_all():
         if scope is not None and e.scope != scope:
@@ -1187,7 +1216,7 @@ def list_entries(
             haystack = " ".join([e.term, e.reading, e.summary, e.definition, *e.aliases, *e.tags]).casefold()
             if needle not in haystack:
                 continue
-        card = _term_card(e, personas=personas)
+        card = _term_card(e, personas=personas, images=images)
         card["aliases"] = e.aliases
         card["tags"] = e.tags
         card["updated_at"] = e.updated_at
@@ -1699,8 +1728,9 @@ def persona(scope: str = GLOBAL_SCOPE) -> FileResponse:
     )
 
 
-#: 地図の Content-Type。`store.MAP_SUFFIXES` と対で持つ
-MAP_TYPES = {
+#: 画像の Content-Type。**顔・地図・用語ごとの画像で共用**
+#: （`core.imagefmt` の拡張子と対で持つ。`.svg` を使うのは地図だけ）
+IMAGE_TYPES = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".webp": "image/webp",
@@ -1736,7 +1766,7 @@ def map_image(name: str, scope: str = GLOBAL_SCOPE) -> FileResponse:
         raise HTTPException(404, "その地図がありません")
     return FileResponse(
         path,
-        media_type=MAP_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        media_type=IMAGE_TYPES.get(path.suffix.lower(), "application/octet-stream"),
         headers={
             "Content-Security-Policy": "sandbox",
             "X-Content-Type-Options": "nosniff",
@@ -1746,17 +1776,9 @@ def map_image(name: str, scope: str = GLOBAL_SCOPE) -> FileResponse:
     )
 
 
-#: 中身の先頭から見分ける。**送られてきたファイル名は使わない**（名乗りでしかない）。
-#: **顔と違って SVG がある** —— 配る側が `<image>` 埋め込みと `CSP: sandbox` で
+#: 見分けは `core.imagefmt.sniff()`（顔・地図・用語ごとの画像で 1 か所）。
+#: **地図だけ SVG を通す** —— 配る側が `<image>` 埋め込みと `CSP: sandbox` で
 #: 担保しているので、形式ではなく出し方で安全を取っている（→ `map_image`）。
-#: SVG はテキストなのでマジックバイトほど堅く見分けられないが、**見分けの目的は
-#: 安全ではなく拡張子を決めること**なので、それで足りる。
-_MAP_SNIFF: dict[bytes, str] = {
-    b"\x89PNG\r\n\x1a\n": ".png",
-    b"\xff\xd8\xff": ".jpg",
-    b"GIF87a": ".gif",
-    b"GIF89a": ".gif",
-}
 
 #: SVG が寸法を持っているか。**持たないと縦横比が読めない。**
 #: 実測: `width`/`height` があれば実寸、**`viewBox` だけでも比は正しい**（ブラウザが
@@ -1769,23 +1791,21 @@ _SVG_SIZED = re.compile(
 
 
 def _sniff_map(data: bytes) -> str:
-    """中身から拡張子を決める。読めなければ 400。"""
-    for magic, suffix in _MAP_SNIFF.items():
-        if data.startswith(magic):
-            return suffix
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return ".webp"
-    head = data[:4096].lstrip()
-    if head.startswith(b"<?xml") or head.startswith(b"<svg") or b"<svg" in head:
-        if not _SVG_SIZED.search(data[:4096]):
-            raise HTTPException(
-                400,
-                "この SVG には大きさが書かれていません"
-                "（width と height、または viewBox を入れてください）。"
-                "無いと縦横比が読めず、図が黙って歪みます。",
-            )
-        return ".svg"
-    raise HTTPException(400, "画像として読めませんでした（PNG / JPEG / GIF / WebP / SVG）")
+    """中身から拡張子を決める。読めなければ 400。
+
+    **寸法の検査は地図だけの追加分**（見分けそのものは `imagefmt` の仕事）。
+    """
+    suffix = imagefmt.sniff(data, allow_svg=True)
+    if suffix == ".svg" and not _SVG_SIZED.search(data[:4096]):
+        raise HTTPException(
+            400,
+            "この SVG には大きさが書かれていません"
+            "（width と height、または viewBox を入れてください）。"
+            "無いと縦横比が読めず、図が黙って歪みます。",
+        )
+    if suffix is None:
+        raise HTTPException(400, "画像として読めませんでした（PNG / JPEG / GIF / WebP / SVG）")
+    return suffix
 
 
 @app.get("/api/maps")
@@ -1883,6 +1903,96 @@ def remove_persona(scope: str = GLOBAL_SCOPE) -> dict:
     except ai.AIError as exc:
         raise HTTPException(400, str(exc)) from exc
     return _ai_state()
+
+
+# --------------------------------------------------------------------------- #
+# 用語ごとの画像
+#
+# **語り手の顔とは別物。** 顔は「誰が書いているか」で辞書に 1 枚、こちらは
+# 「その語そのもの」で語ごと。**規則は顔と地図から変えていない** ——
+# パスを外から組み立てない / 拡張子は中身から決める / 上限を持つ /
+# 別の拡張子を片付ける / URL に更新時刻を入れる。
+# --------------------------------------------------------------------------- #
+
+def _image_url(ref: str) -> str:
+    """その語の画像の URL。無ければ空。**更新時刻を入れる**（差し替えが効くように）。
+
+    作るのはここ 1 か所（顔の `_persona_url()` と同じ約束で、写しを作らない）。
+    """
+    found = store.image_file(ref)
+    if found is None:
+        return ""
+    try:
+        stamp = int(found.stat().st_mtime)
+    except OSError:
+        return ""
+    return f"/api/entry-image?ref={quote(ref)}&v={stamp}"
+
+
+@app.get("/api/entry-image")
+def entry_image(ref: str) -> FileResponse:
+    """用語ごとの画像を返す。無ければ 404。
+
+    **SVG は通さない**（顔と同じ線）。地図が通せるのは `<image>` 埋め込みと
+    `CSP: sandbox` で担保しているからで、こちらは用語ページに `<img>` で出すだけ
+    なので**通す理由が無い** —— それでも `nosniff` と `sandbox` は付けておく
+    （置かれたものをそのまま配る口である以上、出し方で守る側は緩めない）。
+
+    **ref から組み立てた結果が置き場所の中にあることは `store.image_file()` が
+    確かめる。** ここは検査を持たない（2 か所に分かれると片方が緩む）。
+    """
+    path = store.image_file(ref)
+    if path is None:
+        raise HTTPException(404, "その画像がありません")
+    return FileResponse(
+        path,
+        media_type=IMAGE_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        headers={
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+@app.post("/api/entry-image")
+async def put_entry_image(request: Request, ref: str) -> dict:
+    """用語ごとの画像を差し替える。**生のバイト列で受ける**（顔と同じ）。
+
+    multipart にするとファイル名を受け取ることになり、**名乗りを使わない**という
+    約束が守りにくくなる。拡張子は中身から決め、書いたあとに別の拡張子を片付ける。
+    """
+    if store.get(ref) is None:
+        raise HTTPException(404, f"用語が見つかりません: {ref}")
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > store.IMAGE_MAX_BYTES:
+        raise HTTPException(413, "画像が大きすぎます")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "画像が空です")
+    if len(data) > store.IMAGE_MAX_BYTES:
+        raise HTTPException(
+            400, f"画像は {store.IMAGE_MAX_BYTES // 1024 // 1024} MB までです"
+        )
+    suffix = imagefmt.sniff(data)
+    if suffix is None:
+        raise HTTPException(400, "画像として読めませんでした（PNG / JPEG / GIF / WebP）")
+    target = store.image_path(ref, suffix)
+    if target is None:
+        raise HTTPException(400, f"この用語には置けません: {ref}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    store.clear_other_images(ref, target)
+    return {"ref": ref, "image_url": _image_url(ref)}
+
+
+@app.delete("/api/entry-image")
+def remove_entry_image(ref: str) -> dict:
+    """用語ごとの画像を消す。**エントリは書き換えない**（画像は frontmatter に無い）。"""
+    if store.image_file(ref) is None:
+        raise HTTPException(404, "その画像がありません")
+    store.delete_image(ref)
+    return {"ref": ref, "image_url": ""}
 
 
 @app.get("/api/ai/settings")

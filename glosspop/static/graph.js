@@ -20,6 +20,8 @@ import { buildMatrix } from "./matrix.js";
 import { buildTimeline } from "./timeline.js";
 import { buildEgo } from "./ego.js";
 import { buildMap, fitToKind, KIND_WORDS } from "./map.js";
+import { saveGraph } from "./graph-export.js";
+import { readingNow } from "./reading.js";
 import { encodePath } from "./editor.js";
 
 //: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
@@ -57,11 +59,27 @@ const TEMPLATE = `
     <input type="checkbox" id="spoilers">
     <span>判明位置つきの関係も出す</span>
   </label>
+  <!-- **ビューアで読んでいるときだけ出す。** 「どこまで読んだか」はビューアしか
+       知らないので、相関図のページを直接開いたときは出せない（時系列・地図と同じ
+       約束で、出しておいて効かないより出さないほうがまし。→ reading.js）。
+       ここはテンプレート文字列の中なので、バッククォートを書かないこと -->
+  <label class="check" id="readSoFarBox" hidden>
+    <input type="checkbox" id="readSoFar">
+    <span>ここまで読んだぶんだけ</span>
+  </label>
   <!-- **ここに「関係を下書き」を戻さないこと。** この図は辞書全体を出すのに、
        下書きは開いているフォルダの本文を読む。並べると「図に出ている語について
        探す」と読まれるが、実際に読むのはビューアで開いているものとも図とも
        一致しない範囲だった（→ docs/design-notes.md） -->
   <a class="btn" href="/doctor" title="辞書全体の壊れを点検する">🩺 点検</a>
+  <!-- 図を外へ出す口。**6 つの見せ方すべてで同じ**（どれも SVG を 1 枚返す）。
+       **PNG は貼るため、SVG は拡大と編集のため**なので、どちらか一方にしない。
+       保存するのは**いまの拡大率ではなく図の全体**（切れた図を保存しない） -->
+  <button type="button" class="btn" id="saveImage" title="この図を画像として保存する">⬇ 画像</button>
+  <select id="saveKind" class="auto-width" aria-label="画像の形式">
+    <option value="png">PNG（貼る用）</option>
+    <option value="svg">SVG（拡大できる）</option>
+  </select>
   <span class="spacer"></span>
   <span class="status" id="status"></span>
 </div>
@@ -162,6 +180,9 @@ const TEMPLATE = `
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
 let mapPick, mapLayers, mapEdit, mapDialog;
+let readSoFarCheck, readSoFarBox;
+//: 「ここまで読んだぶんだけ」で伏せたことの断り書き（注意書きに出す）
+let readingNote = "";
 let detailNode;
 let modeSelect;
 
@@ -1436,6 +1457,42 @@ function selection() {
 }
 
 /**
+ * 図を画像として保存する口。**見せ方ごとに書かない**（どれも SVG を 1 枚返す）。
+ *
+ * 保存するのは**図の全体**（`contentBox`）で、いまの拡大率ではない ——
+ * 拡大は見るための操作であって図の範囲ではないので、切れた図を保存しない。
+ */
+function installSaveImage(host) {
+  const button = host.querySelector("#saveImage");
+  const kind = host.querySelector("#saveKind");
+  button.addEventListener("click", async () => {
+    if (!svgRoot || !contentBox) {
+      setStatus(statusNode, "保存できる図がありません", "error");
+      return;
+    }
+    button.disabled = true;
+    setStatus(statusNode, "画像にしています", "busy");
+    try {
+      await saveGraph(svgRoot, contentBox, { kind: kind.value, name: imageName() });
+      setStatus(statusNode, "保存しました");
+    } catch (err) {
+      // **黙って諦めない。** 図は出ているのに保存だけできないことがある
+      setStatus(statusNode, err.message, "error");
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+/** 保存する名前。**何の図なのかを名前に残す**（あとで見分けられるように）。 */
+function imageName() {
+  const { category } = selection();
+  const scope = MODE_WORDS[mode] || "相関図";
+  const where = currentDoc ? currentDoc.split("/").pop() : (category || "辞書全体");
+  return `相関図-${scope}-${where}`.replace(/[\\/:*?"<>|]/g, "-");
+}
+
+/**
  * 名指しされた語に目印を付けて、枠の中へ入れる（地図だけ）。
  *
  * 地図は座標が与えられている図なので、**中心の図のように組み替えられない** ——
@@ -1481,6 +1538,7 @@ function paintNotes(graph) {
       + "（見せ方は上で戻せます。覚えているほうは変えていません）。"
     );
   }
+  if (readingNote) lines.push(readingNote);
   if (modeFromUrl && mode === modeFromUrl) {
     // URL が見せ方まで名指ししてきたとき。**同じ約束**（黙って押しのけない）
     lines.push(
@@ -2017,9 +2075,43 @@ function paintMapOptions(graph) {
   mapPick.value = mapName;
 }
 
+/**
+ * 「ここまで読んだぶん」に絞る。**出てきていない語と、その語につながる関係を伏せる。**
+ *
+ * 判断は `reading.js` に任せる（本文のリンクそのものを見る）—— ここで文字位置と
+ * ブロックの添字を突き合わせようとしないこと。**伏せた数は必ず返す**ので、
+ * 図は「黙って欠けた図」にならない（`hidden` / `outside` と同じ約束）。
+ */
+function limitToRead(graph) {
+  const now = readingNow();
+  if (!now) return { graph, note: "" };
+  const nodes = graph.nodes.filter((n) => now.refs.has(n.ref));
+  const shown = new Set(nodes.map((n) => n.ref));
+  const edges = graph.edges.filter((e) => shown.has(e.from) && shown.has(e.to));
+  const note = [
+    `いま読んでいるところまでに出てきた ${nodes.length} 語だけを出しています`,
+    graph.nodes.length - nodes.length
+      ? `（まだ出てきていない ${graph.nodes.length - nodes.length} 語と、`
+        + `その語につながる関係 ${graph.edges.length - edges.length} 本は伏せています`
+      : "（伏せたものはありません",
+    // **決めきれない語は入れていない、と書く。** 黙って落とすと「出てきたのに
+    // 図に無い」になり、機械の取りこぼしと見分けが付かない
+    now.undecided
+      ? `。同じ表記が複数のカテゴリにある語 ${now.undecided} か所は、どれのことか`
+        + "決まらないので入れていません"
+      : "",
+    "）。",
+  ].join("");
+  return { graph: { ...graph, nodes, edges }, note };
+}
+
 function paintGraph(graph) {
   lastGraph = graph;
   showDetail("");
+  // **絞る前のものを覚えておく**（チェックを外したらサーバへ行き直さずに戻す）
+  const limited = readSoFarCheck.checked ? limitToRead(graph) : { graph, note: "" };
+  readingNote = limited.note;
+  graph = limited.graph;
   const drawn = draw(graph);
   paintMapOptions(graph);
   paintMapLayers(drawn);
@@ -2125,11 +2217,24 @@ export async function mount(host, { search = "", embed = false } = {}) {
   statusNode = host.querySelector("#status");
   categorySelect = host.querySelector("#category");
   spoilerCheck = host.querySelector("#spoilers");
+  readSoFarCheck = host.querySelector("#readSoFar");
+  readSoFarBox = host.querySelector("#readSoFarBox");
+  readSoFarCheck.checked = false;
+  readSoFarCheck.addEventListener("change", () => {
+    // 絞るだけならサーバへ行き直さない（同じデータを描き替えるだけ）
+    if (lastGraph) paintGraph(lastGraph);
+  });
+  installSaveImage(host);
   edgeDialog = host.querySelector("#edgeDialog");
   countNode = document.getElementById("count");   // topbar は覆いの外
   params = new URLSearchParams(search);
   currentScope = params.get("scope") || "";
   currentDoc = params.get("doc") || "";
+  // **ビューアで文書を読んでいるときだけ出す**（`?doc=` が無ければ「全体の図」で、
+  // どこまで読んだかは意味を持たない）。**覚えない** —— 開くたびに全体へ戻す
+  // （伏せたまま開き直すと「関係が消えた」と読まれる）
+  readSoFarBox.hidden = !(currentDoc && readingNow());
+  readingNote = "";
   // 中心の図の初期値。用語ページの「この語を中心に」からはこれが付いてくる
   egoCenter = params.get("ref") || "";
   namedRef = egoCenter;
