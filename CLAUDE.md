@@ -1434,6 +1434,8 @@ Playwright を動かして確かめる。
 | カテゴリ名の制約 | `models.normalize_category()`、MANUAL、SKILL.md、`ai.build_prompt()` |
 | 画面 (`glossary` / `entry` / `graph` / `doctor`) の中身 | そのモジュールの `TEMPLATE`（**HTML 側には写しを置かない**）。新しい画面を足したら `overlay.js` の `ROUTES` |
 | 相関図の形の規則（段・孤立語・並び・帯の折り返し） | `graph-model.js`（**1 つの見せ方だけに写しを作らない** —— `graph.js` / `fabric.js` / `matrix.js` / `ego.js` / `timeline.js` が同じものを読む） |
+| 地図の形 (`pin` / `line` / `area`) | `models.EntryBase` と `map_shape`、`entryfile.FM_KEYS`、`relations._node`、`map.js`、`doctor` の `two_map_shapes`、MANUAL の「地図に置く」、SKILL.md の表。**`at` と `path` は名前に使えない**（時系列の文字位置・`_entry_payload` の保存先とぶつかる） |
+| 地図の絵の置き場所 / 配る口 | `store.MAP_SUFFIXES` と `maps_dir` / `map_file` / `map_path`、`app.MAP_TYPES` と `_MAP_SNIFF` / `_SVG_SIZED`、MANUAL の「地図に置く」。**配る口には `CSP: sandbox` と `nosniff` を付けたまま**にすること（SVG を通せる根拠がそこにしかない） |
 | 相関図の見せ方を足した | `graph.js` の `MODES` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 6 つある」、CLAUDE.md のこの節 |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
 | exe のアイコン | `packaging/icons/*.svg` を直して `uv run python packaging/make-icons.py`。**`.ico` も一緒にコミットする**（ビルド時には作らない）。アプリ側は `static/favicon.svg` と揃える |
