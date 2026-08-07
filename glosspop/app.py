@@ -1143,8 +1143,18 @@ def run_doctor() -> dict:
     参照を名前で書ける（ID を持たない）ぶん、書き間違いや相手の削除で静かに
     切れる。``/api/graph`` はカテゴリ単位でしか壊れを返さないので、横断して
     集める受け皿がここ。
+
+    **置いてある絵はここで数えて渡す。** `doctor` は `core` にあって辞書の
+    置き場所を知らないので、「その名前の絵があるか」は呼ぶ側にしか分からない。
     """
-    return doctor.check(store.load_all())
+    return doctor.check(store.load_all(), maps=_available_maps())
+
+
+def _available_maps() -> set[str]:
+    """置いてある絵の ``<scope>/<名前>``。辞書の無いスコープは黙って空。"""
+    return {
+        f"{scope}/{path.stem}" for scope in SCOPES for path in store.list_maps(scope)
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1255,7 +1265,11 @@ def put_map_shape(ref: str, req: MapShapeRequest) -> dict:
 
     data = entry.model_dump()
     data["map"] = entry.map if req.map is None else req.map.strip()
-    data["pin"], data["path"], data["area"] = [], [], []
+    # **消す先は `kinds` から導く。** 名前を並べ直すと必ずずれる —— 実際、線の
+    # 項目が `path` から `line` に変わったあとも**ここだけ `path` を消していた**
+    # ので、線 → 点 に変えても線が残り、`two_map_shapes` ができていた
+    for field in kinds.values():
+        data[field] = []
     if req.kind:
         points = req.points
         data[kinds[req.kind]] = points[0] if req.kind == "point" and points else points

@@ -1780,6 +1780,23 @@ class TestTheMapImage:
         })
         assert client.get("/api/graph").json()["nodes"][0]["shape"] is None
 
+    def test_the_doctor_knows_which_pictures_are_there(self, client):
+        """**置いてある絵は `app` が数えて渡す**（`core` は置き場所を知らない）。
+
+        渡していないと「その名前の絵がありません」を言えず、絵を消した語が
+        地図から静かに消えたままになる。
+        """
+        self._put()
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "summary": "船の着くところ。", "map": "ほんの図", "pin": [0.25, 0.5],
+        })
+        assert not client.get("/api/doctor").json()["issues"]
+
+        store.map_file("global", "ほんの図").unlink()
+        kinds = [i["kind"] for i in client.get("/api/doctor").json()["issues"]]
+        assert kinds == ["map_without_image"]
+
 
 class TestUploadingAMapImage:
     """絵を置く / 消す口 (`POST` / `DELETE /api/map`)。
@@ -1891,12 +1908,39 @@ class TestMovingAShapeOnTheMap:
         # **本文も別名も残る**（ここが落ちるのが、draft を組み立て直させたときの事故）
         assert body["definition"] == "船着き場。" and body["aliases"] == ["みなと"]
 
-    def test_switching_the_kind_clears_the_others(self, client):
+    def test_switching_the_kind_clears_the_others(self, client, put_map):
         """**形は必ず 1 つだけ。** 画面から `two_map_shapes` を作らせない。"""
+        put_map("ほんの図")          # 絵が無いと点検が別のことを言う（それは別のテスト）
         ref = self._make(client, map="ほんの図", pin=[0.1, 0.2])
         client.put(f"/api/map-shape/{ref}", json={"kind": "line", "points": [[0, 0], [1, 1]]})
         node = client.get("/api/graph").json()["nodes"][0]
         assert node["shape"] == {"kind": "line", "points": [[0.0, 0.0], [1.0, 1.0]]}
+        assert not client.get("/api/doctor").json()["issues"]
+
+    @pytest.mark.parametrize(
+        "before, after",
+        [
+            ({"pin": [0.1, 0.2]}, "line"),
+            ({"line": [[0.1, 0.2], [0.4, 0.5]]}, "point"),
+            ({"line": [[0.1, 0.2], [0.4, 0.5]]}, "area"),
+            ({"area": [[0, 0], [1, 0], [0.5, 1]]}, "point"),
+        ],
+    )
+    def test_every_direction_clears_the_others(self, client, put_map, before, after):
+        """**どの向きに変えても残り 2 つが空になる。**
+
+        線の項目が `path` から `line` に変わったあとも**消す側だけ `path` のまま**
+        だったので、線 → 点 では線が残って `two_map_shapes` ができていた
+        （pin → line だけを見ていたので、テストも画面も気付けなかった）。
+        """
+        put_map("ほんの図")
+        ref = self._make(client, map="ほんの図", **before)
+        points = [[0.3, 0.4], [0.6, 0.7], [0.2, 0.8]][: {"point": 1, "line": 2, "area": 3}[after]]
+        client.put(f"/api/map-shape/{ref}", json={"kind": after, "points": points})
+
+        body = client.get(f"/api/entries/{ref}").json()
+        written = [name for name in ("pin", "line", "area") if body[name]]
+        assert written == [{"point": "pin", "line": "line", "area": "area"}[after]]
         assert not client.get("/api/doctor").json()["issues"]
 
     def test_the_map_name_is_kept_when_not_sent(self, client):

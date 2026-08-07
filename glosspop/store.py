@@ -23,6 +23,7 @@ from .core.entryfile import (
 from .core.models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
+    MAP_SUFFIXES,
     SCOPES,
     CategoryNameError,
     Entry,
@@ -84,13 +85,10 @@ def persona_dir(scope: str = GLOBAL_SCOPE) -> Path | None:
     return config.global_persona_dir()
 
 
-#: 地図に使える拡張子。探す順でもある。
-#:
-#: **SVG を通すのは地図だけ**（顔は通さない）。地図は線画で、`viewBox` を動かして
-#: 寄るのが本題なので、ラスタだと**背景だけボケる** —— 「にじむと SVG の意味が無い」
-#: と決めてある側と正面から食い違う。通せる根拠は配る口のほうにある
-#: （`<image>` 埋め込みは secure static mode、直接開かれても `CSP: sandbox`）→ `app`。
-MAP_SUFFIXES = (".svg", ".png", ".webp", ".jpg", ".jpeg", ".gif")
+#: 地図に使える拡張子は `core.models.MAP_SUFFIXES`（上で import している）。
+#: **並びは探す順でもある** —— `map_file()` が上から試す。
+#: **ここに写しを置かない**: zip に入れる側 (`archivefmt`) が同じ判断をするので、
+#: 片方だけ足すと**手元では見えるのに渡した先で消える**。
 
 
 def maps_dir(scope: str = GLOBAL_SCOPE) -> Path | None:

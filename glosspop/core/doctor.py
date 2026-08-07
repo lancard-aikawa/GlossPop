@@ -46,7 +46,39 @@ CHECKS: dict[str, dict[str, str]] = {
         "hint": "pin（点）・line（線）・area（領域）は 1 つだけ書いてください。"
                 "いまは細かいほう（領域 → 線 → 点）が使われています。",
     },
+    "shape_without_map": {
+        "label": "座標だけ書かれている",
+        "hint": "どの絵に置くかが無いので、地図には出ません。map: に絵の名前を書いてください。",
+    },
+    "map_without_image": {
+        "label": "その名前の絵がありません",
+        "hint": "絵を消しても用語は書き換えないので、置いていた語は地図から静かに消えます。"
+                "絵を入れ直すか、map: を直してください。",
+    },
+    "map_point_outside": {
+        "label": "座標が絵の外",
+        "hint": "座標は絵の幅を 1 とした比です（x は 0〜1、y は 0 以上）。"
+                "外に出た点は描かれても画面に出ません。",
+    },
 }
+
+#: 点検の文言に出す形の名前。**書いた人が探す語**（frontmatter の項目名）を添える
+_KIND_WORDS = {"point": "点 (pin)", "line": "線 (line)", "area": "領域 (area)"}
+
+
+def _outside(points: list[list[float]]) -> list[int]:
+    """絵の外に出ている点の番号（1 始まり）。
+
+    **見るのは x が 0〜1 の外と、y が負のときだけ。** 座標は**絵の幅を 1 とした比**
+    なので、**縦長の絵では y が 1 を超えるのが正常** —— 上限は絵の縦横比でしか
+    決まらず、それは `core` からは読めない（絵の中身を知らない）。
+    **決めようのない定数を置いて正常なものを問題として出す**くらいなら、
+    確実に外だと分かるものだけを挙げる。
+    """
+    return [
+        i for i, point in enumerate(points, 1)
+        if not 0.0 <= point[0] <= 1.0 or point[1] < 0.0
+    ]
 
 
 def _issue(kind: str, severity: str, entry: Entry, detail: str, **extra) -> dict:
@@ -64,10 +96,16 @@ def _issue(kind: str, severity: str, entry: Entry, detail: str, **extra) -> dict
     }
 
 
-def check(entries: list[Entry]) -> dict:
+def check(entries: list[Entry], *, maps: set[str] | None = None) -> dict:
     """辞書全体を点検して ``{issues, counts, checked}`` を返す。
 
     ``issues`` は重大度の高い順、同じ重大度なら登録順。
+
+    ``maps`` は**置いてある絵**の ``<scope>/<名前>`` の集合。`core` は辞書の
+    置き場所を知らないので、**呼ぶ側から引数で渡す**（`timeline` が `Linker` と
+    `Document` を受けているのと同じ形）。**渡されなければ絵の点検はしない** ——
+    「絵が 1 枚も無い」と「一覧をもらっていない」を混同すると、地図を使っている
+    辞書で**全部の語に警告が出る**（そうなると誰も見なくなる）。
     """
     issues: list[dict] = []
 
@@ -112,6 +150,29 @@ def check(entries: list[Entry]) -> dict:
             issues.append(_issue(
                 "two_map_shapes", WARN, entry, f"{written} が同時に書かれています",
             ))
+
+        # **地図は「書いたのに出ない」が起きやすい。** どれも画面には何も出ない
+        # ので、点検で言わないと気付く手段が無い。**逆に、`map` だけ書いて形が
+        # まだ無いのは正常**（「この絵に置きたい」の置き待ち。図が数えて出す）。
+        shape = entry.map_shape
+        if shape is not None and not entry.map:
+            issues.append(_issue(
+                "shape_without_map", WARN, entry,
+                f"{_KIND_WORDS[shape['kind']]} を書いていますが map がありません",
+            ))
+        if entry.map and maps is not None and f"{entry.scope}/{entry.map}" not in maps:
+            issues.append(_issue(
+                "map_without_image", WARN, entry,
+                f"「{entry.map}」という絵がありません", target=entry.map,
+            ))
+        if shape is not None:
+            outside = _outside(shape["points"])
+            if outside:
+                where = "・".join(f"{i} 点目" for i in outside[:5])
+                more = f" ほか {len(outside) - 5} 点" if len(outside) > 5 else ""
+                issues.append(_issue(
+                    "map_point_outside", WARN, entry, f"{where}{more} が絵の外です",
+                ))
 
     order = {ERROR: 0, WARN: 1}
     issues.sort(key=lambda i: order.get(i["severity"], 9))

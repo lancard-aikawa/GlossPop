@@ -27,9 +27,23 @@
 控えは書き出しと同じ zip で、`data/backups/` に残る。**併合でも取る** ——
 上書きされた語はそこにしか残らない。
 
-対象は**全体の辞書とカテゴリマスターだけ**。フォルダの辞書 (`.glosspop`) は
+対象は**全体の辞書とカテゴリマスターと地図の絵**。フォルダの辞書 (`.glosspop`) は
 フォルダごとコピーすれば運べるし、URL ごとの辞書 (`data/sites/`) は URL に紐づく。
 どちらも含めないぶん、**取り込みで変わる範囲が辞書 1 か所に収まる**。
+
+## 地図の絵だけ「書き出しには入れるが、取り込みでは消さない」
+
+座標は用語のファイルにあるのに絵はディレクトリの外にあるので、入れないと
+**渡した先で形だけが揃って地図が真っ白**になる。だから書き出しには入れる。
+
+**取り込みは足すだけ**（同じ名前は上書き、zip に無い絵は残す）。**置き換えでも
+消さない** —— 置き換えの「zip の中身そのものになる」は**用語について**の約束で、
+そこへ絵を足すと**消える範囲が広がる**（増やすなら UI に出す、と決めてある）。
+絵はエントリと違って zip の正体を決めないので、無いまま渡ってくることも普通に
+ある ——「入っていない ＝ 消してよい」と読むと、**古い版が書き出した zip を
+取り込んだだけで絵が全部消える**。
+
+上書きしたぶんは控えに入る（控えは書き出しと同じ zip なので絵ごと戻せる）。
 """
 
 from __future__ import annotations
@@ -48,10 +62,12 @@ from .core.archivefmt import (
     safe_members,
     GLOSSARY_PREFIX,
     MANIFEST_NAME,
+    MAPS_PREFIX,
     MAX_ARCHIVE_BYTES,
     ArchiveFormatError,
     entry_members,
     manifest_bytes,
+    map_members,
 )
 from .core import archivefmt
 from .core.models import GLOBAL_SCOPE, CategoryNameError
@@ -86,6 +102,10 @@ def export_bytes(only: list[str] | None = None) -> bytes:
     渡す用途）。**取り込む側は何も変えなくてよい** —— 併合は「入っているものを
     足して上書きする」だけなので、中身が一部でもそのまま通る。決めるのは
     書き出す側だけ、という切り分けにしてある。
+
+    **地図の絵も入れる。** 座標は用語のファイルにあるが、絵はディレクトリの外に
+    あるので、入れないと**渡した先で形だけが揃って地図が真っ白**になる（画面には
+    「置いた語」の数まで出るので、絵が抜けたのだと分かりにくい）。
     """
     root = config.GLOSSARY_DIR
     picked = set(only) if only else None
@@ -99,6 +119,9 @@ def export_bytes(only: list[str] | None = None) -> bytes:
                 rel = path.relative_to(root).as_posix()
                 zf.writestr(f"{GLOSSARY_PREFIX}{rel}", path.read_bytes())
                 count += 1
+        images = _export_maps(picked)
+        for path in images:
+            zf.writestr(f"{MAPS_PREFIX}{path.name}", path.read_bytes())
         master = _export_categories(picked)
         if master is not None:
             zf.writestr(CATEGORIES_NAME, master)
@@ -110,9 +133,31 @@ def export_bytes(only: list[str] | None = None) -> bytes:
                 created_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                 partial=picked is not None,
                 categories=sorted(picked) if picked is not None else [],
+                maps=len(images),
             ),
         )
     return buf.getvalue()
+
+
+def _export_maps(picked: set[str] | None) -> list[Path]:
+    """zip に入れる地図の絵。**全体の辞書のぶんだけ**（辞書の範囲と揃える）。
+
+    **全部書き出すときは置いてある絵を全部。** 控え (`write_backup`) もここを
+    通るので、**まだどの語も指していない絵**も残す（消える前の写しであることを
+    崩さない）。一部だけのときは**選んだカテゴリの語が指している絵だけ** ——
+    関係の無い絵を送りつけない、というのはカテゴリマスターと同じ扱い。
+    """
+    directory = store.maps_dir(GLOBAL_SCOPE)
+    if directory is None or not directory.is_dir():
+        return []
+    files = store.list_maps(GLOBAL_SCOPE)
+    if picked is None:
+        return files
+    wanted = {
+        e.map for e in store.load_all()
+        if e.scope == GLOBAL_SCOPE and e.category in picked and e.map
+    }
+    return [p for p in files if p.stem in wanted]
 
 
 def _export_categories(picked: set[str] | None) -> bytes | None:
@@ -161,8 +206,12 @@ def export_plan(only: list[str] | None = None) -> dict:
             target = relations.resolve(rel.to, entries, origin=entry).entry
             if target is not None and target.ref not in refs:
                 dangling.append(f"{entry.term} → {target.term}")
+    # 絵は圧縮が効かないので、**枚数と一緒に大きさも出す**（zip の上限に効く）
+    images = _export_maps(picked)
     return {
         "entries": len(inside),
+        "maps": len(images),
+        "maps_bytes": sum(p.stat().st_size for p in images if p.exists()),
         "categories": sorted(picked) if picked is not None else sorted(
             {e.category for e in entries}
         ),
@@ -385,8 +434,11 @@ def plan(data: bytes, mode: str = "merge") -> dict:
     updated: list[str] = []
     incoming_refs: set[str] = set()
     unchanged = 0
+    maps_added: list[str] = []
+    maps_updated: list[str] = []
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        for member in _entry_members(zf, safe_members(zf, root.parent)):
+        members = safe_members(zf, root.parent)
+        for member in _entry_members(zf, members):
             ref = _ref_of(member.filename)
             incoming_refs.add(ref)
             current = here.get(ref)
@@ -396,13 +448,25 @@ def plan(data: bytes, mode: str = "merge") -> dict:
                 unchanged += 1
             else:
                 updated.append(ref)
+        # 絵は**足すか上書きするかだけ**（消える側は無い）。同じ名前で拡張子が
+        # 違うものも上書き扱いにする —— 残すと `map_file()` の探索順で決まる絵が
+        # 出て「差し替えたのに変わらない」になる（`clear_other_maps` と同じ話）
+        for member in map_members(members):
+            name = Path(member.filename[len(MAPS_PREFIX):]).name
+            (maps_updated if _map_here(name) else maps_added).append(name)
 
-    # **消えるのは置き換えのときだけ。** 併合は手元にしか無い語をそのまま残す
+    # **消えるのは置き換えのときだけ。** 併合は手元にしか無い語をそのまま残す。
+    # **絵はどちらでも消えない**（→ このモジュールの説明）
     removed = [ref for ref in here if ref not in incoming_refs] if mode == "replace" else []
     return {
         "mode": mode,
         "entries": info["entries"],
         "categories": info["categories"],
+        "maps": info.get("maps", 0),
+        "maps_added": _cut(maps_added),
+        "maps_updated": _cut(maps_updated),
+        "maps_added_count": len(maps_added),
+        "maps_updated_count": len(maps_updated),
         "added": _cut(added),
         "updated": _cut(updated),
         "removed": _cut(removed),
@@ -416,6 +480,15 @@ def plan(data: bytes, mode: str = "merge") -> dict:
 
 def _cut(names: list[str]) -> list[str]:
     return sorted(names)[:MAX_REPORTED]
+
+
+def _map_here(name: str) -> bool:
+    """その名前の絵が手元にあるか。**拡張子は問わない。**
+
+    `.png` を `.svg` で差し替えるのは「上書き」で、足すことではない
+    （名前が同じものは 1 枚しか出せない → `store.map_file()` の探索順）。
+    """
+    return store.map_file(GLOBAL_SCOPE, Path(name).stem) is not None
 
 
 def _check_mode(mode: str) -> str:
@@ -461,6 +534,8 @@ def import_bytes(data: bytes, mode: str = "replace") -> dict:
         categories_data = zf.read(CATEGORIES_NAME) if CATEGORIES_NAME in {
             m.filename for m in members
         } else None
+        images = [(Path(m.filename[len(MAPS_PREFIX):]).name, zf.read(m))
+                  for m in map_members(members)]
 
     leftover: str | None = None
     try:
@@ -481,11 +556,34 @@ def import_bytes(data: bytes, mode: str = "replace") -> dict:
 
     if categories_data is not None:
         _write_categories(categories_data, mode)
+    _write_maps(images)
 
     # 保存先は変わらないので再起動は要らない。読み直しの合図だけ出す
     store.invalidate()
     categories.invalidate()
     return {**report, "backup": str(backup), "leftover": leftover}
+
+
+def _write_maps(images: list[tuple[str, bytes]]) -> None:
+    """地図の絵を置く。**足すか上書きするかだけ**（zip に無い絵は残す）。
+
+    **ディレクトリごとの入れ替えをしない**のは、辞書と違って「zip の中身そのもの
+    になる」約束が絵には無いから（→ このモジュールの説明）。途中で失敗しても
+    残るのは「一部だけ新しい絵」で、**用語のように半分だけの辞書にはならない**。
+
+    名前は `store.map_path()` に通す —— zip の中の名前は外から来た文字列なので、
+    組み立てた結果が置き場所の中にあることを確かめさせる（`map_members()` が
+    1 段と拡張子を見ているのに加えて、**書く直前にもう一度**）。
+    """
+    for name, data in images:
+        path = Path(name)
+        target = store.map_path(GLOBAL_SCOPE, path.stem, path.suffix.lower())
+        if target is None:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        # 同じ名前で拡張子が違う絵を片付ける（残すと探索順で決まる絵が出る）
+        store.clear_other_maps(GLOBAL_SCOPE, target.stem, target)
 
 
 def _write_categories(data: bytes, mode: str) -> None:

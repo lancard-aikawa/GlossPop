@@ -277,6 +277,38 @@ function appearancesSection(entry) {
   return section("本文での使われ方", box);
 }
 
+/**
+ * 地図への入口。**`map:` が書いてあるときだけ**出す。
+ *
+ * 座標は用語のファイルに書くのに、**地図はここから開けなかった** —— 置く動線も
+ * 相関図の覆いの中にしか無く、用語ページからは自分がどこに置かれているのかも
+ * 分からなかった。`?mode=map` で見せ方まで名指しするのは、覚えている見せ方が
+ * 段の図の人に効かせるため（`?ref=` の「中心の図で開く」と同じ話）。
+ *
+ * **形が無いときは「置く」と書く。** 絵の名前だけ書いた語は地図の側で
+ * 「置き待ち」として並ぶので、行き先は同じでよい（`map.js` の `pending`）。
+ * **形だけあって `map:` が無いときは出さない** —— どの絵の話か決まらないし、
+ * そちらは点検が挙げる（`shape_without_map`）。
+ */
+function mapLink(entry) {
+  if (!entry.map) return null;
+  const placed = Boolean(entry.pin?.length || entry.line?.length || entry.area?.length);
+  const query = new URLSearchParams({
+    mode: "map",
+    map: `${entry.scope}/${entry.map}`,
+    ref: entry.ref,
+  });
+  return el("a", {
+    class: "btn",
+    "data-ref": "mapLink",
+    href: `/graph?${query}`,
+    title: placed
+      ? `「${entry.map}」の上のこの語を見る`
+      : `「${entry.map}」の上にこの語を置く`,
+    text: placed ? "🗺 地図で見る →" : "🗺 地図に置く →",
+  });
+}
+
 function relationsSection(entry) {
   const resolved = entry.relations_resolved || [];
   const links = entry.backlinks || [];
@@ -318,6 +350,7 @@ function relationsSection(entry) {
         title: "この語を真ん中に置いて、2 つ先までの関係を見る",
         text: "この語を中心に →",
       }),
+      mapLink(entry),
       // **1 語ぶんの下書き。** 全体まとめての下書きはビューアにあるが、
       // 「この語だけ関係が空のまま」を埋める道がここに無かった
       el("button", {

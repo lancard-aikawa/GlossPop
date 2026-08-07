@@ -521,8 +521,12 @@ export async function openSettingsDialog() {
         ? `。渡した先で行き先の無くなる関係が ${plan.dangling_count} 本あります`
           + `（例: ${plan.dangling.slice(0, 3).join("、")}）`
         : "";
+      // 絵は圧縮が効かないので大きさも出す（zip がそのぶん重くなる）
+      const maps = plan.maps
+        ? `地図の絵 ${plan.maps} 枚（${Math.round(plan.maps_bytes / 1024 / 1024 * 10) / 10} MB）も入ります。`
+        : "";
       refs.exportNote.textContent =
-        `${plan.partial ? "このカテゴリ" : "辞書全体"}で ${plan.entries} 語${dangling}。`;
+        `${plan.partial ? "このカテゴリ" : "辞書全体"}で ${plan.entries} 語${dangling}。${maps}`;
     } catch (err) {
       refs.exportNote.textContent = err.message;
     }
@@ -577,9 +581,16 @@ export async function openSettingsDialog() {
     const bits = [`足す ${plan.added_count} 語`, `上書き ${plan.updated_count} 語`];
     if (mode === "replace") bits.push(`消える ${plan.removed_count} 語`);
     bits.push(`変わらない ${plan.unchanged} 語`);
+    // **地図の絵は語とは別に数える。** 置き換えでも消えない側なので、同じ行に
+    // 混ぜると「消える」がどこまで掛かるのか分からなくなる
+    const mapBits = [];
+    if (plan.maps_added_count) mapBits.push(`足す ${plan.maps_added_count} 枚`);
+    if (plan.maps_updated_count) mapBits.push(`上書き ${plan.maps_updated_count} 枚`);
     const ok = confirm(
       `「${file.name}」を${mode === "merge" ? "併合" : "置き換え"}します。\n\n` +
-        bits.join(" / ") + "\n\n" +
+        bits.join(" / ") + "\n" +
+        (mapBits.length ? `地図の絵: ${mapBits.join(" / ")}（zip に無い絵は残ります）\n` : "") +
+        "\n" +
         (mode === "merge"
           ? "両方にある用語は zip の側で上書きされます（手元の内容は控えに残ります）。\n"
           : "zip に無い用語は消えます。\n") +
@@ -596,6 +607,8 @@ export async function openSettingsDialog() {
           : `${data.entries} 語 / ${data.categories} カテゴリに置き換えました。`,
         `控えは「${data.backup}」です（ここから戻せます）。`,
       ];
+      const gained = data.maps_added_count + data.maps_updated_count;
+      if (gained) lines.push(`地図の絵を ${gained} 枚入れました。`);
       // 名前を全部は出さないので、切ったことは言う
       if (data.truncated) lines.push(`件数が多いので名前の一覧は先頭 ${data.added.length} 件までです。`);
       // 消せなかった作業用フォルダは黙らない

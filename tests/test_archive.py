@@ -126,6 +126,101 @@ class TestExportingOneCategory:
         assert Path(report["backup"]).exists()
 
 
+class TestMapImages:
+    """地図の絵は**書き出しには入り、取り込みでは消えない**。
+
+    座標は用語のファイルにあるのに絵はディレクトリの外にあるので、入れないと
+    **渡した先で形だけ揃って地図が真っ白**になる。逆に「zip に無い＝消してよい」と
+    読むと、**古い版が書き出した zip を取り込んだだけで絵が全部消える**。
+    """
+
+    def test_export_carries_the_pictures(self, add_entry, put_map):
+        put_map("尾張")
+        add_entry("田楽狭間", category="地", map="尾張", pin=[0.4, 0.3])
+        assert "maps/尾張.svg" in _names(archive.export_bytes())
+
+    def test_the_manifest_counts_them(self, put_map):
+        put_map("尾張")
+        with zipfile.ZipFile(io.BytesIO(archive.export_bytes())) as zf:
+            assert json.loads(zf.read(archive.MANIFEST_NAME))["maps"] == 1
+
+    def test_a_picture_nobody_points_at_is_still_in_the_backup(self, put_map):
+        """控えは「消える前の写し」。まだどの語も指していない絵も残す。"""
+        put_map("使っていない絵")
+        assert "maps/使っていない絵.svg" in _names(archive.export_bytes())
+
+    def test_only_the_pictures_that_category_uses(self, add_entry, put_map):
+        """一部だけ渡すときは、関係の無い絵を送りつけない（マスターと同じ扱い）。"""
+        put_map("尾張")
+        put_map("駿河")
+        add_entry("田楽狭間", category="地", map="尾張", pin=[0.4, 0.3])
+        add_entry("冪等", category="プログラミング")
+        names = _names(archive.export_bytes(["地"]))
+        assert "maps/尾張.svg" in names and "maps/駿河.svg" not in names
+
+    def test_import_puts_them_back(self, add_entry, put_map):
+        put_map("尾張")
+        add_entry("田楽狭間", category="地", map="尾張", pin=[0.4, 0.3])
+        data = archive.export_bytes()
+
+        store.map_file("global", "尾張").unlink()
+        report = archive.import_bytes(data, "replace")
+
+        assert store.map_file("global", "尾張") is not None
+        assert report["maps_added_count"] == 1 and report["maps_updated_count"] == 0
+
+    def test_replace_does_not_delete_pictures_the_zip_lacks(self, add_entry, put_map):
+        """**置き換えの「zip の中身そのものになる」は用語についての約束。**
+
+        絵まで消すと、古い版が書き出した zip を取り込んだだけで全部消える。
+        """
+        add_entry("冪等", category="プログラミング")
+        without = archive.export_bytes()          # まだ絵が無いうちに書き出す
+        put_map("尾張")
+
+        archive.import_bytes(without, "replace")
+
+        assert store.map_file("global", "尾張") is not None
+
+    def test_replacing_a_picture_clears_the_other_suffix(self, put_map):
+        """同じ名前で拡張子が違う絵を残さない（差し替えたのに変わらない、を防ぐ）。"""
+        put_map("尾張", suffix=".png", data=b"\x89PNG\r\n\x1a\n")
+        data = archive.export_bytes()
+        put_map("尾張")                            # .svg で置き直す
+
+        archive.import_bytes(data, "merge")
+
+        found = store.map_file("global", "尾張")
+        assert found.suffix == ".png"
+        assert not (found.parent / "尾張.svg").exists()
+
+    def test_the_plan_counts_pictures_apart_from_words(self, add_entry, put_map):
+        put_map("尾張")
+        data = archive.export_bytes()
+        store.map_file("global", "尾張").unlink()
+
+        plan = archive.plan(data, "merge")
+        assert plan["maps"] == 1
+        assert plan["maps_added"] == ["尾張.svg"] and plan["maps_updated"] == []
+
+    def test_a_zip_with_only_pictures_is_still_refused(self, put_map):
+        """絵は zip の正体を決めない（辞書が空で置き換わるのを防ぐ）。"""
+        with pytest.raises(archive.ArchiveError):
+            archive.import_bytes(_zip({"maps/尾張.svg": "<svg viewBox='0 0 1 1'/>"}), "replace")
+
+    def test_a_picture_with_a_refused_suffix_is_dropped(self, add_entry):
+        """**配る口は中身を検査せずに返す。** 名乗りだけで置き場所に入れない。"""
+        add_entry("冪等", category="プログラミング")
+        data = archive.export_bytes()
+        with zipfile.ZipFile(io.BytesIO(data), "a") as zf:
+            zf.writestr("maps/わな.html", "<script>alert(1)</script>")
+
+        archive.import_bytes(data, "merge")
+
+        directory = store.maps_dir("global")
+        assert directory is None or not list(directory.glob("わな.*"))
+
+
 class TestExportPlan:
     def test_counts_what_goes_in(self, add_entry):
         add_entry("冪等", category="プログラミング")

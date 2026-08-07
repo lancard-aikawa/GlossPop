@@ -1236,6 +1236,15 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   stroke-width: 16;
   vector-effect: non-scaling-stroke;
 }
+/* **重なった名前は畳む**（一言の `.rel-edge-label.tucked` と同じ約束）。
+   地図は座標が与えられている図なので**逃がす場所が無い** —— 重ねると重なった
+   2 つとも読めず、下の絵まで隠す。消してはいないので、乗せる・焦点が当たる・
+   その語の関係を辿ると出る（畳んだ数は注意書きに出す）。 */
+.rel-map-name.tucked { display: none; }
+.rel-node:hover .rel-map-name.tucked,
+.rel-node:focus-within .rel-map-name.tucked,
+.rel-node.lit .rel-map-name.tucked,
+.rel-node.hot .rel-map-name.tucked { display: block; }
 .rel-edge { fill: none; stroke: var(--border-strong); stroke-width: 1.5; }
 .rel-edge.missing { stroke: var(--danger); stroke-dasharray: 4 3; }
 .rel-edge.reveal { stroke: var(--warn); stroke-dasharray: 6 3; }
@@ -1563,3 +1572,26 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-map-handle:hover,
 .rel-map-handle:focus { fill: var(--accent); outline: none; }
 .rel-map.is-placing { cursor: crosshair; }
+
+/* 頂点を足す口（線分の中点）。**掴む丸より小さく・薄く** —— 同じ見た目にすると、
+   どれが本物の頂点なのか分からなくなる（数えると点の数が合わない）。 */
+.rel-map-add {
+  fill: var(--panel);
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 3 2;
+  opacity: 0.65;
+  cursor: cell;
+  vector-effect: non-scaling-stroke;
+}
+.rel-map-add:hover { opacity: 1; fill: var(--accent); }
+
+/* 消す口。**乗せた（または焦点が当たった）頂点にだけ出す** —— 常に出すと、
+   頂点の数だけ ✕ が並んで絵が読めなくなるうえ、掴もうとして消す。 */
+.rel-map-drop { display: none; cursor: pointer; }
+.rel-map-vertex:hover .rel-map-drop,
+.rel-map-vertex:focus-within .rel-map-drop { display: block; }
+.rel-map-drop circle { fill: var(--panel); stroke: var(--danger); stroke-width: 2; }
+.rel-map-drop path { stroke: var(--danger); stroke-width: 2; fill: none; }
+.rel-map-drop:hover circle { fill: var(--danger); }
+.rel-map-drop:hover path { stroke: var(--panel); }

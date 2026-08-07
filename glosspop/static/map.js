@@ -90,6 +90,32 @@ function placed(nodes, chosen) {
 const asPoints = (pts) => pts.map((q) => `${q.x},${q.y}`).join(" ");
 
 /**
+ * 文字を置く四角。**実測より少し大きく見積もる**（`graph.js` の `labelBox` と
+ * 同じ理由 —— 小さいと、置いたあとで触れる）。
+ */
+function textBox(text, x, top, size) {
+  const w = estTextWidth(text, size) + 10;
+  return { x: x - w / 2, y: top, w, h: size + 7 };
+}
+
+const overlaps = (a, b) =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+/**
+ * 空いていれば取る。**取れなければ畳む**（`false` を返す）。
+ *
+ * **消しはしない。** 地図は座標が与えられている図なので、段の図のように
+ * 「空いている場所へ逃がす」ことができない —— 動かせば別の場所を指してしまう。
+ * 残る手は重ねるか畳むかで、**重ねると重なった 2 つとも読めず、下の絵まで隠す**。
+ * 畳んだものは乗せれば出るし、本数は凡例と注意書きに出す。
+ */
+function takeSpot(box, taken) {
+  if (taken.some((other) => overlaps(box, other))) return false;
+  taken.push(box);
+  return true;
+}
+
+/**
  * 地図を描く。戻り値は他の見せ方と同じ ``{ root, box, ... }``。
  *
  * ``opts.onResize`` は**絵の高さが分かったときに呼ぶ**。絵の縦横比は読み込むまで
@@ -102,7 +128,7 @@ export function buildMap(graph, opts = {}) {
   // 名前を変える —— 同じ関数の中で 2 つ宣言すると読み込みごと落ちる（実際に踏んだ）
   const {
     onEdge, onResize, mapName, hidden, labels: showNames = true,
-    editing = false, placing = "", onMove, onPlace,
+    editing = false, placing = "", onMove, onPlace, onRefuse,
   } = opts;
 
   // **どの絵を出すかは、出ている語から決める。** いちばん多く点が乗る絵を既定にし、
@@ -162,16 +188,57 @@ export function buildMap(graph, opts = {}) {
   const lines = svg("g", { class: "rel-edge-lines" });
   const labels = svg("g", { class: "rel-edge-labels" });
   const touching = new Map([...pos.keys()].map((ref) => [ref, []]));
-  let offEdges = 0;
 
-  for (const edge of edges) {
-    const a = pos.get(edge.from);
-    const b = pos.get(edge.to);
-    if (!a || !b) {
-      // 片端が地図に無い関係。**落とすが必ず数える**
-      offEdges++;
-      continue;
+  // **置き場所の取り合いを先に決める。** 座標は動かせないので、重なったものは
+  // 畳むしかない（→ `takeSpot`）。**点そのものを先に取っておく** —— 名前の板が
+  // 別の語の点を覆うと、その語が図から消えたのと同じことになる
+  const taken = [...pos.values()]
+    .filter((p) => p.kind === "point")
+    .map((p) => ({ x: p.x - DOT_R, y: p.y - DOT_R, w: DOT_R * 2, h: DOT_R * 2 }));
+  const drawable = edges
+    .map((edge) => ({ edge, a: pos.get(edge.from), b: pos.get(edge.to) }))
+    .filter(({ a, b }) => a && b);
+  const offEdges = edges.length - drawable.length;   // 片端が地図に無い関係
+
+  // **名前が先、一言は後。** 名前はその語が何なのかを決めるもので、一言は
+  // 関係の補足。両方は置けないとき、残すべきなのは名前のほう。
+  // 名前どうしの順は**関係の多い語から**（図の骨になる語を残す）。同数のときは
+  // 上から左から —— 並びを決め切らないと、開くたびに畳む語が入れ替わる
+  const degree = new Map([...pos.keys()].map((ref) => [ref, 0]));
+  for (const { edge } of drawable) {
+    degree.set(edge.from, degree.get(edge.from) + 1);
+    degree.set(edge.to, degree.get(edge.to) + 1);
+  }
+  const nameSpots = new Map();
+  let tuckedNames = 0;
+  if (showNames) {
+    const order = [...pos].sort(([refA, a], [refB, b]) =>
+      (degree.get(refB) - degree.get(refA)) || (a.y - b.y) || (a.x - b.x));
+    for (const [ref, p] of order) {
+      const label = clip(p.node.term || ref, NAME_MAX);
+      // 点だけは名前を丸の下へ逃がす（丸に重ねると点が読めない）
+      const top = p.kind === "point" ? p.y + DOT_R + 3 : p.y - (FONT + 7) / 2;
+      const box = textBox(label, p.x, top, FONT);
+      const tucked = !takeSpot(box, taken);
+      if (tucked) tuckedNames++;
+      nameSpots.set(ref, { label, box, tucked });
     }
+  }
+
+  // 一言は**短い線から**決める（動かせる幅が狭いのはそちら、は段の図と同じ）
+  const tuckedEdges = new Set();
+  const byLength = [...drawable]
+    .map((item, i) => ({ i, ...item }))
+    .filter(({ edge }) => relationWords(edge))
+    .sort((p, q) => Math.hypot(p.a.x - p.b.x, p.a.y - p.b.y)
+      - Math.hypot(q.a.x - q.b.x, q.a.y - q.b.y));
+  for (const { i, edge, a, b } of byLength) {
+    const words = clip(relationWords(edge), WORDS_MAX);
+    const box = textBox(words, (a.x + b.x) / 2, (a.y + b.y) / 2 - 6 - (FONT + 7) / 2, FONT);
+    if (!takeSpot(box, taken)) tuckedEdges.add(i);
+  }
+
+  for (const [index, { edge, a, b }] of drawable.entries()) {
     const detail = describeRelation(edge, {
       from: byRef.get(edge.from)?.term, to: byRef.get(edge.to)?.term,
     });
@@ -203,7 +270,8 @@ export function buildMap(graph, opts = {}) {
     const words = relationWords(edge);
     const text = words
       ? svg("text", {
-        class: "rel-edge-label",
+        // 畳んだものも DOM には残す（乗せれば出る。`.rel-edge-label.tucked`）
+        class: tuckedEdges.has(index) ? "rel-edge-label tucked" : "rel-edge-label",
         x: (a.x + b.x) / 2,
         y: (a.y + b.y) / 2 - 6,
         "text-anchor": "middle",
@@ -245,7 +313,6 @@ export function buildMap(graph, opts = {}) {
   for (const [ref, p] of pos) {
     const node = p.node;
     const term = node.term || ref;
-    const label = clip(term, NAME_MAX);
     const body = [];
     if (p.kind === "area") {
       body.push(svg("polygon", { class: "rel-map-fill", points: asPoints(p.pts) }));
@@ -258,26 +325,30 @@ export function buildMap(graph, opts = {}) {
     } else {
       body.push(svg("circle", { cx: p.x, cy: p.y, r: DOT_R }));
     }
-    // 名前の板。点だけは丸の下へ逃がす（丸に重ねると点が読めない）。
+    // 名前の板。置き場所は上で決めてある（点だけ丸の下。丸に重ねると点が読めない）。
     // **消せる。** AI に描かせた絵には地名が焼き込まれているのが普通で、
     // そこへ重ねると二重になる。**消しても情報は失われない** ——
-    // 乗せれば図の下の枠と吹き出しに出る（だから「黙って欠ける」にならない）
-    const top = p.kind === "point" ? p.y + DOT_R + 3 : p.y - (FONT + 7) / 2;
-    const width = estTextWidth(label, FONT) + 10;
-    const name = !showNames ? [] : [
-      svg("rect", {
-        class: "rel-map-plate",
-        x: p.x - width / 2, y: top, width, height: FONT + 7, rx: 4,
-      }),
-      svg("text", {
-        x: p.x, y: top + (FONT + 7) / 2,
-        "text-anchor": "middle", "dominant-baseline": "central",
-        text: label,
-      }),
+    // 乗せれば図の下の枠と吹き出しに出る（だから「黙って欠ける」にならない）。
+    // **重なって畳んだものも同じ**（`.rel-map-name.tucked`。乗せれば出る）
+    const spot = nameSpots.get(ref);
+    const name = !spot ? [] : [
+      svg("g", { class: spot.tucked ? "rel-map-name tucked" : "rel-map-name" }, [
+        svg("rect", {
+          class: "rel-map-plate",
+          x: spot.box.x, y: spot.box.y, width: spot.box.w, height: spot.box.h, rx: 4,
+        }),
+        svg("text", {
+          x: p.x, y: spot.box.y + spot.box.h / 2,
+          "text-anchor": "middle", "dominant-baseline": "central",
+          text: spot.label,
+        }),
+      ]),
     ];
     const group = svg("g", {
       class: ["rel-node", "rel-map-pin", `rel-map-${p.kind}`, node.missing ? "missing" : ""]
         .filter(Boolean).join(" "),
+      // 呼ぶ側が語を名指しで探せるようにする（用語ページから開いたときの目印）
+      "data-ref": ref,
       "data-detail": describeNode(node),
     }, [
       svg("a", { href: node.url || `/glossary?q=${encodeURIComponent(term)}` }, [
@@ -295,7 +366,7 @@ export function buildMap(graph, opts = {}) {
   root.append(layers.area, layers.line, layers.point);
 
   installFocus(root, nodeGroups, touching);
-  if (editing) installHandles(root, pos, onMove);
+  if (editing) installHandles(root, pos, onMove, onRefuse);
   if (placing) {
     // **置くのは絵の上を 1 回押すだけ。** armed の間だけ効く（間違って置かない）
     root.classList.add("is-placing");
@@ -315,7 +386,15 @@ export function buildMap(graph, opts = {}) {
     `「${chosen.name}」の上に ${pos.size} 語を置いています`
     + `（点 ${kinds.point} / 線 ${kinds.line} / 領域 ${kinds.area}）。`,
     showNames ? "" : "名前は消しています（乗せると出ます）。",
-    editing ? "丸を掴むと動かせます（矢印キーでも。離すと保存されます）。" : "",
+    // **畳んだ名前は必ず数える。** 黙って消すと「登録していない語」に見える
+    // （伏せた本数を返すのと同じ約束。一言のほうは凡例が出す）
+    tuckedNames
+      ? `重なって置けない名前 ${tuckedNames} 個は畳んでいます（乗せると出ます）。` : "",
+    editing
+      ? "丸を掴むと動かせます（矢印キーでも。離すと保存されます）。"
+        + "線の上の小さな丸で頂点を足し、丸に乗せて出る ✕ で消せます"
+        + "（キーボードでは ＋ と Delete）。"
+      : "",
     placing ? "絵の上を押すとそこへ置きます。" : "",
     !editing && pending.length
       ? `この絵に置きたいと書いてある語が ${pending.length} 語あります（「置く」から）。` : "",
@@ -329,7 +408,7 @@ export function buildMap(graph, opts = {}) {
   ].filter(Boolean).join("");
 
   return {
-    root, box, lonely: 0, tucked: 0, note,
+    root, box, lonely: 0, tucked: tuckedEdges.size, note,
     map: `${chosen.scope}/${chosen.name}`,
     // 呼ぶ側がチェックの一覧を作れるように、**この絵に置ける語**を全部返す
     items,
@@ -338,6 +417,48 @@ export function buildMap(graph, opts = {}) {
   };
 }
 
+
+//: 形ごとの最小の点数。**サーバ側 (`models._clean_points`) と同じ値**で、
+//: 割ると**丸ごと空になる**（半端な形を描かないため）。ここで先に断るのは、
+//: 「消したら地図から消えた」を起こさないため
+export const LEAST = { point: 1, line: 2, area: 3 };
+
+//: 画面に出す種別の名前。**frontmatter の項目名も添える**（そこを直しに行く人が
+//: いるので、画面の言葉とファイルの言葉を繋いでおく）
+export const KIND_WORDS = { point: "点 (pin)", line: "線 (line)", area: "領域 (area)" };
+
+//: 種別を変えるときに足す点の間隔（絵の幅に対する比）。掴んで動かす前提なので
+//: 「重ならずに掴める」だけあればよい
+const GROW_STEP = 0.06;
+
+//: 足す向き（`GROW_STEP` の何倍か）。**縦横のどちらかに揃えない。**
+//: 真横に並んだ線は**外形の高さが 0** になり、焦点の枠も外形で見る道具も
+//: 「大きさの無い部品」として扱う（`graph.js` の `hitBand()` と同じ話）。
+//: **3 点目は一直線に置かない** —— 潰れた三角形は面積が 0 で、領域が見えない
+const GROW_AT = [[1, 1], [1, 0], [0, 1], [2, 1]];
+
+/**
+ * 種別を変えたときの点の並び。**足りなければ足し、多ければ落とす。**
+ *
+ * **種別は人が宣言する**（書き方が宣言そのもの、という約束）ので、点の数から
+ * 機械が推測しない —— ここは「点にすると言われた」あとで形を合わせるだけ。
+ * 足す点は**いまある点の並びの続き**に置く（画面の外へ出さないよう畳む）。
+ */
+export function fitToKind(kind, points) {
+  const least = LEAST[kind] || 1;
+  const out = (kind === "point" ? points.slice(0, 1) : points).map((p) => [...p]);
+  const base = out[0] || [0.5, 0.5];
+  // **絵の外に出さない**（出すと点検が「座標が絵の外」として挙げる形になる）。
+  // 右端にいるときは左へ伸ばす —— 詰めると同じ座標が並び、長さ 0 の線になる
+  const dir = base[0] > 1 - GROW_STEP * 2 ? -1 : 1;
+  while (out.length < least) {
+    // **最初の点から測る。** 直前の点から測ると同じ向きに伸び続けて、
+    // 3 点が一直線に並ぶ（面積 0 の領域になる）
+    const [ox, oy] = GROW_AT[(out.length - 1) % GROW_AT.length];
+    out.push([base[0] + ox * GROW_STEP * dir, base[1] + oy * GROW_STEP]);
+  }
+  return out;
+}
 
 /** 画面の座標を絵の座標へ。**`getScreenCTM()` の逆行列**で拡大縮小と移動を吸収する。 */
 function toUser(root, ev) {
@@ -357,17 +478,68 @@ function toUser(root, ev) {
  * **掴みは動き出してから `setPointerCapture` する。** `pointerdown` で捕まえると
  * 以後のポインタ事象が付け替えられ、**中の線を押しても編集ダイアログが開かなくなる**
  * （拡大縮小の掴みで実際に踏んだ）。
+ *
+ * 頂点は**足せる・消せる**。守ること 3 つ:
+ *
+ * - **足す口は線分の中点に置く**（線そのものは押せない —— 形は `<a>` の中にあり、
+ *   押すと辞書ページへ飛ぶ。当たり判定を奪うと**線を押して語へ行けなくなる**）
+ * - **消す口は乗せたときだけ出す**（✕）。常に出すと、頂点の数だけ ✕ が並んで
+ *   絵が読めなくなるうえ、**掴もうとして消す**
+ * - **最小を割る削除は断る**（`LEAST`）。サーバ側は割れた形を**丸ごと空にする**
+ *   ので、通すと「1 つ消したら地図から消えた」になる。**種別を勝手に落とさない**
+ *   のも同じ理由 —— 領域を線に変えるのは人が宣言することであって、消した結果
+ *   そうなるものではない
  */
-function installHandles(root, pos, onMove) {
+function installHandles(root, pos, onMove, onRefuse) {
   const layer = svg("g", { class: "rel-map-handles" });
+  //: いまの点の並びを比に戻す（保存はいつもこの形で渡す）
+  const asRatio = (pts) => pts.map((s) => [s.x / W, s.y / W]);
+
   for (const [ref, p] of pos) {
+    const term = p.node.term || ref;
+    const save = () => onMove?.(ref, p.kind, asRatio(p.pts));
+    const drop = (i) => {
+      if (p.pts.length - 1 < (LEAST[p.kind] || 1)) {
+        onRefuse?.(
+          `${KIND_WORDS[p.kind]}は ${LEAST[p.kind]} 点からです`
+          + `（これ以上消すなら種別を変えてください）`
+        );
+        return;
+      }
+      p.pts.splice(i, 1);
+      save();
+    };
+    const insert = (i, at) => {
+      p.pts.splice(i, 0, at);
+      save();
+    };
+    /**
+     * キーボードで足すとき、どの線分に入れるか。
+     *
+     * **点には足せない**（足すと種別が変わる ＝ 人が宣言することを機械が決める）。
+     * 線の**最後の頂点**には「次」が無いので手前の線分へ入れる。領域は閉じて
+     * いるので必ず「次」がある。
+     */
+    const addAfter = (i) => {
+      if (p.kind === "point") {
+        onRefuse?.("点には頂点を足せません（種別を線か領域に変えてください）");
+        return;
+      }
+      const hasNext = p.kind === "area" || i + 1 < p.pts.length;
+      const a = hasNext ? i : i - 1;
+      const b = hasNext ? (i + 1) % p.pts.length : i;
+      insert(a + 1, midOf(p.pts[a], p.pts[b]));
+    };
+
     p.pts.forEach((q, i) => {
       const dot = svg("circle", {
         class: "rel-map-handle", cx: q.x, cy: q.y, r: 9,
         tabindex: "0", role: "button",
-        "aria-label": `${p.node.term || ref} の位置を動かす`,
+        "aria-label": `${term} の位置を動かす`,
       });
-      dot.append(svg("title", { text: `${p.node.term || ref}（掴んで動かせます）` }));
+      dot.append(svg("title", {
+        text: `${term}（掴んで動かせます。＋ で足す / Delete で消す）`,
+      }));
       let moved = false;
       const down = (ev) => {
         if (ev.button !== 0) return;
@@ -386,7 +558,7 @@ function installHandles(root, pos, onMove) {
         const up = () => {
           window.removeEventListener("pointermove", move);
           window.removeEventListener("pointerup", up);
-          if (moved) onMove?.(ref, p.kind, p.pts.map((s) => [s.x / W, s.y / W]));
+          if (moved) save();
         };
         // **window で受ける。** 丸に付けると、指が丸から出た時点で届かなくなる
         // （実際に踏んだ）。`setPointerCapture` は使わない —— 拡大縮小の掴みで
@@ -396,8 +568,21 @@ function installHandles(root, pos, onMove) {
         window.addEventListener("pointerup", up);
       };
       dot.addEventListener("pointerdown", down);
-      // キーボードでも動かせる（矢印。**掴めない人を締め出さない**）
+      // キーボードでも動かせる（矢印。**掴めない人を締め出さない**）。
+      // 足す・消すも同じ —— 中点の丸は焦点を持たないので、ここが唯一の道
       dot.addEventListener("keydown", (ev) => {
+        if (ev.key === "Delete" || ev.key === "Backspace") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          drop(i);
+          return;
+        }
+        if (ev.key === "+" || ev.key === "Insert") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          addAfter(i);
+          return;
+        }
         const step = ev.shiftKey ? 20 : 4;
         const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0],
           ArrowUp: [0, -step], ArrowDown: [0, step] }[ev.key];
@@ -408,12 +593,57 @@ function installHandles(root, pos, onMove) {
         dot.setAttribute("cx", p.pts[i].x);
         dot.setAttribute("cy", p.pts[i].y);
         redraw(p);
-        onMove?.(ref, p.kind, p.pts.map((s) => [s.x / W, s.y / W]));
+        save();
       });
-      layer.append(dot);
+
+      // **消す口は乗せたときだけ。** 掴む丸とは別の部品にして、掴みに巻き込まれない
+      const cross = svg("g", { class: "rel-map-drop", role: "button", tabindex: "-1" }, [
+        svg("circle", { cx: q.x + 13, cy: q.y - 13, r: 7 }),
+        svg("path", {
+          d: `M ${q.x + 10} ${q.y - 16} L ${q.x + 16} ${q.y - 10}`
+            + ` M ${q.x + 16} ${q.y - 16} L ${q.x + 10} ${q.y - 10}`,
+        }),
+        svg("title", { text: `${term} のこの頂点を消す` }),
+      ]);
+      cross.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+      cross.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        drop(i);
+      });
+
+      layer.append(svg("g", { class: "rel-map-vertex" }, [dot, cross]));
     });
+
+    // **足す口は線分の中点。** 線そのものは辞書ページへの入口なので奪えない
+    if (p.kind !== "point") {
+      const last = p.kind === "area" ? p.pts.length : p.pts.length - 1;
+      for (let i = 0; i < last; i++) {
+        const at = midOf(p.pts[i], p.pts[(i + 1) % p.pts.length]);
+        const add = svg("circle", {
+          class: "rel-map-add", cx: at.x, cy: at.y, r: 6,
+          role: "button",
+          // **焦点は持たせない。** 頂点だけでも Tab の停留が点の数だけあるので、
+          // 中点まで並べると図を横切るのに倍かかる（キーボードは ＋ で足せる）
+          "aria-hidden": "true",
+        });
+        add.append(svg("title", { text: `${term} にここで頂点を足す` }));
+        add.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+        add.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          insert(i + 1, at);
+        });
+        layer.append(add);
+      }
+    }
   }
   root.append(layer);
+}
+
+/** 2 点の中間。**足す口の位置**（＝足したときの座標）。 */
+function midOf(a, b) {
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
 /** 動かしている最中の見た目を追従させる（保存は離したとき）。 */

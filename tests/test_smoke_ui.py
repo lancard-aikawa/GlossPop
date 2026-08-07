@@ -707,6 +707,166 @@ def test_the_map_can_turn_the_names_off(page, server, seeded):
     assert page.locator("svg.rel-map .rel-map-plate").count() == 1
 
 
+def _place_line(term: str, points: list[list[float]]) -> str:
+    """その語を「てすと図」の上に線として置く。ref を返す。"""
+    e = store.find_by_surface(term)[0]
+    store.save(EntryDraft(
+        term=e.term, category=e.category, definition=e.definition,
+        map="てすと図", line=points,
+    ), ref=e.ref)
+    return e.ref
+
+
+def _open_map(page, server):
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+
+
+def test_vertices_can_be_added_and_removed(page, server, seeded):
+    """**頂点を足す / 消す。** 足す口は線分の中点、消す口は乗せたときだけ出る ✕。
+
+    **最小（線は 2 点）を割る削除は断る** —— 通すとサーバ側で形が丸ごと空になり、
+    「1 つ消したら地図から消えた」になる。種別を勝手に落とさないのも同じ理由。
+    """
+    _put_test_map()
+    _place_line("ジョバンニ", [[0.2, 0.3], [0.6, 0.3]])
+
+    _open_map(page, server)
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.locator("svg.rel-map .rel-map-handle").first.wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-handle").count() == 2
+    # 2 点の線には線分が 1 本 ＝ 足す口も 1 つ
+    assert page.locator("svg.rel-map .rel-map-add").count() == 1
+
+    page.click("svg.rel-map .rel-map-add")
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-map .rel-map-handle').length === 3",
+        timeout=10000,
+    )
+
+    # ✕ は乗せるまで出ない（常に出すと、掴もうとして消すことになる）
+    vertex = page.locator("svg.rel-map .rel-map-vertex").first
+    assert not vertex.locator(".rel-map-drop").is_visible()
+    vertex.hover()
+    vertex.locator(".rel-map-drop").click()
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-map .rel-map-handle').length === 2",
+        timeout=10000,
+    )
+
+    # **これ以上は断る**（キーボードからも同じ道を通る）
+    page.locator("svg.rel-map .rel-map-handle").first.focus()
+    page.keyboard.press("Delete")
+    page.locator("#status.error").wait_for(timeout=10000)
+    assert "2 点からです" in (page.text_content("#status") or "")
+    assert page.locator("svg.rel-map .rel-map-handle").count() == 2
+
+
+def test_the_kind_can_be_changed_and_undone(page, server, seeded):
+    """**種別は人が宣言する。** 点 → 線 にすると足りない点が隣に足される
+    （これが画面から線を作る道）。
+
+    保存は即時なので、**戻す道を必ず出す** —— 消した頂点はこれが無いと
+    取り返せない（→ docs/open-questions.md にあった宿題）。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.30, 0.40],
+    ), ref=a.ref)
+
+    _open_map(page, server)
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.locator("#mapLayers [data-ref=mapKind]").first.wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-point circle").count() == 1
+
+    page.select_option("#mapLayers [data-ref=mapKind]", "line")
+    # **`state="attached"` で待つ。** 真横・真縦に並んだ線は**外形の高さ（幅）が 0**
+    # なので、「見えるまで」待つと真横の線で必ずタイムアウトする（`hitBand()` を
+    # 敷いてある理由と同じ話。自動で足す点は斜めに置いてあるが、手で動かせば起きる）
+    page.locator("svg.rel-map .rel-map-line polyline.rel-map-route").wait_for(
+        state="attached", timeout=10000
+    )
+    page.wait_for_function(
+        "() => document.querySelectorAll('svg.rel-map .rel-map-handle').length === 2",
+        timeout=10000,
+    )
+    assert store.get(a.ref).line and not store.get(a.ref).pin
+
+    # **戻せる**（何を戻すのかもボタンに書く）
+    undo = page.locator("#mapLayers [data-ref=mapUndo]")
+    undo.wait_for(timeout=10000)
+    assert "ジョバンニ" in (undo.text_content() or "")
+    undo.click()
+    page.locator("svg.rel-map .rel-map-point circle").wait_for(timeout=10000)
+    assert store.get(a.ref).pin == [0.30, 0.40] and not store.get(a.ref).line
+    # 戻したら、戻す先はもう無い
+    assert page.locator("#mapLayers [data-ref=mapUndo]").count() == 0
+
+
+def test_the_entry_page_opens_the_map_at_that_word(page, server, seeded):
+    """用語ページ →「🗺 地図で見る」→ 地図が開き、**その語が光る**。
+
+    座標は用語のファイルに書くのに、**地図はそこから開けなかった**（置く動線も
+    相関図の覆いの中にしかなかった）。`?mode=map` で見せ方まで名指しするので、
+    **覚えている見せ方が段の図の人にも効く** —— 押しのけたことは注意書きに出す。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.24, 0.30],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    link = page.locator("[data-ref=mapLink]")
+    link.wait_for(timeout=15000)
+    link.click()
+
+    page.locator("svg.rel-map").wait_for(timeout=15000)
+    # **その語に目印が付く**（広い絵の隅にあると、開いても自分の語を見失う）
+    lit = page.locator("svg.rel-map .rel-node.lit")
+    lit.wait_for(timeout=10000)
+    assert lit.get_attribute("data-ref") == a.ref
+    # 覚えている見せ方を押しのけたことは黙らない
+    assert "リンクの指定で地図" in (page.text_content("#notes") or "")
+
+
+def test_the_map_folds_names_that_would_overlap(page, server, seeded):
+    """**重なった名前は畳む**（地図は座標が与えられているので逃がす場所が無い）。
+
+    重ねると重なった 2 つとも読めず、下の絵まで隠す。消してはいないので、
+    畳んだ数を注意書きに出し、乗せれば出る。
+    """
+    _put_test_map()
+    for term, spot in (("ジョバンニ", [0.40, 0.30]), ("カムパネルラ", [0.41, 0.30])):
+        e = store.find_by_surface(term)[0]
+        store.save(EntryDraft(
+            term=e.term, category=e.category, definition=e.definition,
+            map="てすと図", pin=spot,
+        ), ref=e.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+
+    # 板は 2 枚とも DOM にある（消していない）が、片方は畳まれている
+    assert page.locator("svg.rel-map .rel-map-plate").count() == 2
+    assert page.locator("svg.rel-map .rel-map-name.tucked").count() == 1
+    assert "重なって置けない名前 1 個" in (page.text_content("#legend") or "")
+
+    # **乗せれば出る**（畳んだものが読めなくなっていないこと）
+    tucked = page.locator("svg.rel-map .rel-node:has(.rel-map-name.tucked)")
+    assert tucked.evaluate(
+        "(node) => { node.classList.add('lit');"
+        " return getComputedStyle(node.querySelector('.rel-map-name')).display; }"
+    ) != "none"
+
+
 def test_a_map_image_can_be_uploaded_and_deleted(page, server, seeded):
     """絵をブラウザから入れて消せる。
 

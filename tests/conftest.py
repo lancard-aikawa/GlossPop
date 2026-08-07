@@ -96,3 +96,23 @@ def add_entry():
         return store.save(EntryDraft(term=term, **kwargs))
 
     return _add
+
+
+@pytest.fixture
+def put_map():
+    """地図の絵を 1 枚置く。**中身は本物の SVG**（大きさを持たせる）。
+
+    置き場所は `store.maps_dir()` 任せにする —— テストが組み立てると、
+    置き場所を変えたときにテストだけが古い場所を見続ける。
+    """
+    def _put(name: str, *, scope: str = "global", suffix: str = ".svg", data: bytes | None = None):
+        directory = store.maps_dir(scope)
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{name}{suffix}"
+        path.write_bytes(
+            data if data is not None
+            else b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 70"></svg>'
+        )
+        return path
+
+    return _put
