@@ -469,13 +469,15 @@ function render(entry) {
     head.append(el("p", { class: "aliases", text: `別名: ${entry.aliases.join(" / ")}` }));
   }
   if (entry.summary) head.append(el("p", { class: "summary", text: entry.summary }));
-  // **用語ごとの画像は本文の前**（顔は見出しの横）。**主戦場はここ** ——
-  // 吹き出しは狭くて顔と取り合うので、大きく出せるのは用語ページだけ
-  head.append(imagePanel(entry));
   if (entry.tags?.length) {
     // タグで絞り込む (`?q=` に流すと、そのタグ名が本文に出るだけの語まで拾う)
     head.append(el("div", { class: "chips" }, entry.tags.map((t) => chip(`#${t}`, `/glossary?tag=${encodeURIComponent(t)}`))));
   }
+  // **用語ごとの画像は見出しの最後、本文の前**（顔は見出しの横）。**主戦場はここ**
+  // —— 吹き出しは狭くて顔と取り合うので、大きく出せるのは用語ページだけ。
+  // **要約とタグの間に割り込ませないこと** —— 語の説明（要約 → タグ）が
+  // 押しボタンで分断されて読みにくい
+  head.append(imagePanel(entry));
 
   const parts = [head];
 
