@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -1685,6 +1686,115 @@ def map_image(name: str, scope: str = GLOBAL_SCOPE) -> FileResponse:
             "Cache-Control": "public, max-age=3600",
         },
     )
+
+
+#: 中身の先頭から見分ける。**送られてきたファイル名は使わない**（名乗りでしかない）。
+#: **顔と違って SVG がある** —— 配る側が `<image>` 埋め込みと `CSP: sandbox` で
+#: 担保しているので、形式ではなく出し方で安全を取っている（→ `map_image`）。
+#: SVG はテキストなのでマジックバイトほど堅く見分けられないが、**見分けの目的は
+#: 安全ではなく拡張子を決めること**なので、それで足りる。
+_MAP_SNIFF: dict[bytes, str] = {
+    b"\x89PNG\r\n\x1a\n": ".png",
+    b"\xff\xd8\xff": ".jpg",
+    b"GIF87a": ".gif",
+    b"GIF89a": ".gif",
+}
+
+#: SVG が寸法を持っているか。**持たないと縦横比が読めない。**
+#: 実測: `width`/`height` があれば実寸、**`viewBox` だけでも比は正しい**（ブラウザが
+#: そこから導く）。**どちらも無いと 300x150 の既定値**にされ、中身が何であれ
+#: **2:1 で描かれる** —— 絵は出るので画面を見るまで気付けない。ここで弾くのが
+#: 唯一の実効的な場所（描く側からは、本当に 300x150 の絵と区別が付かない）。
+_SVG_SIZED = re.compile(
+    rb"<svg[^>]*?(?:viewBox|width)\s*=", re.IGNORECASE | re.DOTALL
+)
+
+
+def _sniff_map(data: bytes) -> str:
+    """中身から拡張子を決める。読めなければ 400。"""
+    for magic, suffix in _MAP_SNIFF.items():
+        if data.startswith(magic):
+            return suffix
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    head = data[:4096].lstrip()
+    if head.startswith(b"<?xml") or head.startswith(b"<svg") or b"<svg" in head:
+        if not _SVG_SIZED.search(data[:4096]):
+            raise HTTPException(
+                400,
+                "この SVG には大きさが書かれていません"
+                "（width と height、または viewBox を入れてください）。"
+                "無いと縦横比が読めず、図が黙って歪みます。",
+            )
+        return ".svg"
+    raise HTTPException(400, "画像として読めませんでした（PNG / JPEG / GIF / WebP / SVG）")
+
+
+@app.get("/api/maps")
+def list_map_images() -> dict:
+    """置いてある絵の一覧。**辞書の無いスコープは黙って空**（作らない）。
+
+    `/api/graph` の `maps` とは別物 —— あちらは**出ている語が指している絵**で、
+    こちらは**置いてある絵**。使っていない絵を消せるように、管理側はこちらを見る。
+    """
+    out = []
+    for scope in SCOPES:
+        for path in store.list_maps(scope):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            out.append({
+                "name": path.stem,
+                "scope": scope,
+                "suffix": path.suffix.lower(),
+                "bytes": stat.st_size,
+                "url": f"/api/map?scope={scope}&name={quote(path.stem)}&v={int(stat.st_mtime)}",
+            })
+    return {"maps": out, "max_bytes": store.MAP_MAX_BYTES, "can_local": store.local_available()}
+
+
+@app.post("/api/map")
+async def put_map_image(request: Request, name: str, scope: str = GLOBAL_SCOPE) -> dict:
+    """地図の絵を置く / 差し替える。**中身は生のバイト列で受け取る。**
+
+    ``multipart`` にしないのは、送られてくるファイル名を**そもそも受け取らない**
+    ため（顔と同じ形）。ただし**地図は名前が要る**ので、そこだけはクエリで受け、
+    `store.map_path()` が**組み立てた結果が置き場所の中にあることを確かめる**。
+    """
+    if scope not in SCOPES:
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "中身が空です")
+    if len(data) > store.MAP_MAX_BYTES:
+        raise HTTPException(
+            400, f"大きすぎます（{store.MAP_MAX_BYTES // (1024 * 1024)} MB まで）"
+        )
+    target = store.map_path(scope, (name or "").strip(), _sniff_map(data))
+    if target is None:
+        raise HTTPException(400, "その名前では置けません")
+    # **押したときだけディレクトリを作る**（開いただけのフォルダを汚さない）
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    # 別の拡張子の同名を片付ける（残すと「差し替えたのに変わらない」になる）
+    store.clear_other_maps(scope, target.stem, target)
+    return list_map_images()
+
+
+@app.delete("/api/map")
+def delete_map_image(name: str, scope: str = GLOBAL_SCOPE) -> dict:
+    """地図の絵を消す。**エントリの `map` は書き換えない。**
+
+    書き換えて回ると、手で戻したときに繋がらない（関係の転送と同じ考え方）。
+    絵が無い語は地図に出なくなるだけで、**数は図が凡例に出す**。
+    """
+    if scope not in SCOPES:
+        raise HTTPException(400, f"不明な保存先です: {scope}")
+    found = store.map_file(scope, (name or "").strip())
+    if found is not None:
+        found.unlink(missing_ok=True)
+    return list_map_images()
 
 
 @app.post("/api/persona")

@@ -1779,3 +1779,86 @@ class TestTheMapImage:
             "map": "ほんの図", "pin": [0.25],
         })
         assert client.get("/api/graph").json()["nodes"][0]["shape"] is None
+
+
+class TestUploadingAMapImage:
+    """絵を置く / 消す口 (`POST` / `DELETE /api/map`)。
+
+    顔と同じ規則（ファイル名を受け取らない・拡張子は中身から・上限を持つ・
+    別の拡張子を片付ける）に、**名前の検査**が 1 つ増える —— 地図は辞書に数枚
+    あるので「決め打ちの名前」で逃げられない。
+
+    もう 1 つ地図だけのものが **SVG の寸法検査**。`width`/`height` も `viewBox` も
+    無い SVG はブラウザが 300x150 の既定値にするので、**中身が何であれ 2:1 で
+    描かれる**（絵は出るので画面を見るまで気付けない）。**ここが唯一弾ける場所**。
+    """
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+    SVG = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"></svg>'
+    SVG_NO_SIZE = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+
+    def _post(self, client, data, name="ほんの図", scope="global"):
+        return client.post(
+            "/api/map", params={"name": name, "scope": scope}, content=data,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+
+    def test_an_image_can_be_put_and_read_back(self, client):
+        assert self._post(client, self.PNG).status_code == 200
+        res = client.get("/api/map", params={"name": "ほんの図"})
+        assert res.status_code == 200 and res.content == self.PNG
+
+    def test_an_svg_with_a_viewbox_is_accepted(self, client):
+        assert self._post(client, self.SVG).status_code == 200
+        assert client.get("/api/map", params={"name": "ほんの図"}).content == self.SVG
+
+    def test_an_svg_without_a_size_is_refused(self, client):
+        """**絵は出るので、ここで弾かないと黙って 2:1 に歪む。**"""
+        res = self._post(client, self.SVG_NO_SIZE)
+        assert res.status_code == 400
+        assert "大きさ" in res.json()["detail"]
+
+    def test_something_that_is_not_an_image_is_refused(self, client):
+        assert self._post(client, "# ただのテキスト".encode()).status_code == 400
+
+    def test_an_empty_body_is_refused(self, client):
+        assert self._post(client, b"").status_code == 400
+
+    def test_too_big_is_refused(self, client):
+        big = b"\x89PNG\r\n\x1a\n" + b"0" * store.MAP_MAX_BYTES
+        assert self._post(client, big).status_code == 400
+
+    @pytest.mark.parametrize("name", ["../にげる", "ほんの図/../../x", ""])
+    def test_a_name_that_escapes_the_folder_is_refused(self, client, name):
+        assert self._post(client, self.PNG, name=name).status_code == 400
+
+    def test_the_extension_comes_from_the_content_not_the_name(self, client):
+        """名前に拡張子を書いても使わない（名乗りでしかない）。"""
+        assert self._post(client, self.PNG, name="ほんの図.svg").status_code == 200
+        assert [m["suffix"] for m in client.get("/api/maps").json()["maps"]] == [".png"]
+
+    def test_putting_a_second_format_clears_the_first(self, client):
+        """**残すと探索順で決まる絵が出て「差し替えたのに変わらない」になる。**"""
+        self._post(client, self.SVG)
+        self._post(client, self.PNG)
+        maps = client.get("/api/maps").json()["maps"]
+        assert [m["suffix"] for m in maps] == [".png"]
+        assert client.get("/api/map", params={"name": "ほんの図"}).content == self.PNG
+
+    def test_an_image_can_be_deleted_and_the_entry_is_left_alone(self, client):
+        """**エントリの `map` は書き換えない。** 書き換えて回ると手で戻せない。"""
+        self._post(client, self.PNG)
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25, 0.5],
+        })
+        assert client.delete("/api/map", params={"name": "ほんの図"}).json()["maps"] == []
+        assert client.get("/api/map", params={"name": "ほんの図"}).status_code == 404
+        node = client.get("/api/graph").json()["nodes"][0]
+        assert node["map"] == "ほんの図" and node["shape"]["kind"] == "point"
+
+    def test_an_unknown_scope_is_refused(self, client):
+        assert self._post(client, self.PNG, scope="でたらめ").status_code == 400
+        assert client.delete(
+            "/api/map", params={"name": "ほんの図", "scope": "でたらめ"}
+        ).status_code == 400

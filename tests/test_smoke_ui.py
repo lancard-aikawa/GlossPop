@@ -707,6 +707,51 @@ def test_the_map_can_turn_the_names_off(page, server, seeded):
     assert page.locator("svg.rel-map .rel-map-plate").count() == 1
 
 
+def test_a_map_image_can_be_uploaded_and_deleted(page, server, seeded):
+    """絵をブラウザから入れて消せる。
+
+    **絵が 1 枚も無いと段の図に落ちる**ので、そのときも「🖼 絵」は出ていなければ
+    ならない —— 隠すと**最初の 1 枚を入れる道が無くなる**（鶏と卵）。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="あたらしい図", pin=[0.5, 0.4],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    # 絵が無いので段の図に落ちる。**それでもボタンは出ている**
+    page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
+    assert not page.locator("#mapEdit").is_hidden()
+
+    page.click("#mapEdit")
+    page.locator("#mapDialog[open]").wait_for(timeout=10000)
+    page.fill("#mapDialog [data-ref=name]", "あたらしい図")
+    page.set_input_files(
+        "#mapDialog [data-ref=file]",
+        files=[{"name": "m.svg", "mimeType": "image/svg+xml", "buffer": TEST_MAP.encode()}],
+    )
+    page.click("#mapDialog [data-ref=save]")
+    page.locator("#mapDialog .cat-row .map-thumb").first.wait_for(timeout=10000)
+
+    # 閉じると図を取り直し、地図が出せるようになる
+    page.click("#mapDialog [data-ref=close]")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    assert page.locator("svg.rel-map .rel-map-pin").count() == 1
+
+    # 消すと出せなくなる（**辞書は消えない**ので、段の図に落ちるだけ）
+    page.once("dialog", lambda d: d.accept())
+    page.click("#mapEdit")
+    page.locator("#mapDialog[open]").wait_for(timeout=10000)
+    page.click("#mapDialog .cat-row button.ghost")
+    page.locator("#mapDialog .empty").wait_for(timeout=10000)
+    page.click("#mapDialog [data-ref=close]")
+    page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
+    assert len(store.find_by_surface("ジョバンニ")) == 1
+
+
 def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded):
     """座標が 1 つも無ければ段の図に落とすが、**黙って差し替えない。**
 

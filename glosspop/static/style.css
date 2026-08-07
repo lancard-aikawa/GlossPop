@@ -1536,3 +1536,15 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 }
 .side-fold > summary:hover { color: var(--fg); }
 .side-fold[open] > summary { margin-bottom: 6px; }
+
+/* 地図の絵の一覧に出す小さな見本。**入れ物より大きくしない**（1 枚が縦を食うと、
+   数枚あるだけでダイアログがスクロールだらけになる） */
+.map-thumb {
+  width: 56px;
+  height: 40px;
+  object-fit: contain;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex-shrink: 0;
+}

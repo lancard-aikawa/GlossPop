@@ -127,6 +127,57 @@ def map_file(scope: str, name: str) -> Path | None:
     return None
 
 
+#: 受け取れる大きさ。**顔 (2 MB) より大きい** —— 地図は絵として大きく、AI に
+#: 描かせると数 MB になる。上限そのものは要る（辞書のフォルダを埋めさせない）
+MAP_MAX_BYTES = 8 * 1024 * 1024
+
+
+def map_path(scope: str, name: str, suffix: str) -> Path | None:
+    """書き込み先。**置き場所の外に出る名前は通さない**（`map_file` と同じ検査）。
+
+    まだ無くても返す（`persona_dir` と `persona_file` を分けてあるのと同じ形で、
+    こちらは書く側が使う）。
+    """
+    directory = maps_dir(scope)
+    if directory is None or not name or name != Path(name).name:
+        return None
+    if suffix not in MAP_SUFFIXES:
+        return None
+    candidate = directory / f"{name}{suffix}"
+    try:
+        root, found = directory.resolve(), candidate.resolve()
+    except OSError:
+        return None
+    return candidate if root in found.parents else None
+
+
+def list_maps(scope: str) -> list[Path]:
+    """その辞書に置いてある絵。**無い辞書では空**（作らない）。"""
+    directory = maps_dir(scope)
+    if directory is None or not directory.is_dir():
+        return []
+    return sorted(
+        (p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in MAP_SUFFIXES),
+        key=lambda p: p.name,
+    )
+
+
+def clear_other_maps(scope: str, name: str, keep: Path) -> None:
+    """同じ名前で**別の拡張子**の絵を片付ける。
+
+    残すと `map_file()` の探索順で決まる絵が出て、**「差し替えたのに変わらない」**
+    になる（顔の `_clear_personas()` と同じ理由）。
+    """
+    for suffix in MAP_SUFFIXES:
+        other = map_path(scope, name, suffix)
+        if other is None or other == keep:
+            continue
+        try:
+            other.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def local_available() -> bool:
     """ローカル辞書を使えるか。
 

@@ -49,6 +49,9 @@ const TEMPLATE = `
   <!-- どの絵を出すか。**辞書に数枚ある**ので選べないと「ほかに 〇〇 があります」と
        書いておきながら行けない。地図のとき、絵が 2 枚以上あるときだけ出す -->
   <select id="mapPick" class="auto-width" aria-label="地図" hidden></select>
+  <!-- **落ちているときも出す。** 絵が 1 枚も無いと段の図に落ちるので、ここを
+       隠すと「最初の 1 枚を入れる」道が無くなる（鶏と卵になる） -->
+  <button type="button" class="btn" id="mapEdit" hidden title="地図の絵を入れる / 消す">🖼 絵</button>
   <select id="category" class="auto-width" aria-label="カテゴリ"></select>
   <label class="check">
     <input type="checkbox" id="spoilers">
@@ -89,6 +92,37 @@ const TEMPLATE = `
 <p class="graph-detail" id="detail"></p>
 <p class="hint" id="legend"></p>
 
+<!-- 地図の絵を入れる / 消す。**辞書に数枚ある**ので、顔と違って名前と一覧が要る -->
+<dialog class="sheet" id="mapDialog">
+  <div class="edge-editor">
+    <header>
+      <h2>地図の絵</h2>
+      <div class="spacer"></div>
+      <button type="button" class="ghost" data-ref="close" aria-label="閉じる">✕</button>
+    </header>
+    <p class="hint">
+      エントリに <code>map: 名前</code> と <code>pin</code> / <code>path</code> /
+      <code>area</code> を書くと、その絵の上に出ます。
+      <strong>絵には地名を入れないでください</strong> ——
+      辞書の名前と二重になります（入ってしまっている絵は「名前を出す」を外して使います）。
+      AI に描かせるなら <strong>2048px 以上</strong>で。拡大してもボケないのは SVG だけです。
+    </p>
+    <div data-ref="list"></div>
+    <div class="cat-row">
+      <input type="text" data-ref="name" class="cat-row-main"
+             placeholder="絵の名前（例: 桶狭間）">
+      <select data-ref="scope" class="auto-width" aria-label="保存先"></select>
+      <input type="file" data-ref="file"
+             accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml">
+    </div>
+    <footer>
+      <span class="status" data-ref="status"></span>
+      <div class="spacer"></div>
+      <button type="button" class="primary" data-ref="save">入れる</button>
+    </footer>
+  </div>
+</dialog>
+
 <!-- 辺を押すと開く。点検ページと同じで、直すためにページを渡り歩かせない -->
 <dialog class="sheet" id="edgeDialog">
   <div class="edge-editor">
@@ -127,7 +161,7 @@ const TEMPLATE = `
 `;
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
-let mapPick, mapLayers;
+let mapPick, mapLayers, mapEdit, mapDialog;
 let detailNode;
 let modeSelect;
 
@@ -1541,6 +1575,117 @@ function moveCenter(ref) {
 }
 
 /** 受け取ったグラフを描いて、凡例と注意書きを添える。 */
+
+/**
+ * 地図の絵を入れる / 消すダイアログ。
+ *
+ * **顔と違って名前と一覧が要る**（地図は辞書に数枚ある）。一覧は
+ * `/api/maps`（**置いてある絵**）で、`/api/graph` の `maps`（**出ている語が
+ * 指している絵**）とは別物 —— 使っていない絵を消せるようにするため。
+ *
+ * **listener はダイアログを開く前に付ける。** 開いた瞬間から操作できるのに
+ * 読み込みを待ってから付けると、その間の操作が黙って無視される（実際に 2 回踏んだ）。
+ */
+function installMapDialog() {
+  const refs = {};
+  for (const node of mapDialog.querySelectorAll("[data-ref]")) {
+    refs[node.dataset.ref] = node;
+  }
+  const close = () => mapDialog.close();
+  refs.close.addEventListener("click", close);
+  mapEdit.addEventListener("click", () => {
+    paintMapDialog(refs, null);
+    mapDialog.showModal();
+    loadMapDialog(refs);
+  });
+  refs.save.addEventListener("click", () => saveMapImage(refs));
+  mapDialog.addEventListener("close", () => {
+    // 絵が増減したら図も描き直す（サーバへは行き直す —— 一覧が変わっている）
+    if (mapDialogChanged) {
+      mapDialogChanged = false;
+      refresh();
+    }
+  });
+}
+
+let mapDialogChanged = false;
+
+async function loadMapDialog(refs) {
+  setStatus(refs.status, "読み込み中", "busy");
+  try {
+    paintMapDialog(refs, await api("/api/maps"));
+    setStatus(refs.status, "");
+  } catch (err) {
+    setStatus(refs.status, err.message, "error");
+  }
+}
+
+/** 一覧と保存先を描く。**開いた時点で持っているものを描き、届いたら描き直す。** */
+function paintMapDialog(refs, data) {
+  const maps = data?.maps || [];
+  refs.list.replaceChildren(
+    ...(maps.length
+      ? maps.map((m) => el("div", { class: "cat-row" }, [
+        el("img", { src: m.url, alt: "", class: "map-thumb" }),
+        el("span", { class: "cat-row-main", text: `${m.name}（${m.scope === "local" ? "📁 このフォルダ" : "全体"}・${Math.round(m.bytes / 1024)} KB）` }),
+        el("button", {
+          type: "button",
+          class: "ghost",
+          text: "消す",
+          onclick: () => deleteMapImage(refs, m),
+        }),
+      ]))
+      : [el("p", { class: "empty", text: data ? "まだ絵がありません。" : "読み込み中…" })])
+  );
+  const canLocal = data?.can_local !== false;
+  refs.scope.replaceChildren(
+    el("option", { value: "global", text: "全体" }),
+    // **辞書の無いフォルダには置けない**（開いただけのフォルダを汚さない）
+    el("option", { value: "local", text: "📁 このフォルダ", disabled: !canLocal }),
+  );
+}
+
+async function saveMapImage(refs) {
+  const name = refs.name.value.trim();
+  const file = refs.file.files?.[0];
+  if (!name) return setStatus(refs.status, "名前を入れてください", "error");
+  if (!file) return setStatus(refs.status, "画像を選んでください", "error");
+  setStatus(refs.status, "送っています", "busy");
+  try {
+    const url = `/api/map?scope=${encodeURIComponent(refs.scope.value)}`
+      + `&name=${encodeURIComponent(name)}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+    mapDialogChanged = true;
+    refs.name.value = "";
+    refs.file.value = "";
+    paintMapDialog(refs, data);
+    setStatus(refs.status, "入れました");
+  } catch (err) {
+    setStatus(refs.status, err.message, "error");
+  }
+}
+
+async function deleteMapImage(refs, item) {
+  // **エントリの map は書き換えない**ので、消すと出なくなるだけ。そう伝える
+  if (!confirm(`「${item.name}」を消します。この絵に置いていた語は地図に出なくなります（辞書は消えません）。よろしいですか？`)) return;
+  setStatus(refs.status, "消しています", "busy");
+  try {
+    const url = `/api/map?scope=${encodeURIComponent(item.scope)}`
+      + `&name=${encodeURIComponent(item.name)}`;
+    mapDialogChanged = true;
+    paintMapDialog(refs, await api(url, { method: "DELETE" }));
+    setStatus(refs.status, "消しました");
+  } catch (err) {
+    setStatus(refs.status, err.message, "error");
+  }
+}
+
 /** 覚えている「外したもの」を読む。読めなければ空（＝全部出す側に倒す）。 */
 function rememberedHidden() {
   try {
@@ -1580,6 +1725,7 @@ function saveHidden() {
  */
 function paintMapLayers(drawn) {
   const items = drawn.items || [];
+  mapEdit.hidden = mode !== "map";
   mapLayers.hidden = mode !== "map" || !items.length;
   if (mapLayers.hidden) return;
   const off = mapHidden.get(mapName) || new Set();
@@ -1757,6 +1903,9 @@ export async function mount(host, { search = "", embed = false } = {}) {
   modeSelect = host.querySelector("#mode");
   mapPick = host.querySelector("#mapPick");
   mapLayers = host.querySelector("#mapLayers");
+  mapEdit = host.querySelector("#mapEdit");
+  mapDialog = host.querySelector("#mapDialog");
+  installMapDialog();
   detailNode = host.querySelector("#detail");
   notes = host.querySelector("#notes");
   legend = host.querySelector("#legend");
