@@ -2240,6 +2240,28 @@ def test_a_reading_can_be_written_where_it_is_missing(page, server, seeded):
     assert store.find_by_surface("活版所")[0].reading == "かっぱんじょ"
 
 
+def test_the_booklet_can_be_exported(page, server, seeded):
+    """冊子。**zip とは別物**（あちらはデータ、こちらは読んで渡すため）。
+
+    押す前に**何が出るのか**が分かること（形式と索引の有無だけを聞く）と、
+    ダウンロードが本当に落ちてくることまで見る。
+    """
+    open_glossary(page, server)
+    page.click("#booklet")
+    page.locator("#bookletDialog[open]").wait_for(timeout=10000)
+
+    with page.expect_download(timeout=15000) as caught:
+        page.click("[data-ref=bkGo]")
+    download = caught.value
+    assert download.suggested_filename.endswith(".md")
+
+    path = pathlib.Path(download.path())
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("# 用語辞書")
+    # 五十音で並ぶ（画面の束ね方と同じ規則）
+    assert "## 目次" in text and "### ジョバンニ" in text
+
+
 def test_the_index_shows_where_each_term_appears(page, server, seeded):
     """索引。**辞書の側から本文を見る唯一の入口**。
 

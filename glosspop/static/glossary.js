@@ -28,11 +28,49 @@ const TEMPLATE = `
   <!-- 索引（語がどこに何回出てくるか）。**辞書の側から本文を見る唯一の入口**
        で、いちばん見たいのは「登録したのに 1 度も出てこない語」のほう -->
   <a class="btn" href="/occurrences" title="登録した語が本文のどこに出てくるかを並べる">📇 索引</a>
+  <!-- 冊子。zip は**データの持ち運び**で、**人に渡して読ませる形**が無かった -->
+  <button type="button" id="booklet" title="辞書を 1 枚にまとめて書き出す（読む用）">📖 冊子</button>
   <button type="button" id="manageCats">カテゴリ管理</button>
   <button type="button" class="primary" id="add">＋ 新規登録</button>
 </div>
 
 <div id="list"></div>
+
+<!-- 冊子の書き出し。**形式と索引の有無だけ**を聞く（それ以上を聞くと、
+     押す前に何が出るのか分からなくなる） -->
+<dialog class="sheet" id="bookletDialog">
+  <div class="edge-editor">
+    <header>
+      <h2>冊子として書き出す</h2>
+      <div class="spacer"></div>
+      <button type="button" class="ghost" data-ref="bkClose" aria-label="閉じる">✕</button>
+    </header>
+    <p class="hint">
+      辞書ぜんぶを<strong>五十音順の 1 枚</strong>にします（zip とは別物 ——
+      あちらはデータの持ち運び、これは読んで渡すため）。
+      Markdown は GitHub やエディタで、HTML はそのまま印刷して読めます。
+    </p>
+    <div class="cat-row">
+      <select data-ref="bkFormat" class="auto-width" aria-label="形式">
+        <option value="md">Markdown（GitHub・エディタ）</option>
+        <option value="html">HTML（印刷・配る）</option>
+      </select>
+      <label class="check" data-ref="bkIndexBox">
+        <input type="checkbox" data-ref="bkIndex">
+        <span>巻末索引も入れる</span>
+      </label>
+    </div>
+    <p class="hint">
+      索引を入れると、<strong>開いているフォルダの本文を読みます</strong>
+      （語がどこに出てくるかを巻末に並べます）。そのぶん時間がかかります。
+    </p>
+    <footer>
+      <span class="status" data-ref="bkStatus"></span>
+      <div class="spacer"></div>
+      <button type="button" class="primary" data-ref="bkGo">⬇ 書き出す</button>
+    </footer>
+  </div>
+</dialog>
 
 <dialog class="sheet" id="catDialog">
   <div class="cat-manager">
@@ -303,6 +341,38 @@ function readingForm(items) {
       status,
     ]),
   ]);
+}
+
+/**
+ * 冊子を書き出す。**保存はブラウザに任せる**（サーバが `Content-Disposition` を
+ * 付けて返すので、ここは窓を開けるだけ）。
+ *
+ * 索引を入れると本文を読むので**待たされる** —— 押したあと何も起きないように
+ * 見えないよう、状況を出してから開く。
+ */
+function installBooklet() {
+  const dialog = $("bookletDialog");
+  const ref = (name) => dialog.querySelector(`[data-ref=${name}]`);
+  // **listener は開く前に付ける**（開いた瞬間の操作を落とさない）
+  ref("bkClose").addEventListener("click", () => dialog.close());
+  ref("bkGo").addEventListener("click", () => {
+    const query = new URLSearchParams({
+      fmt: ref("bkFormat").value,
+      index: ref("bkIndex").checked ? "true" : "false",
+    });
+    setStatus(
+      ref("bkStatus"),
+      ref("bkIndex").checked ? "本文を読んでいます（少し待ちます）" : "書き出しています",
+      "busy",
+    );
+    // 別窓ではなく同じ窓の遷移で落とす（ダウンロードなのでページは変わらない）
+    location.href = `/api/booklet?${query}`;
+    setTimeout(() => setStatus(ref("bkStatus"), "書き出しました"), 1200);
+  });
+  $("booklet").addEventListener("click", () => {
+    setStatus(ref("bkStatus"), "");
+    dialog.showModal();
+  });
 }
 
 /** 五十音で束ねて描く。**カテゴリはカードに出す**（見出しがカテゴリでなくなるので）。 */
@@ -719,6 +789,7 @@ export async function mount(container, { search = "" } = {}) {
     }
     if (lastEntries) paint(lastEntries);
   });
+  installBooklet();
   $("add").addEventListener("click", onAdd);
   $("manageCats").addEventListener("click", onManageCats);
   catDialog.querySelector("[data-ref=catAdd]").addEventListener("click", addCategory);

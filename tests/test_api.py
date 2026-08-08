@@ -457,6 +457,56 @@ def test_searching_by_entry_returns_a_whole_sentence_for_examples(client):
     assert hit["sentence"] == "PUT は冪等なのでリトライしても安全。"
 
 
+class TestTheBooklet:
+    """辞書を読ませる 1 枚にする口 (`/api/booklet`)。**zip とは別物。**
+
+    あちらはデータの持ち運び、こちらは**人に渡して読ませる形**。中身を作るのは
+    `core.booklet` 1 か所で、**HTML はその Markdown を描いたもの**（2 通りに
+    書くと片方だけ古くなる）。
+    """
+
+    def _entry(self, client, term, **kwargs):
+        return client.post("/api/entries", json={
+            "term": term, "category": "場所", "definition": "本文。", **kwargs,
+        }).json()["ref"]
+
+    def test_markdown_comes_back_as_a_download(self, client):
+        self._entry(client, "活版所", reading="かっぱんじょ")
+        res = client.get("/api/booklet")
+        assert res.status_code == 200
+        assert res.headers["content-type"].startswith("text/markdown")
+        assert "attachment" in res.headers["content-disposition"]
+        body = res.content.decode("utf-8")
+        assert body.startswith("# 用語辞書") and "### 活版所（かっぱんじょ）" in body
+
+    def test_html_is_the_same_markdown_drawn(self, client):
+        self._entry(client, "活版所", reading="かっぱんじょ")
+        res = client.get("/api/booklet", params={"fmt": "html"})
+        assert res.headers["content-type"].startswith("text/html")
+        body = res.content.decode("utf-8")
+        # 見出しには id が付く（`render` の設定。ここは中身が出ていることだけ見る）
+        assert ">活版所（かっぱんじょ）</h3>" in body
+        assert "<title>用語辞書</title>" in body
+        # **印刷して読めること**だけを狙う最小の見た目を敷く（アプリの CSS は持ち出さない）
+        assert "@media print" in body
+
+    def test_the_index_is_opt_in(self, client):
+        """索引は**本文を読む**ので、頼まれたときだけ入れる。"""
+        self._entry(client, "活版所", reading="かっぱんじょ")
+        (config.content_dir() / "一巻.txt").write_text("活版所にいた。\n", encoding="utf-8")
+
+        plain = client.get("/api/booklet").content.decode("utf-8")
+        assert "## 索引" not in plain
+
+        withindex = client.get(
+            "/api/booklet", params={"index": "true"}
+        ).content.decode("utf-8")
+        assert "## 索引" in withindex and "一巻.txt" in withindex
+
+    def test_an_unknown_format_is_refused(self, client):
+        assert client.get("/api/booklet", params={"fmt": "pdf"}).status_code == 400
+
+
 class TestWritingReadings:
     """読みだけをまとめて書き込む口 (`/api/readings`)。
 

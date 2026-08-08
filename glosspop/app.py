@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -30,7 +31,7 @@ from . import (
     updates,
     watchdog,
 )
-from .core import render, relations, documents, timeline, doctor, imagefmt
+from .core import render, relations, documents, timeline, doctor, imagefmt, booklet
 from .core.linker import Linker, entry_url
 from .core.models import (
     GLOBAL_SCOPE,
@@ -1862,6 +1863,13 @@ def build_occurrence_index() -> dict:
     「1 度も出てこない語」と「読んでいないだけの語」が混ざる —— この索引は
     まさにその差を見せるためのものなので、混ざったら意味が無い。
     """
+    return _occurrence_index()
+
+
+def _occurrence_index() -> dict:
+    """索引の中身。**冊子 (`/api/booklet`) と口を分けない** —— 2 か所で数えると、
+    画面の索引と冊子の索引が食い違う（同じ辞書なのに違うことを言う図と同じ話）。
+    """
     base = config.content_dir()
     linker = _linker()
     entries = {e.ref: e for e in store.load_all()}
@@ -1924,6 +1932,82 @@ def build_occurrence_index() -> dict:
         # 事後版で、この索引でいちばん見たい数（打ち切っているときは当てにならない）
         "unseen": sum(1 for t in terms if not t["total"]),
     }
+
+
+#: 冊子の HTML に敷く最小限の見た目。**アプリの CSS を持ち出さない** ——
+#: 外で開く 1 枚なので、変数もクラスも引けない（図の書き出しで計算済みの値を
+#: 焼き込んでいるのと同じ理由）。**印刷したときに読めること**だけを狙う
+_BOOKLET_CSS = """
+:root { color-scheme: light; }
+body {
+  max-width: 46rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.75;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+  color: #1a1a18; background: #fff;
+}
+h1 { border-bottom: 2px solid #1a1a18; padding-bottom: .3rem; }
+h2 { margin-top: 2.5rem; border-bottom: 1px solid #ccc; padding-bottom: .2rem; }
+h3 { margin-top: 1.8rem; }
+blockquote { margin: .6rem 0; padding-left: .8rem; border-left: 3px solid #ccc; color: #555; }
+ul { padding-left: 1.2rem; }
+@media print {
+  body { margin: 0; max-width: none; font-size: 10.5pt; }
+  h2 { break-before: page; }
+  h3 { break-inside: avoid; }
+}
+"""
+
+
+@app.get("/api/booklet")
+def export_booklet(fmt: str = "md", index: bool = False) -> Response:
+    """辞書を**読ませる 1 枚**にして返す（冊子）。
+
+    zip は**データの持ち運び**で、**人に渡して読ませる形**が無かった。
+    中身を作るのは `core.booklet` 1 か所で、**HTML はその Markdown を描いたもの**
+    （2 通りに書くと、片方だけ古くなる）。
+
+    ``index=true`` のときは巻末索引も入れる —— **本文を読む**ので、そのぶん
+    重くなるし、開いているフォルダに依る。だから既定では入れない。
+    """
+    if fmt not in ("md", "html"):
+        raise HTTPException(400, f"知らない形式です: {fmt}")
+
+    places: list[dict] | None = None
+    if index:
+        # **数える口は 1 つ**（画面の索引と食い違わせない）
+        places = _occurrence_index()["terms"]
+
+    text = booklet.build(
+        store.load_all(),
+        title="用語辞書",
+        generated=datetime.now().strftime("%Y-%m-%d"),
+        occurrences=places,
+    )
+    # **ファイル名は ASCII だけ。** `Content-Disposition` は latin-1 しか通らない
+    # ので、日本語を載せるとその場で落ちる（zip の `export_name()` が
+    # カテゴリ名を入れないのと同じ理由 —— 実際にここで踏んだ）。
+    # 見出し（`# 用語辞書`）は中身なので日本語のまま
+    name = f"glosspop-booklet-{datetime.now().strftime('%Y%m%d')}"
+    if fmt == "md":
+        body = text.encode("utf-8")
+        media = "text/markdown; charset=utf-8"
+    else:
+        # **同じ Markdown を描く。** 生 HTML は通さない（`md_to_html` の既定）
+        body = (
+            "<!DOCTYPE html>\n<html lang=\"ja\">\n<head>\n<meta charset=\"utf-8\">\n"
+            f"<title>用語辞書</title>\n<style>{_BOOKLET_CSS}</style>\n</head>\n<body>\n"
+            f"{render.md_to_html(text)}\n</body>\n</html>\n"
+        ).encode("utf-8")
+        media = "text/html; charset=utf-8"
+    return Response(
+        content=body,
+        media_type=media,
+        headers={
+            # **名前に用語やカテゴリを入れない**（空白も日本語も入りうるので、
+            # 経路ごとに化ける。zip の書き出しと同じ扱い）
+            "Content-Disposition": f'attachment; filename="{name}.{fmt}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @app.get("/api/content/{rel:path}")

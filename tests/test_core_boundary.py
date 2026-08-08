@@ -71,6 +71,7 @@ def test_core_has_the_modules_we_expect():
     """うっかり増減したら気付けるように、顔ぶれを固定しておく。"""
     assert _core_modules() == [
         "archivefmt",
+        "booklet",
         "doctor",
         "documents",
         "entryfile",
