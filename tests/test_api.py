@@ -457,6 +457,87 @@ def test_searching_by_entry_returns_a_whole_sentence_for_examples(client):
     assert hit["sentence"] == "PUT は冪等なのでリトライしても安全。"
 
 
+class TestTheOccurrenceIndex:
+    """巻末索引 (`/api/occurrences`)。**語の側から本文を並べる。**
+
+    用語ページの「この語が出てくる文書」は 1 語ずつで、辞書を通して見る道が
+    無かった。いちばん見たいのは逆側 —— **登録したのに本文に 1 度も出てこない語**
+    （「登録したのにリンクにならない」の事後版）。
+
+    **索引は持たない**（横断検索と同じで、その場で読む）ので、**打ち切りは必ず
+    返す** —— 「出てこない」と「読んでいないだけ」が混ざると、この索引を見る
+    意味そのものが無くなる。
+    """
+
+    def _put(self, client, term, **kwargs):
+        return client.post("/api/entries", json={
+            "term": term, "category": "登場人物", "definition": "説明。", **kwargs,
+        }).json()["ref"]
+
+    def test_it_counts_where_each_term_appears(self, client):
+        self._put(client, "ジョバンニ")
+        self._put(client, "カムパネルラ")
+        base = config.content_dir()
+        (base / "一巻.txt").write_text(
+            "ジョバンニは活版所にいた。\n\nカムパネルラは黙っていた。\n", encoding="utf-8")
+        (base / "二巻.txt").write_text(
+            "その夜、ジョバンニは丘へ行った。\nジョバンニは走った。\n", encoding="utf-8")
+
+        body = client.get("/api/occurrences").json()
+        terms = {t["term"]: t for t in body["terms"]}
+        assert terms["ジョバンニ"]["total"] == 3
+        # 多く出てくる文書ほど上。位置は初出（章名 / p.42 / L.42 と同じ言い方）
+        assert [f["path"] for f in terms["ジョバンニ"]["files"]] == ["二巻.txt", "一巻.txt"]
+        assert terms["ジョバンニ"]["files"][0]["count"] == 2
+        assert terms["ジョバンニ"]["files"][0]["first"] == "L.1"
+        assert terms["カムパネルラ"]["total"] == 1
+        assert body["files_scanned"] == 2 and not body["files_truncated"]
+
+    def test_a_term_that_never_appears_is_the_point(self, client):
+        """**登録したのに本文に出てこない語**を数えて返す（この索引の主眼）。"""
+        self._put(client, "ジョバンニ")
+        self._put(client, "ザネリ")
+        (config.content_dir() / "一巻.txt").write_text("ジョバンニは走った。\n", encoding="utf-8")
+
+        body = client.get("/api/occurrences").json()
+        terms = {t["term"]: t for t in body["terms"]}
+        assert terms["ザネリ"]["total"] == 0 and terms["ザネリ"]["files"] == []
+        assert body["unseen"] == 1 and body["checked"] == 2
+        # 出てくる語が上（同数なら読み → ref。並びを決め切る）
+        assert body["terms"][0]["term"] == "ジョバンニ"
+
+    def test_it_uses_the_auto_link_rules(self, client):
+        """**素の部分一致にしない。** `API` が `rapid` に当たると、
+        本文でリンクにならない語を索引に載せることになる。別名も一緒に数える。
+        """
+        self._put(client, "API", aliases=["エーピーアイ"])
+        (config.content_dir() / "a.md").write_text(
+            "rapid な話。API を使う。エーピーアイとも言う。\n", encoding="utf-8")
+
+        terms = {t["term"]: t for t in client.get("/api/occurrences").json()["terms"]}
+        assert terms["API"]["total"] == 2          # rapid は数えない、別名は数える
+
+    def test_an_unreadable_file_is_reported_not_swallowed(self, client):
+        """読めない文書があること自体を隠さない（「無かった」ではない）。"""
+        self._put(client, "ジョバンニ")
+        (config.content_dir() / "壊れた.epub").write_bytes(b"not a zip")
+        body = client.get("/api/occurrences").json()
+        assert [s["path"] for s in body["skipped"]] == ["壊れた.epub"]
+
+    def test_the_files_of_one_term_are_capped_and_counted(self, client):
+        """1 語が多くの文書に出るとき、並べる数は切るが**数は返す**。"""
+        from glosspop import app as app_module
+
+        self._put(client, "ジョバンニ")
+        base = config.content_dir()
+        for i in range(app_module.MAX_INDEX_FILES_PER_TERM + 3):
+            (base / f"{i:02d}.txt").write_text("ジョバンニ。\n", encoding="utf-8")
+
+        item = client.get("/api/occurrences").json()["terms"][0]
+        assert len(item["files"]) == app_module.MAX_INDEX_FILES_PER_TERM
+        assert item["more_files"] == 3
+
+
 def test_searching_by_an_unknown_entry_is_404(client):
     assert client.get("/api/content-search", params={"ref": "無い/語"}).status_code == 404
 

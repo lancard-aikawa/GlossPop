@@ -19,6 +19,9 @@ const TEMPLATE = `
     <option value="">すべてのタグ</option>
   </select>
   <span class="spacer"></span>
+  <!-- 索引（語がどこに何回出てくるか）。**辞書の側から本文を見る唯一の入口**
+       で、いちばん見たいのは「登録したのに 1 度も出てこない語」のほう -->
+  <a class="btn" href="/occurrences" title="登録した語が本文のどこに出てくるかを並べる">📇 索引</a>
   <button type="button" id="manageCats">カテゴリ管理</button>
   <button type="button" class="primary" id="add">＋ 新規登録</button>
 </div>

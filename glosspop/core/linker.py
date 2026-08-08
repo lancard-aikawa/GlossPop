@@ -359,6 +359,26 @@ class Linker:
             out.setdefault(entry.ref, start)
         return out
 
+    def occurrences(self, text: str) -> dict[str, dict[str, int]]:
+        """``ref`` → ``{"count": 出てくる回数, "first": 最初の文字位置}``。
+
+        索引（語がどこに何回出てくるか）が使う。**1 回の走査で全語ぶん**返すので、
+        語ごとに探し直さない —— 3000 語の辞書で語の数だけ本文を読み直すのは
+        現実的でない（`_image_index()` が 1 回の走査で URL を作るのと同じ判断）。
+
+        当たり方は `entries_in()` / `first_positions()` とまったく同じ
+        （同じ `_hits()` から出す）。**別に照合を書かないこと** —— 書くと
+        「本文でリンクにならない語を索引に載せる」ようになる。
+        """
+        out: dict[str, dict[str, int]] = {}
+        for start, entry in self._hits(text):
+            found = out.get(entry.ref)
+            if found is None:
+                out[entry.ref] = {"count": 1, "first": start}
+            else:
+                found["count"] += 1
+        return out
+
     def annotate(
         self,
         html: str,

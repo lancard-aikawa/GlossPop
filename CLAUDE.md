@@ -1284,6 +1284,23 @@ renderer / gpu）も数に入るので、ブラウザ本体だけを見ること
 `API` が `rapid` に当たり、**リンクにならない語を「出てくる」と言う**ことになる。
 `Linker.finditer()` が `annotate()` と同じ正規表現を素のテキストに当てる口。
 
+**索引 (`/api/occurrences`) も索引を持たない。** 横断検索とまったく同じ約束で、
+開くたびに本文を読み直す（`read_cached()` が変わっていないものを読み飛ばす）。
+守ること 4 つ:
+
+- **1 文書 1 走査で全語ぶん取る**（`Linker.occurrences()`）。語ごとに読み直すと
+  3000 語で本文を 3000 回読むことになる。**照合は `_hits()` 1 か所から**
+  （`entries_in` / `first_positions` と同じ。別に書くと**リンクにならない語を
+  索引に載せる**）
+- **打ち切りは必ず返す**（`files_truncated` / `skipped`）。この索引の主眼は
+  **1 度も出てこない語**なので、「読んでいないだけ」と混ざると**見る意味が消える**
+  —— 打ち切ったときは画面にもそう書く
+- **点検に混ぜない。** `doctor` は `core` にあって文書を読まないし、全体の辞書では
+  「本文に出てこない」は正常（開いているフォルダと関係の無い語がある）。
+  **警告ではなく情報**として索引に出す
+- **1 語あたりの文書は切ってよいが、切った数を返す**（`more_files`）。
+  長編 1 冊に何十回出る語で一覧が縦に伸びるのを防ぐ
+
 **使用例に貼る文は文字数ではなく文の切れ目で採る**（`_sentence`）。抜粋
 （`_snippet`）を貼ると「…」つきの半端な文が辞書に溜まる。
 
@@ -1465,7 +1482,7 @@ script があり、localStorage を読んで `data-theme` と `data-fontsize` �
 モジュールの読み込みを待って当てると、暗いテーマのときページを開くたびに一瞬白く
 光り、大きさを変えていると一度小さい字で描いてから飛ぶ。キー名も値も `base.js` の
 `THEME_KEY` / `FONT_KEY` と同じものを書いてあるので、変えるときは両方直すこと。
-**写しは 5 つの HTML 全部にある** —— 1 つ直し忘れると、そのページだけ効かない
+**写しは 6 つの HTML 全部にある** —— 1 つ直し忘れると、そのページだけ効かない
 （スモークテストが開き直して見ている）。
 
 **文字の大きさの正は `--fs-base` 1 つ**（`style.css` の `:root`）。ほかの字は
@@ -1630,7 +1647,7 @@ Playwright を動かして確かめる。
 | 抽出の種別 (`EXTRACT_KINDS`) | MANUAL の「まとめて登録する」の表 |
 | 統合で選ばせる項目 (`merge.CONFLICT_FIELDS`) | `merge.js` の `FIELD_LABELS`（載っていない項目は英語の名前のまま画面に出る） |
 | 設定に足した項目 | MANUAL の「設定」、`settings.js` の `PATH_LABELS`（場所を足したとき） |
-| 描画前に当てる設定（テーマ・文字の大きさ） | `base.js` のキーと値、**5 つの HTML の head のインライン script**（写しなので全部） |
+| 描画前に当てる設定（テーマ・文字の大きさ） | `base.js` のキーと値、**6 つの HTML の head のインライン script**（写しなので全部） |
 | 文字の大きさ（`--fs-base` と段階） | `style.css` の `:root`、`settings.js` の `<option>`、MANUAL の「文字の大きさ」の表。**周りの px は触らない** |
 | ビューアの左パネルの構成 | MANUAL の「左パネルの構成」（開き方の一覧・横断検索・フォルダを開く の各節も参照している）、`tests/test_smoke_ui.py` の `open_other_source()` / `open_content_search()` |
 | ペルソナの顔 (`config.PERSONA_*` / `core.imagefmt`) | MANUAL の「語り手の顔」、`samples/README.md`、`docs/voices.md`、`ai-style.js` の `accept`。**画像を配る口は `GET /api/persona`、受け取る口は `POST /api/persona` の 1 つずつだけ** |
@@ -1639,7 +1656,7 @@ Playwright を動かして確かめる。
 | 更新まわりの挙動 | MANUAL の「更新のしかた」、`packaging/release-intro.md` の「更新するとき」 |
 | 自動リンクの規則 | MANUAL.md の「自動リンクの規則」、`content/ようこそ.md` |
 | カテゴリ名の制約 | `models.normalize_category()`、MANUAL、SKILL.md、`ai.build_prompt()` |
-| 画面 (`glossary` / `entry` / `graph` / `doctor`) の中身 | そのモジュールの `TEMPLATE`（**HTML 側には写しを置かない**）。新しい画面を足したら `overlay.js` の `ROUTES` |
+| 画面 (`glossary` / `entry` / `graph` / `doctor` / `occurrences`) の中身 | そのモジュールの `TEMPLATE`（**HTML 側には写しを置かない**）。新しい画面を足したら `overlay.js` の `ROUTES` と、殻の HTML（head のインライン script の写しも） |
 | 読書位置の扱い | `progress.js`（再開する位置）と `reading.js`（読んだところ）は**別の問い**。混ぜないこと |
 | 相関図の形の規則（段・孤立語・並び・帯の折り返し） | `graph-model.js`（**1 つの見せ方だけに写しを作らない** —— `graph.js` / `fabric.js` / `matrix.js` / `ego.js` / `timeline.js` が同じものを読む） |
 | 地図の形 (`pin` / `line` / `area`) | `models.EntryBase` と `map_shape`、`entryfile.FM_KEYS`、`relations._node`、`app.put_map_shape` の `kinds`、`map.js` の `LEAST` / `KIND_WORDS` / `fitToKind`、`entry.js` の `mapLink()`、`doctor` の地図の 4 つ、MANUAL の「地図に置く」と点検の表、SKILL.md の表。**`at` と `path` は名前に使えない**（時系列の文字位置・`_entry_payload` の保存先とぶつかる） |

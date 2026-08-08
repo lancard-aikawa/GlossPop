@@ -1949,6 +1949,8 @@ def test_everything_opens_over_the_viewer_without_leaving_it(page, server, seede
 
     for nav, ready in [
         ('.topnav a:has-text("辞書")', ".overlay .card"),
+        # 索引は辞書のツールバーから（辞書の側から本文を見る入口）
+        ('.overlay a:has-text("索引")', ".overlay [data-ref=list] .rel-row"),
         ('.topnav a:has-text("相関図")', ".overlay svg.rel-graph"),
         ('.overlay a:has-text("点検")', ".overlay .entry-head h1"),
     ]:
@@ -2169,6 +2171,40 @@ def test_a_stale_graph_refuses_to_write(page, server, seeded):
     assert "図が古くなっています" in status.inner_text()
     # ザネリ側は書き換わっていない
     assert [(r.to, r.label) for r in store.get("登場人物/ジョバンニ").relations] == [("ザネリ", "同級生")]
+
+
+def test_the_index_shows_where_each_term_appears(page, server, seeded):
+    """索引。**辞書の側から本文を見る唯一の入口**。
+
+    いちばん見たいのは「登録したのに本文に 1 度も出てこない語」で、それは
+    「登録したのにリンクにならない」の事後版。絞り込みと並べ替えは**サーバへ
+    行き直さない**（本文を読む口なので、押すたびに走らせない）。
+    """
+    store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+
+    page.goto(f"{server}/occurrences")
+    page.locator("[data-ref=list] .rel-row").first.wait_for(timeout=15000)
+    rows = page.locator("[data-ref=list] .rel-row")
+    assert rows.count() == 3
+    # 出てくる語が上、出てこない語は下（同数のときは読み → ref で決め切る）
+    assert "ザネリ" in rows.last.inner_text()
+    # 回数と、出てくる文書（初出の位置つき）が並ぶ
+    seen = rows.filter(has_text="ジョバンニ").first.inner_text()
+    assert "1 回" in seen and "銀河.md" in seen
+    assert "3 語 / 1 文書" in (page.locator("[data-ref=status]").inner_text() or "")
+    assert "1 語は出てきません" in (page.locator("[data-ref=status]").inner_text() or "")
+
+    # **出てこない語だけ**に絞れる（サーバへは行き直さない）
+    page.check("[data-ref=unseen]")
+    page.wait_for_timeout(200)
+    assert page.locator("[data-ref=list] .rel-row").count() == 1
+    assert "ザネリ" in page.locator("[data-ref=list]").inner_text()
+
+    # 文書を押すとビューアで開いて初出へ飛ぶ（用語ページの「初出へ」と同じ形）
+    page.uncheck("[data-ref=unseen]")
+    page.wait_for_timeout(200)
+    href = page.locator("[data-ref=list] a.chip", has_text="銀河.md").first.get_attribute("href")
+    assert href.startswith("/?open=") and "term=" in href
 
 
 def test_the_doctor_is_quiet_then_reports_a_broken_reference(page, server, seeded):

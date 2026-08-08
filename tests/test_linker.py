@@ -171,6 +171,38 @@ class TestEntriesIn:
         assert Linker([mk("あ", slug="a")]).entries_in("") == []
 
 
+class TestOccurrences:
+    """語ごとの**回数と初出**（索引が使う）。当たり方は `entries_in()` と同じ。"""
+
+    def test_it_counts_and_remembers_the_first_place(self):
+        entries = [mk("あ", slug="a"), mk("い", slug="i")]
+        found = Linker(entries).occurrences("い あ い あ い")
+        assert found["テスト/a"]["count"] == 2
+        assert found["テスト/i"] == {"count": 3, "first": 0}
+
+    def test_one_pass_returns_every_term(self):
+        """**語の数だけ本文を読み直さない**（3000 語の辞書では現実的でない）。"""
+        entries = [mk(name, slug=name) for name in ("あ", "い", "う")]
+        assert set(Linker(entries).occurrences("あいう")) == {
+            "テスト/あ", "テスト/い", "テスト/う",
+        }
+
+    def test_it_uses_the_same_rule_as_the_links(self):
+        """索引に載る語と、本文でリンクになる語は必ず一致する。"""
+        entries = [mk("API", slug="api")]
+        assert Linker(entries).occurrences("rapid development") == {}
+        assert Linker(entries).occurrences("the API here")["テスト/api"]["count"] == 1
+
+    def test_an_alias_counts_as_the_entry(self):
+        entry = mk("冪等", aliases=["idempotent"], slug="idempotent")
+        found = Linker([entry]).occurrences("冪等 は idempotent とも書く")
+        assert found["テスト/idempotent"]["count"] == 2
+
+    def test_empty_glossary_and_empty_text(self):
+        assert Linker([]).occurrences("なにもない") == {}
+        assert Linker([mk("あ", slug="a")]).occurrences("") == {}
+
+
 class TestAcrossInlineMarkup:
     """強調などで語が分断されていても、またいで一致させる。"""
 

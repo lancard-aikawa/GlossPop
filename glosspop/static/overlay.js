@@ -44,6 +44,14 @@ const ROUTES = [
     title: "点検",
     mount: (mod, host) => mod.mount(host),
   },
+  {
+    // 索引。**`/index` にしない**（ビューアの殻が `index.html` なので紛れる）
+    match: /^\/occurrences\/?$/,
+    load: () => import("./occurrences.js"),
+    nav: "/glossary",
+    title: "索引",
+    mount: (mod, host) => mod.mount(host),
+  },
 ];
 
 function routeFor(url) {

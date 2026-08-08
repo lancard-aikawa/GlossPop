@@ -517,6 +517,13 @@ def page_doctor() -> FileResponse:
     return _page("doctor.html")
 
 
+#: 索引のページ。**`/index` にしない** —— ビューアの殻が `index.html` なので、
+#: 名前が 1 文字も違わないものが 2 つ並ぶ（どちらを直すのか毎回迷う）
+@app.get("/occurrences", include_in_schema=False)
+def page_occurrences() -> FileResponse:
+    return _page("occurrences.html")
+
+
 @app.get("/glossary/{ref:path}", include_in_schema=False)
 def page_entry(ref: str) -> FileResponse:
     return _page("entry.html")
@@ -1718,6 +1725,91 @@ def search_content(q: str = "", ref: str = "") -> dict:
         "total_hits": hit_count,
         "results": results,
         "skipped": skipped,
+    }
+
+
+#: 索引で 1 語につき並べる文書の数。**多いほうから**採って、残りは数で返す
+#: （長編 1 冊の中に何十回出る語で、一覧が縦に伸びるのを防ぐ）
+MAX_INDEX_FILES_PER_TERM = 12
+
+
+@app.get("/api/occurrences")
+def build_occurrence_index() -> dict:
+    """**巻末索引**。開いているフォルダの本文を読み、語ごとに出現をまとめる。
+
+    用語ページの「この語が出てくる文書」は 1 語ずつだが、こちらは**辞書の側から
+    全部**を並べる。**1 文書につき 1 回の走査で全語ぶん**取れる（`Linker.occurrences()`）
+    ので、語の数だけ読み直すことはしない。
+
+    **索引は持たない。** 横断検索と同じで、その場で読んで返すだけ —— 保存すると
+    外のエディタで書き換えられた本文とずれ、**取りこぼしを「その語は無かった」と
+    区別できなくなる**。読み直し自体は `read_cached()` が面倒を見る。
+
+    **打ち切りは必ず返す**（`files_truncated` / `skipped`）。黙って切ると、
+    「1 度も出てこない語」と「読んでいないだけの語」が混ざる —— この索引は
+    まさにその差を見せるためのものなので、混ざったら意味が無い。
+    """
+    base = config.content_dir()
+    linker = _linker()
+    entries = {e.ref: e for e in store.load_all()}
+    found: dict[str, dict] = {}
+    skipped: list[dict] = []
+    scanned = 0
+    files_truncated = False
+
+    if base.exists():
+        for path in _iter_content_files(base):
+            if scanned >= MAX_SEARCH_FILES:
+                files_truncated = True
+                break
+            scanned += 1
+            rel = path.relative_to(base).as_posix()
+            try:
+                doc = documents.read_cached(path)
+            except (documents.DocumentError, OSError) as exc:
+                # 読めないファイルがあること自体を隠さない（「無かった」ではない）
+                skipped.append({"path": rel, "reason": str(exc)})
+                continue
+            for ref, hit in linker.occurrences(doc.plain).items():
+                place = found.setdefault(ref, {"total": 0, "files": []})
+                place["total"] += hit["count"]
+                place["files"].append({
+                    "path": rel,
+                    "name": path.name,
+                    "count": hit["count"],
+                    # 位置の言い方は `Document.locate_at()` 1 か所（章名 / p.42 / L.42）
+                    "first": doc.locate_at(hit["first"]),
+                })
+
+    terms = []
+    for ref, entry in entries.items():
+        place = found.get(ref)
+        files = sorted(place["files"], key=lambda f: (-f["count"], f["path"])) if place else []
+        terms.append({
+            "ref": ref,
+            "term": entry.term,
+            "reading": entry.reading,
+            "category": entry.category,
+            "scope": entry.scope,
+            "path_label": entry.path_label,
+            "url": entry_url(entry),
+            "total": place["total"] if place else 0,
+            "files": files[:MAX_INDEX_FILES_PER_TERM],
+            # 並べきれなかったぶんは数で返す（黙って落とさない）
+            "more_files": max(0, len(files) - MAX_INDEX_FILES_PER_TERM),
+        })
+    # 出てくる語を上に、同数なら読み（無ければ用語名）で。**並びを決め切る**
+    terms.sort(key=lambda t: (-t["total"], t["reading"] or t["term"], t["ref"]))
+    return {
+        "root": str(base),
+        "files_scanned": scanned,
+        "files_truncated": files_truncated,
+        "skipped": skipped,
+        "terms": terms,
+        "checked": len(entries),
+        # **1 度も出てこなかった語。** 「登録したのに本文でリンクにならない」の
+        # 事後版で、この索引でいちばん見たい数（打ち切っているときは当てにならない）
+        "unseen": sum(1 for t in terms if not t["total"]),
     }
 
 

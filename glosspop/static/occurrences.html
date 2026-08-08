@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GlossPop — 索引</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<script>
+// 描画の前にテーマと文字の大きさを当てる。あとから当てると、暗いテーマのとき
+// 一瞬白く光り、大きさを変えていると一度小さい字で描いてから飛ぶ。
+// キー名と値は base.js の THEME_KEY / FONT_KEY と同じ（**5 つの HTML に同じ写しが
+// ある。片方だけ直すと、そのページだけ設定が効かない**）
+try {
+  const t = localStorage.getItem("glosspop.theme");
+  if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  const f = localStorage.getItem("glosspop.fontSize");
+  if (f === "small" || f === "large" || f === "xlarge") document.documentElement.dataset.fontsize = f;
+} catch (e) { /* 読めなければ OS の設定と既定の大きさに従う */ }
+</script>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <a class="brand" href="/">Gloss<span>Pop</span></a>
+  <nav class="topnav">
+    <a href="/">ビューア</a>
+    <a href="/glossary">辞書</a>
+    <a href="/graph">相関図</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="meta" id="count"></span>
+</div>
+
+<!-- 中身は occurrences.js が描く（ビューアに重ねるときと同じものを、同じ出どころから） -->
+<div class="page">
+  <div class="page-inner" id="page-root"></div>
+</div>
+
+<script type="module">
+  import { mount } from "/static/occurrences.js";
+  mount(document.getElementById("page-root"));
+</script>
+<script type="module" src="/static/settings.js"></script>
+<!-- 専用ウィンドウで開いたときの生存確認。**全ページに要る** ——
+     置き忘れたページを読んでいる間にサーバが落ちる -->
+<script type="module" src="/static/heartbeat.js"></script>
+</body>
+</html>
