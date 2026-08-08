@@ -627,6 +627,101 @@ def test_the_map_draws_points_lines_and_areas(page, server, seeded):
     assert order == ["area", "line", "point"], order
 
 
+def test_overlapping_shapes_get_their_own_colour(page, server, seeded):
+    """**重なる形は色で分ける。** 同色だと、どれがどれかは一言でしか分からない
+    —— その一言は重なれば畳まれるので、いちばん見せたいものが読めなくなる。
+
+    **点には振らない**（場所が 1 つなので取り違えようがない）。**色を作るのは
+    `map.js` の 1 か所**で、一覧の色札はそれをそのまま出す —— 2 か所で作ると
+    図と一覧で色が食い違い、色を頼りに探せなくなる。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    # 同じ点から分かれる 2 本（説ごとの進軍路にあたる形）。根元は完全に重なる
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", line=[[0.2, 0.2], [0.5, 0.1]],
+    ), ref=a.ref)
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition,
+        map="てすと図", line=[[0.2, 0.2], [0.5, 0.4]],
+    ), ref=b.ref)
+    store.save(EntryDraft(
+        term="ザネリ", category="登場人物", definition="級友。",
+        map="てすと図", pin=[0.8, 0.3],
+    ))
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    strokes = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-map polyline.rel-map-route')]"
+        ".map((p) => getComputedStyle(p).stroke)"
+    )
+    assert len(strokes) == 2 and strokes[0] != strokes[1], strokes
+
+    # **点には振らない**（変数を置かない ＝ CSS の既定に収まる）
+    assert page.evaluate(
+        "() => document.querySelector('svg.rel-map .rel-map-point')"
+        ".style.getPropertyValue('--shape-color')"
+    ) == ""
+
+    # 一覧の色札は図と同じ色。**点のぶんは出ない**
+    swatches = page.evaluate(
+        "() => [...document.querySelectorAll('#mapLayers .map-swatch')]"
+        ".map((s) => getComputedStyle(s).backgroundColor)"
+    )
+    assert sorted(swatches) == sorted(strokes), (swatches, strokes)
+
+
+def test_a_shape_cannot_be_moved_off_the_picture(page, server, seeded):
+    """**絵の外へは出させない。** 外に出た点は座標だけ書かれて**画面に出ない**
+    ので、点検を開くまで気付けない（地図の「黙って壊れる」の代表）。
+
+    上限の高さは**絵が届いてから**決まる（縦横比は読み込むまで分からない）ので、
+    絵の高さが入ったことを確かめてから動かす。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.9, 0.45],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.locator("svg.rel-map .rel-map-handle").first.wait_for(timeout=10000)
+    # **描き直したあとで待つ。** 「置く」を入れると図を描き直すので、そこでも
+    # 仮の高さ (700) から始まる —— 本物 (500) が入る前に動かすと縁が違う
+    page.wait_for_function(
+        "() => document.querySelector('svg.rel-map image.rel-map-bg')"
+        "?.getAttribute('height') === '500'",
+        timeout=10000,
+    )
+    # 掴んだまま図の外まで引っぱる（矢印キーも同じところを通る）
+    handle = page.locator("svg.rel-map .rel-map-handle").first
+    spot = handle.bounding_box()
+    stage = page.locator("svg.rel-map").bounding_box()
+    page.mouse.move(spot["x"] + spot["width"] / 2, spot["y"] + spot["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(
+        stage["x"] + stage["width"] - 2, stage["y"] + stage["height"] - 2, steps=8
+    )
+    page.mouse.up()
+    page.wait_for_timeout(600)
+
+    stopped = store.get(a.ref).pin
+    # 幅は 1.0、高さは絵の縦横比 (500/1000) が上限
+    assert stopped == pytest.approx([1.0, 0.5]), stopped
+
+
 def test_the_map_can_hide_shapes_with_checkboxes(page, server, seeded):
     """一覧のチェックで、出すものを選べる。
 

@@ -89,6 +89,60 @@ function placed(nodes, chosen) {
 
 const asPoints = (pts) => pts.map((q) => `${q.x},${q.y}`).join(" ");
 
+//: 色を振るときの回し幅（黄金角）と、最初の色。**隣り合う番号どうしがいちばん
+//: 離れる**ので、何本並んでも似た色が隣に来ない
+const HUE_STEP = 137.508;
+const HUE_START = 20;
+
+/**
+ * 重なる形を見分けるための色。**線と領域だけに振る。**
+ *
+ * この地図の取り柄は**同じ絵の上に説ごとの経路が重なる**ことなのに、全部が
+ * 同じ色だと**どれがどの説なのかは一言のラベルでしか分からない** —— その一言は
+ * 重なれば畳まれる（`takeSpot`）ので、いちばん見せたいものがいちばん読めない。
+ *
+ * **点には振らない。** 点は場所が 1 つなので取り違えようがなく、丸まで色が
+ * 散ると図が騒がしくなるだけ（重なるのは線と領域だけ）。
+ *
+ * **テーマでは変えない。** 背景は絵であってページの色ではないので、明るい / 暗いで
+ * 変える理由が無い（変えると、同じ絵を見ている 2 人が違う色の話をすることになる）。
+ *
+ * **チェックを外したぶんも数に入れる**（渡すのは絞る前の一覧）—— 外した語のぶん
+ * 色がずれると、戻したときに別の色になる。
+ *
+ * **語を足すと色は変わりうる。** ref から作れば足しても変わらないが、**隣どうしが
+ * 似た色になりうる** —— そうなると足した意味そのものが無くなるので、こちらを採る。
+ * 色は「その語の印」ではなく「この絵の中で見分けるための札」で、一覧
+ * （`items` の `color`）に同じ色が出るので迷子にはならない。
+ */
+function shapeColors(all) {
+  const out = new Map();
+  let i = 0;
+  for (const [ref, p] of all) {
+    if (p.kind === "point") continue;
+    out.set(ref, `hsl(${((HUE_START + i * HUE_STEP) % 360).toFixed(1)} 68% 42%)`);
+    i++;
+  }
+  return out;
+}
+
+/**
+ * 絵の中に収める。**掴んで動かすときと、置くときの両方で通す。**
+ *
+ * 外へ出した点は**描かれても画面には出ない**（＝黙って消える）。点検が
+ * `map_point_outside` で挙げてはくれるが、**画面には何も出ない**ので、
+ * 点検を開くまで気付けない —— なら出させないほうが早い。
+ *
+ * 高さの上限は**絵の高さ**（縦横比は読み込むまで分からないので、届いた値を渡す）。
+ * ここだけは `core` の点検と違って**絵を見られる**ので、y にも上限を置ける。
+ */
+function clampTo(at, imgH) {
+  return {
+    x: Math.min(Math.max(at.x, 0), W),
+    y: Math.min(Math.max(at.y, 0), imgH),
+  };
+}
+
 /**
  * 文字を置く四角。**実測より少し大きく見積もる**（`graph.js` の `labelBox` と
  * 同じ理由 —— 小さいと、置いたあとで触れる）。
@@ -139,8 +193,12 @@ export function buildMap(graph, opts = {}) {
   const byRef = new Map(nodes.map((n) => [n.ref, n]));
   // **一覧は絞る前に作る。** 外したものも並べないと、チェックを戻せなくなる
   const all = placed(nodes, chosen);
+  // **色の出どころはここ 1 つ。** 図に描く色と、一覧に出す色札が同じ値でないと
+  // 「一覧の色で図を探す」ができない（呼ぶ側で作り直させないこと）
+  const colors = shapeColors(all);
   const items = [...all].map(([ref, p]) => ({
     ref, term: p.node.term || ref, category: p.node.category || "", kind: p.kind,
+    color: colors.get(ref) || "",
   }));
   // **絵の名前だけ書いて形が無い語 = 置き待ち。** 分類していない ——
   // 「この絵に置きたい」と書いてあるものだけを出すので、辞書全体は並ばない
@@ -150,8 +208,11 @@ export function buildMap(graph, opts = {}) {
     .map((n) => ({ ref: n.ref, term: n.term || n.ref, category: n.category || "" }));
   const pos = new Map([...all].filter(([ref]) => !hidden?.has(ref)));
   const unchecked = all.size - pos.size;
-  const height = Math.round(W * GUESS_RATIO);
-  const box = { x: -PAD, y: -PAD, w: W + PAD * 2, h: height + PAD * 2 };
+  // **絵の高さは動く**（縦横比は読み込むまで分からない）。掴んで動かすときの
+  // 上限に使うので、決め打ちではなく届いた値で置き換える
+  let imgH = Math.round(W * GUESS_RATIO);
+  const inside = (at) => clampTo(at, imgH);
+  const box = { x: -PAD, y: -PAD, w: W + PAD * 2, h: imgH + PAD * 2 };
 
   const root = svg("svg", {
     class: "rel-graph rel-map",
@@ -167,7 +228,7 @@ export function buildMap(graph, opts = {}) {
   // **`<image>` 経由なら SVG の中のスクリプトは動かない**（secure static mode）
   const image = svg("image", {
     href: chosen.url,
-    x: 0, y: 0, width: W, height,
+    x: 0, y: 0, width: W, height: imgH,
     preserveAspectRatio: "xMinYMin meet",
     class: "rel-map-bg",
   });
@@ -178,6 +239,7 @@ export function buildMap(graph, opts = {}) {
   probe.addEventListener("load", () => {
     if (!probe.naturalWidth || !probe.naturalHeight) return;
     const real = Math.round((W * probe.naturalHeight) / probe.naturalWidth);
+    imgH = real;                          // 掴んで動かすときの下の上限もここで決まる
     image.setAttribute("height", real);
     box.h = real + PAD * 2;               // graph.js が持っているのと同じオブジェクト
     root.setAttribute("viewBox", `${box.x} ${box.y} ${box.w} ${box.h}`);
@@ -350,6 +412,11 @@ export function buildMap(graph, opts = {}) {
       // 呼ぶ側が語を名指しで探せるようにする（用語ページから開いたときの目印）
       "data-ref": ref,
       "data-detail": describeNode(node),
+      // **色は変数で渡す**（`fill` / `stroke` を直に書かない）。直に書くと
+      // インラインの指定が勝ってしまい、**乗せたときの色が効かなくなる**。
+      // 変数なら CSS 側の既定（`var(--shape-color, var(--accent))`）に収まり、
+      // 図の書き出しは `getComputedStyle` で解決済みの色を焼くので外でも出る
+      style: colors.has(ref) ? `--shape-color: ${colors.get(ref)}` : null,
     }, [
       svg("a", { href: node.url || `/glossary?q=${encodeURIComponent(term)}` }, [
         ...body,
@@ -366,13 +433,15 @@ export function buildMap(graph, opts = {}) {
   root.append(layers.area, layers.line, layers.point);
 
   installFocus(root, nodeGroups, touching);
-  if (editing) installHandles(root, pos, onMove, onRefuse);
+  if (editing) installHandles(root, pos, onMove, onRefuse, inside);
   if (placing) {
     // **置くのは絵の上を 1 回押すだけ。** armed の間だけ効く（間違って置かない）
     root.classList.add("is-placing");
     root.addEventListener("click", (ev) => {
       const at = toUser(root, ev);
-      if (at) onPlace?.(placing, [[at.x / W, at.y / W]]);
+      // 絵の**縁の外**（余白）を押されても絵の中に収める —— 外に置くと
+      // 画面には出ないまま座標だけが書かれる（→ `clampTo`）
+      if (at) onPlace?.(placing, [[inside(at).x / W, inside(at).y / W]]);
     }, { once: true });
   }
 
@@ -489,8 +558,10 @@ function toUser(root, ev) {
  *   ので、通すと「1 つ消したら地図から消えた」になる。**種別を勝手に落とさない**
  *   のも同じ理由 —— 領域を線に変えるのは人が宣言することであって、消した結果
  *   そうなるものではない
+ * - **絵の外へは出さない**（`inside`）。掴んだまま外へ出すと、その点は
+ *   **描かれても画面に出ない** —— 点検を開くまで気付けない消え方をする
  */
-function installHandles(root, pos, onMove, onRefuse) {
+function installHandles(root, pos, onMove, onRefuse, inside) {
   const layer = svg("g", { class: "rel-map-handles" });
   //: いまの点の並びを比に戻す（保存はいつもこの形で渡す）
   const asRatio = (pts) => pts.map((s) => [s.x / W, s.y / W]);
@@ -547,9 +618,11 @@ function installHandles(root, pos, onMove, onRefuse) {
         ev.stopPropagation();
         moved = false;
         const move = (e2) => {
-          const at = toUser(root, e2);
-          if (!at) return;
+          const raw = toUser(root, e2);
+          if (!raw) return;
           moved = true;
+          // **絵からはみ出させない。** 出た点は描かれても画面に出ない
+          const at = inside(raw);
           p.pts[i] = at;
           dot.setAttribute("cx", at.x);
           dot.setAttribute("cy", at.y);
@@ -589,7 +662,8 @@ function installHandles(root, pos, onMove, onRefuse) {
         if (!d) return;
         ev.preventDefault();
         ev.stopPropagation();
-        p.pts[i] = { x: p.pts[i].x + d[0], y: p.pts[i].y + d[1] };
+        // 掴んで動かすときと同じ縁で止める（**押しっぱなしで外へ出せない**）
+        p.pts[i] = inside({ x: p.pts[i].x + d[0], y: p.pts[i].y + d[1] });
         dot.setAttribute("cx", p.pts[i].x);
         dot.setAttribute("cy", p.pts[i].y);
         redraw(p);

@@ -1797,6 +1797,49 @@ class TestTheMapImage:
         kinds = [i["kind"] for i in client.get("/api/doctor").json()["issues"]]
         assert kinds == ["map_without_image"]
 
+    def test_the_doctor_knows_how_tall_the_picture_is(self, client):
+        """**絵の縦横比も `app` が読んで渡す。**
+
+        座標は絵の**幅**を 1 とした比なので、y の上限は絵の縦横比でしか決まらない
+        （`core` は絵の中身を知らない）。渡さないと、**絵の下へはみ出した点**が
+        点検を素通りする —— 画面には何も出ないので、気付く手段が無くなる。
+        """
+        directory = store.maps_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        # 横長（2:1）の絵。y の上限は 0.5 になる
+        (directory / "横長.svg").write_bytes(
+            b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"></svg>'
+        )
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "summary": "船の着くところ。", "map": "横長", "pin": [0.25, 0.4],
+        })
+        assert not client.get("/api/doctor").json()["issues"]
+
+        # 同じ絵の下へはみ出した点（0.9 > 0.5）は挙げる
+        client.post("/api/entries", json={
+            "term": "岬", "category": "場所", "definition": "突き出た地形。",
+            "summary": "海へ突き出たところ。", "map": "横長", "pin": [0.25, 0.9],
+        })
+        issues = client.get("/api/doctor").json()["issues"]
+        assert [i["kind"] for i in issues] == ["map_point_outside"]
+        assert issues[0]["term"] == "岬"
+
+    def test_a_picture_whose_size_cannot_be_read_is_still_listed(self, client):
+        """**読めないことは「絵が無い」ではない。**
+
+        落とすと `map_without_image` が誤って出る（絵はあるのに「ありません」）。
+        上限を見なくなるだけで、ほかの点検はそのまま効く。
+        """
+        directory = store.maps_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "読めない図.png").write_bytes(b"\x89PNG\r\n\x1a\n")   # 途中で切れている
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "summary": "船の着くところ。", "map": "読めない図", "pin": [0.25, 4.0],
+        })
+        assert not client.get("/api/doctor").json()["issues"]
+
 
 class TestUploadingAMapImage:
     """絵を置く / 消す口 (`POST` / `DELETE /api/map`)。
@@ -1912,9 +1955,10 @@ class TestMovingAShapeOnTheMap:
         """**形は必ず 1 つだけ。** 画面から `two_map_shapes` を作らせない。"""
         put_map("ほんの図")          # 絵が無いと点検が別のことを言う（それは別のテスト）
         ref = self._make(client, map="ほんの図", pin=[0.1, 0.2])
-        client.put(f"/api/map-shape/{ref}", json={"kind": "line", "points": [[0, 0], [1, 1]]})
+        # **絵は 100x70。** y が 0.7 を超えると点検が「絵の外」と言う（それも別の話）
+        client.put(f"/api/map-shape/{ref}", json={"kind": "line", "points": [[0, 0], [1, 0.6]]})
         node = client.get("/api/graph").json()["nodes"][0]
-        assert node["shape"] == {"kind": "line", "points": [[0.0, 0.0], [1.0, 1.0]]}
+        assert node["shape"] == {"kind": "line", "points": [[0.0, 0.0], [1.0, 0.6]]}
         assert not client.get("/api/doctor").json()["issues"]
 
     @pytest.mark.parametrize(
@@ -1935,7 +1979,8 @@ class TestMovingAShapeOnTheMap:
         """
         put_map("ほんの図")
         ref = self._make(client, map="ほんの図", **before)
-        points = [[0.3, 0.4], [0.6, 0.7], [0.2, 0.8]][: {"point": 1, "line": 2, "area": 3}[after]]
+        # **絵は 100x70** なので y は 0.7 まで（超えると点検が「絵の外」と言う）
+        points = [[0.3, 0.4], [0.6, 0.5], [0.2, 0.6]][: {"point": 1, "line": 2, "area": 3}[after]]
         client.put(f"/api/map-shape/{ref}", json={"kind": after, "points": points})
 
         body = client.get(f"/api/entries/{ref}").json()

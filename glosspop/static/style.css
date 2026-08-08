@@ -1244,6 +1244,17 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   margin: 0 0 8px;
 }
 .map-layers .check { width: auto; }
+/* 図の中の線・領域に振った色の札。**色は図が決めて `items` で渡ってくる**ので、
+   ここでは大きさだけ決める（同じ色を 2 か所で作らない）。点には色が無い ——
+   重なるのは線と領域だけなので、そこだけ分けている（→ map.js の `shapeColors`）。 */
+.map-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
 
 .rel-map-bg { pointer-events: none; }
 .rel-map-pin circle { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
@@ -1254,9 +1265,25 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
    線は細くて押せないので、透明な太い線を下に重ねて当たり判定にする（辺と同じ作法）。 */
 /* **描く要素のクラスは種別のクラスと分ける。** 同じ名前にすると `<g>` にも
    付いて、`fill` が継承で効いてしまう（気付きにくい効き方をする）。 */
-.rel-map-fill { fill: var(--accent); fill-opacity: 0.18; stroke: var(--accent); stroke-width: 2; }
+/* **線と領域だけは 1 つずつ色が違う**（`--shape-color`。同じ絵の上で重なるので、
+   同色だとどれがどの説なのか一言のラベルでしか分からない —— その一言は重なれば
+   畳まれる）。色を決めるのは `map.js` の `shapeColors` **1 か所**で、ここは
+   受け取るだけ。**変数が無ければ今までどおり `--accent`**（点がそれ）。
+   乗せたときの色（`var(--fg)`）はこの下の規則が勝つので、色を振っても
+   「乗せると変わる」は残る —— インラインで `stroke` を直に書くと、そこが死ぬ。 */
+.rel-map-fill {
+  fill: var(--shape-color, var(--accent));
+  fill-opacity: 0.18;
+  stroke: var(--shape-color, var(--accent));
+  stroke-width: 2;
+}
 .rel-map-pin a:hover .rel-map-fill { fill-opacity: 0.32; }
-.rel-map-route { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linejoin: round; }
+.rel-map-route {
+  fill: none;
+  stroke: var(--shape-color, var(--accent));
+  stroke-width: 3;
+  stroke-linejoin: round;
+}
 .rel-map-pin a:hover .rel-map-route { stroke: var(--fg); }
 .rel-map-hit {
   fill: none;

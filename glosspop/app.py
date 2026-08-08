@@ -1173,16 +1173,46 @@ def run_doctor() -> dict:
     集める受け皿がここ。
 
     **置いてある絵はここで数えて渡す。** `doctor` は `core` にあって辞書の
-    置き場所を知らないので、「その名前の絵があるか」は呼ぶ側にしか分からない。
+    置き場所を知らないので、「その名前の絵があるか」も「その絵がどんな形か」も
+    呼ぶ側にしか分からない。
     """
     return doctor.check(store.load_all(), maps=_available_maps())
 
 
-def _available_maps() -> set[str]:
-    """置いてある絵の ``<scope>/<名前>``。辞書の無いスコープは黙って空。"""
-    return {
-        f"{scope}/{path.stem}" for scope in SCOPES for path in store.list_maps(scope)
-    }
+def _available_maps() -> dict[str, float | None]:
+    """置いてある絵の ``<scope>/<名前>`` → **縦横比**（高さ ÷ 幅）。
+
+    比を添えるのは、**座標が絵の下へはみ出していないか**を点検が見られるように
+    するため。座標は絵の幅を 1 とした比なので、y の上限は**その絵の縦横比**でしか
+    決まらない（縦長の絵では 1 を超えるのが正常）。
+
+    **読めない絵は ``None`` のまま置く。** 落とすと「絵が無い」ことになり、
+    `map_without_image` が誤って出る —— 一覧に居ることと、大きさが読めることは別。
+    辞書の無いスコープは黙って空。
+    """
+    out: dict[str, float | None] = {}
+    for scope in SCOPES:
+        for path in store.list_maps(scope):
+            out[f"{scope}/{path.stem}"] = _image_ratio(path)
+    return out
+
+
+def _image_ratio(path: Path) -> float | None:
+    """絵の縦横比（高さ ÷ 幅）。読めなければ ``None``。
+
+    **先頭だけ読む**（`imagefmt.SIZE_HEAD`）—— 点検は絵の枚数ぶん通るので、
+    数十 MB の絵を丸ごと読ませない。読めなかったときは黙って ``None``：
+    点検が y の上限を見なくなるだけで、ほかの点検はそのまま効く。
+    """
+    try:
+        with path.open("rb") as fp:
+            found = imagefmt.size(fp.read(imagefmt.SIZE_HEAD))
+    except OSError:
+        return None
+    if not found:
+        return None
+    width, height = found
+    return height / width
 
 
 # --------------------------------------------------------------------------- #

@@ -136,13 +136,13 @@ class TestMapChecks:
     def test_a_name_with_no_such_picture_is_reported(self, add_entry):
         """絵を消しても用語は書き換えない ＝ 静かに地図から消える。"""
         self.entry(add_entry, map="尾張", pin=[0.4, 0.3])
-        report = doctor.check(store.load_all(), maps=set())
+        report = doctor.check(store.load_all(), maps={})
         assert kinds(report) == ["map_without_image"]
         assert report["issues"][0]["target"] == "尾張"
 
     def test_nothing_is_said_when_the_picture_is_there(self, add_entry):
         self.entry(add_entry, map="尾張", pin=[0.4, 0.3])
-        assert kinds(doctor.check(store.load_all(), maps={"global/尾張"})) == []
+        assert kinds(doctor.check(store.load_all(), maps={"global/尾張": None})) == []
 
     def test_without_the_list_the_picture_is_not_checked(self, add_entry):
         """**「1 枚も無い」と「一覧をもらっていない」を混同しない。**
@@ -155,26 +155,45 @@ class TestMapChecks:
     def test_a_picture_name_without_coordinates_is_normal(self, add_entry):
         """「この絵に置きたい」の置き待ち。図が数えて出すので点検は黙る。"""
         self.entry(add_entry, map="尾張")
-        assert kinds(doctor.check(store.load_all(), maps={"global/尾張"})) == []
+        assert kinds(doctor.check(store.load_all(), maps={"global/尾張": None})) == []
 
     def test_a_point_outside_the_picture_is_reported(self, add_entry):
         self.entry(add_entry, map="尾張", pin=[1.4, 0.3])
-        report = doctor.check(store.load_all(), maps={"global/尾張"})
+        report = doctor.check(store.load_all(), maps={"global/尾張": None})
         assert kinds(report) == ["map_point_outside"]
         assert "1 点目" in report["issues"][0]["detail"]
 
     def test_a_tall_picture_may_have_y_over_one(self, add_entry):
         """**座標は絵の幅を 1 とした比。** 縦長の絵では y が 1 を超えるのが正常。
 
-        上限は絵の縦横比でしか決まらず、`core` からは読めない —— 決めようのない
-        定数を置いて正常なものを問題として出さない。
+        上限は**その絵の縦横比**でしか決まらない。比が分からない（``None``）ときは
+        上限を見ない —— 決めようのない定数を置いて正常なものを問題として出さない。
         """
         self.entry(add_entry, map="尾張", line=[[0.1, 0.2], [0.3, 2.5]])
-        assert kinds(doctor.check(store.load_all(), maps={"global/尾張"})) == []
+        assert kinds(doctor.check(store.load_all(), maps={"global/尾張": None})) == []
+
+    def test_y_within_the_ratio_of_a_tall_picture_is_normal(self, add_entry):
+        """比をもらえば上限が決まる。**縦長なら 1 を超えていても正常。**"""
+        self.entry(add_entry, map="尾張", line=[[0.1, 0.2], [0.3, 2.5]])
+        assert kinds(doctor.check(store.load_all(), maps={"global/尾張": 3.0})) == []
+
+    def test_y_below_the_picture_is_reported_when_the_ratio_is_known(self, add_entry):
+        """絵の下へはみ出した点は**描かれても画面に出ない**（黙って消える側）。"""
+        self.entry(add_entry, map="尾張", line=[[0.1, 0.2], [0.3, 2.5]])
+        report = doctor.check(store.load_all(), maps={"global/尾張": 0.7})
+        assert kinds(report) == ["map_point_outside"]
+        assert "2 点目" in report["issues"][0]["detail"]
+
+    def test_the_ratio_of_another_picture_is_not_used(self, add_entry):
+        """上限は**その語が置かれている絵**のもの。別の絵の比で切らない。"""
+        self.entry(add_entry, map="尾張", line=[[0.1, 0.2], [0.3, 2.5]])
+        maps = {"global/尾張": 3.0, "global/三河": 0.5}
+        assert kinds(doctor.check(store.load_all(), maps=maps)) == []
 
     def test_a_negative_coordinate_is_outside(self, add_entry):
         self.entry(add_entry, map="尾張", area=[[0.1, -0.2], [0.3, 0.4], [0.5, 0.6]])
-        assert kinds(doctor.check(store.load_all(), maps={"global/尾張"})) == ["map_point_outside"]
+        report = doctor.check(store.load_all(), maps={"global/尾張": None})
+        assert kinds(report) == ["map_point_outside"]
 
 
 def test_errors_come_before_warnings(healthy):

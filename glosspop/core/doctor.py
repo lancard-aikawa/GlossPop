@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from . import relations
 from .linker import entry_url
 from .models import Entry
@@ -57,7 +59,7 @@ CHECKS: dict[str, dict[str, str]] = {
     },
     "map_point_outside": {
         "label": "座標が絵の外",
-        "hint": "座標は絵の幅を 1 とした比です（x は 0〜1、y は 0 以上）。"
+        "hint": "座標は絵の幅を 1 とした比です（x は 0〜1、y は 0 から絵の縦横比まで）。"
                 "外に出た点は描かれても画面に出ません。",
     },
 }
@@ -66,18 +68,23 @@ CHECKS: dict[str, dict[str, str]] = {
 _KIND_WORDS = {"point": "点 (pin)", "line": "線 (line)", "area": "領域 (area)"}
 
 
-def _outside(points: list[list[float]]) -> list[int]:
+def _outside(points: list[list[float]], ratio: float | None = None) -> list[int]:
     """絵の外に出ている点の番号（1 始まり）。
 
-    **見るのは x が 0〜1 の外と、y が負のときだけ。** 座標は**絵の幅を 1 とした比**
-    なので、**縦長の絵では y が 1 を超えるのが正常** —— 上限は絵の縦横比でしか
-    決まらず、それは `core` からは読めない（絵の中身を知らない）。
-    **決めようのない定数を置いて正常なものを問題として出す**くらいなら、
-    確実に外だと分かるものだけを挙げる。
+    **x は 0〜1、y は 0 以上。** 座標は**絵の幅を 1 とした比**なので、
+    **縦長の絵では y が 1 を超えるのが正常** —— y の上限は絵の縦横比
+    （高さ ÷ 幅）でしか決まらない。
+
+    その比は `core` からは読めない（絵の中身を知らない）ので、**呼ぶ側が絵から
+    読んで渡す**。**渡されなければ上限は見ない** —— 決めようのない定数を置いて
+    正常なものを問題として出すくらいなら、確実に外だと分かるものだけを挙げる
+    （`maps` を渡されなければ絵の点検をしない、というのと同じ約束）。
     """
     return [
         i for i, point in enumerate(points, 1)
-        if not 0.0 <= point[0] <= 1.0 or point[1] < 0.0
+        if not 0.0 <= point[0] <= 1.0
+        or point[1] < 0.0
+        or (ratio is not None and point[1] > ratio)
     ]
 
 
@@ -96,16 +103,21 @@ def _issue(kind: str, severity: str, entry: Entry, detail: str, **extra) -> dict
     }
 
 
-def check(entries: list[Entry], *, maps: set[str] | None = None) -> dict:
+def check(entries: list[Entry], *, maps: Mapping[str, float | None] | None = None) -> dict:
     """辞書全体を点検して ``{issues, counts, checked}`` を返す。
 
     ``issues`` は重大度の高い順、同じ重大度なら登録順。
 
-    ``maps`` は**置いてある絵**の ``<scope>/<名前>`` の集合。`core` は辞書の
-    置き場所を知らないので、**呼ぶ側から引数で渡す**（`timeline` が `Linker` と
-    `Document` を受けているのと同じ形）。**渡されなければ絵の点検はしない** ——
-    「絵が 1 枚も無い」と「一覧をもらっていない」を混同すると、地図を使っている
-    辞書で**全部の語に警告が出る**（そうなると誰も見なくなる）。
+    ``maps`` は**置いてある絵**の ``<scope>/<名前>`` → **縦横比**（高さ ÷ 幅）。
+    `core` は辞書の置き場所も絵の中身も知らないので、**呼ぶ側から引数で渡す**
+    （`timeline` が `Linker` と `Document` を受けているのと同じ形）。
+    **渡されなければ絵の点検はしない** ——「絵が 1 枚も無い」と「一覧をもらって
+    いない」を混同すると、地図を使っている辞書で**全部の語に警告が出る**
+    （そうなると誰も見なくなる）。
+
+    比が ``None`` の絵（大きさを読めなかった絵）は**上限を見ないだけ**で、
+    ほかの点検はそのまま効く。**読めないことを問題として挙げない** ——
+    直しようがないものを挙げても、本物の壊れが埋もれるだけになる。
     """
     issues: list[dict] = []
 
@@ -166,7 +178,12 @@ def check(entries: list[Entry], *, maps: set[str] | None = None) -> dict:
                 f"「{entry.map}」という絵がありません", target=entry.map,
             ))
         if shape is not None:
-            outside = _outside(shape["points"])
+            # **上限は「その語が置かれている絵」の比**（絵ごとに違う）。
+            # 絵の名前が無い / その絵が無いときは上限を見ない（上の 2 つが挙げる）
+            outside = _outside(
+                shape["points"],
+                maps.get(f"{entry.scope}/{entry.map}") if maps and entry.map else None,
+            )
             if outside:
                 where = "・".join(f"{i} 点目" for i in outside[:5])
                 more = f" ほか {len(outside) - 5} 点" if len(outside) > 5 else ""

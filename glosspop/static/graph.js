@@ -2032,8 +2032,18 @@ function paintMapLayers(drawn) {
       const box = el("input", { type: "checkbox" });
       box.checked = !off.has(item.ref);
       box.addEventListener("change", () => toggle([item.ref], box.checked));
+      // **色は図が決めたものをそのまま出す**（ここで作り直さない）。線と領域は
+      // 同じ絵の上で重なるので色で分けてあり、その色を一覧にも出しておかないと
+      // 「どの線がどれか」を目で追うことになる。点には色が無い（重ならない）
+      const swatch = item.color
+        ? el("span", {
+          class: "map-swatch",
+          style: `background: ${item.color}`,
+          "aria-hidden": "true",
+        })
+        : null;
       parts.push(el("label", { class: "check", "data-ref": "mapItem" },
-        [box, el("span", { text: item.term })]));
+        [box, swatch, el("span", { text: item.term })]));
       // **種別は編集中だけ選べる。** ここが**画面から線や領域を作る唯一の道**
       // （置くと点になるので、線にしたければ種別を変えて頂点を足す）。
       // **点の数から機械が推測しない** —— 足りないぶんは `fitToKind()` が足す。
@@ -2156,7 +2166,10 @@ function paintGraph(graph) {
       "座標を書いた語を絵の上に置いています。"
       + "どれが地名かは決めていません —— 座標を書いた語が出るだけなので、"
       + "出したい語には map と pin を書いてください。"
-      + "線は、両端がこの絵に置かれている関係だけです。",
+      + "線は、両端がこの絵に置かれている関係だけです。"
+      // **色の意味は書く。** 書かないと「カテゴリごとの色」だと読まれる
+      + "経路（線）と領域は、同じ絵の上で重なるので 1 つずつ色を分けています"
+      + "（上の一覧に出ている色と同じ）。点はどれも同じ色です。",
   }[mode] || "▲▼ の代わりに上下の関係は段で表しています。";
   legend.textContent =
     shape + common
