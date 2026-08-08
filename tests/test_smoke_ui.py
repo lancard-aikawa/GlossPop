@@ -1602,6 +1602,69 @@ def test_the_timeline_orders_relations_by_where_they_become_readable(page, serve
     page.keyboard.press("Escape")
 
 
+def test_the_timeline_can_put_terms_on_the_axis(page, server, seeded):
+    """時系列は**並べるものも 2 つ**（関係 / 語）。語を並べると年表になる。
+
+    答える問いが違う —— 関係は「誰と誰がいつ繋がるか」、語は「何がいつ起きたか」。
+    守ること: **軸に載るのは時刻のある語だけ**（人物は期間なので時刻を書かない ＝
+    自然に従へ落ちる）、**従は消さずに行のうしろへ**、**並べるものは覚える**。
+    """
+    honnoji = store.save(EntryDraft(
+        term="本能寺の変", category="事件", summary="事件。", definition="事件。",
+        when="1582-06-21 天正十年六月二日",
+        relations=[
+            {"to": "山崎の戦い", "label": "この報を受けて起きる"},
+            {"to": "明智光秀", "label": "謀反を起こした側"},
+        ],
+    ))
+    store.save(EntryDraft(term="山崎の戦い", category="事件", summary="合戦。",
+                          definition="合戦。", when="1582-07-02 天正十年六月十三日"))
+    store.save(EntryDraft(term="明智光秀", category="人", summary="武将。", definition="武将。"))
+    assert honnoji.when_at is not None
+
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "timeline")
+    page.select_option("#timeAxis", "when")
+    page.select_option("#timeRows", "node")
+    page.locator("svg.rel-chronicle").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # **行になるのは時刻のある語だけ**（事件 2 件。光秀は時刻を書いていない）
+    rows = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-chronicle .tl-nodes .rel-node text')]"
+        ".map((t) => t.textContent)"
+    )
+    assert rows == ["本能寺の変", "山崎の戦い"]
+    # 見出しは起きた順（書かれたままの文字列）
+    heads = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-chronicle .tl-head text')]"
+        ".map((t) => t.textContent)"
+    )
+    assert heads[0].startswith("1582-06-21") and heads[1].startswith("1582-07-02")
+    # **従は消えていない。** 軸に載らない相手は行のうしろの小さな枠に出る
+    chips = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-chronicle .tl-chip text')]"
+        ".map((t) => t.textContent)"
+    )
+    assert "明智光秀" in chips
+    assert "小さく並べています" in page.locator("#notes").inner_text()
+
+    # 行どうしの関係は線として残り、押せば同じ編集ダイアログが開く。
+    # **一言のほうを押す。** 弧は「コ」の字なので、外形の真ん中は線の上ではない
+    # （段の図の `hitBand()` のように外形を埋めると、またいだ行の従を覆って
+    # そちらが押せなくなる —— 埋めないのが正しい）。線と一言はどちらから触っても
+    # 同じ、という約束もここで見ている
+    page.click("svg.rel-chronicle .rel-edge-label")
+    page.locator("#edgeDialog[open]").wait_for(timeout=10000)
+    page.keyboard.press("Escape")
+
+    # 覚えている（開き直しても年表のまま）
+    page.reload()
+    page.locator("svg.rel-chronicle").wait_for(timeout=15000)
+    assert page.locator("#timeRows").input_value() == "node"
+
+
 def test_the_timeline_needs_one_of_its_two_axes(page, server, seeded):
     """時系列は**軸が 2 つ**（読む順 / 作中の時刻）。どちらも無ければ出せない。
 
@@ -2213,6 +2276,49 @@ def test_the_glossary_can_be_browsed_in_kana_order(page, server, seeded):
     # 覚えている（開き直しても五十音のまま）。**サーバへは行き直さない**
     open_glossary(page, server)
     assert page.locator("#groupBy").input_value() == "reading"
+
+
+def test_the_glossary_can_be_browsed_as_a_chronology(page, server, seeded):
+    """**作中の時刻で通して見る（年表）。** 3 つめの引き方で、置き換えではない。
+
+    相関図の時系列が並べているのは**関係**なので、**語そのものを順に並べたもの**は
+    ここにしかない。守ること: **書いた順ではなく時刻の順**、**「書いていない」と
+    「書いたのに読めない」を分ける**（まとめると書き間違いが未入力に紛れる）、
+    **並べ替えの数はサーバから来る**（一覧が先頭の西暦を自前で読まない）。
+    """
+    store.save(EntryDraft(term="山崎の戦い", category="事件", definition="合戦。",
+                          when="1582-07-02 天正十年六月十三日"))
+    store.save(EntryDraft(term="桶狭間の戦い", category="事件", definition="合戦。",
+                          when="1560-06-12 永禄三年五月十九日"))
+    store.save(EntryDraft(term="本能寺の変", category="事件", definition="事件。",
+                          when="1582-06-21 天正十年六月二日"))
+    store.save(EntryDraft(term="応仁の乱", category="事件", definition="乱。",
+                          when="応仁元年"))          # 元号だけ = 読めない
+
+    open_glossary(page, server)
+    page.select_option("#groupBy", "when")
+    page.locator("#list .cat-group").first.wait_for(timeout=10000)
+
+    heads = page.evaluate(
+        "() => [...document.querySelectorAll('#list .cat-group h2 span:first-child')]"
+        ".map((s) => s.textContent)"
+    )
+    # **登録した順ではなく、起きた順**（桶狭間 → 本能寺 → 山崎）
+    dated = [h for h in heads if h.startswith("15")]
+    assert dated == sorted(dated)
+    assert dated[0].startswith("1560-06-12") and dated[-1].startswith("1582-07-02")
+    # 書いたのに読めないものと、書いていないものは**別の束**
+    assert "時刻が読めない" in heads and "時刻なし" in heads
+    assert heads.index("時刻が読めない") < heads.index("時刻なし")
+
+    bad = page.locator("#list .cat-group").nth(heads.index("時刻が読めない"))
+    assert "応仁の乱" in bad.inner_text() and "先頭を西暦で" in bad.inner_text()
+    # 見出しがカテゴリでなくなるので、カードにカテゴリを出す（五十音と同じ理由）
+    assert page.locator("#list .card-path").count() >= 1
+
+    # 覚えている（開き直しても年表のまま）
+    open_glossary(page, server)
+    assert page.locator("#groupBy").input_value() == "when"
 
 
 def test_a_reading_can_be_written_where_it_is_missing(page, server, seeded):

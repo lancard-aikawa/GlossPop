@@ -150,6 +150,23 @@ class TestWhenChecks:
         assert "天正十年六月二日" in report["issues"][0]["detail"]
         assert report["issues"][0]["severity"] == "warn"
 
+    def test_the_time_on_the_term_itself_is_read_the_same_way(self, add_entry):
+        """語に書いた時刻も同じ規則で見る。**書いていないのは黙る。**"""
+        add_entry("桶狭間の戦い", category="事件", summary="要約。", definition="本文。",
+                  when="1560-06-12 永禄三年五月十九日")
+        add_entry("応仁の乱", category="事件", summary="要約。", definition="本文。")
+        assert kinds(doctor.check(store.load_all())) == []
+
+    def test_an_unreadable_time_on_the_term_is_reported(self, add_entry):
+        """**こちらのほうが被害が広い** —— 読めない時刻は関係へも継がれないので、
+        その語に繋がる辺がまとめて時系列から落ちる。
+        """
+        add_entry("本能寺の変", category="事件", summary="要約。", definition="本文。",
+                  when="天正十年六月二日")
+        report = doctor.check(store.load_all())
+        assert kinds(report) == ["unreadable_when"]
+        assert "この語の時刻" in report["issues"][0]["detail"]
+
 
 class TestMapChecks:
     """地図は「書いたのに出ない」が起きやすい。**画面には何も出ない**ので、

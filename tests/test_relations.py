@@ -436,3 +436,84 @@ class TestRelatedAbsorption:
         text = path.read_text(encoding="utf-8")
         assert "related:" not in text
         assert "to: リトライ" in text
+
+
+# --------------------------------------------------------------------------- #
+# 作中の時刻を語から継ぐ
+# --------------------------------------------------------------------------- #
+
+class TestRelationWhenIsInherited:
+    """**時刻は語にも書ける。**書いていない関係は両端の語から継ぐ。
+
+    継がないと、事件に日付を 1 行書いても時系列には何も出てこない
+    —— 事件から伸びる関係の相手は人物や場所で、そちらに時刻は書かないため。
+    継ぐ規則を変えるとサンプルの図が黙って変わるので、ここで固定しておく。
+    """
+
+    @pytest.fixture
+    def scene(self, add_entry):
+        """事件 2 つと人物 1 人。**人物には時刻を書かない**（生没は期間なので点にできない）。"""
+        honnoji = add_entry(
+            "本能寺の変", category="事件", when="1582-06-21 天正十年六月二日",
+            relations=[rel(to="明智光秀"), rel(to="山崎の戦い", label="この報を受けて起きる")],
+        )
+        yamazaki = add_entry("山崎の戦い", category="事件", when="1582-07-02 天正十年六月十三日")
+        mitsuhide = add_entry("明智光秀", category="人")
+        return honnoji, yamazaki, mitsuhide
+
+    def edges(self, graph) -> dict:
+        return {e["to"].split("/")[-1]: e for e in graph["edges"]}
+
+    def test_a_relation_takes_the_time_of_the_event_it_hangs_from(self, scene):
+        """事件 → 人物。**片方にしか書かれていなくても継ぐ。**
+
+        両端そろって初めて継ぐ形にすると、事件から伸びる関係が全部時刻を失う。
+        """
+        edge = self.edges(relations.build_graph(store.load_all()))["明智光秀"]
+        assert edge["when"] == "1582-06-21 天正十年六月二日"
+        assert edge["when_inherited"] is True
+
+    def test_between_two_dated_terms_the_later_one_wins(self, scene):
+        """読む順の「両端が出そろうところ」と同じ規則（`max`）。"""
+        edge = self.edges(relations.build_graph(store.load_all()))["山崎の戦い"]
+        assert edge["when"] == "1582-07-02 天正十年六月十三日"
+        assert edge["when_inherited"] is True
+
+    def test_a_time_written_on_the_relation_wins(self, add_entry):
+        """「いつの間柄か」は語そのものの時刻とずれうるので、書いてあればそれが正。"""
+        add_entry(
+            "織田信長", category="人",
+            relations=[rel(to="徳川家康", when="1562 永禄五年（清洲同盟）")],
+        )
+        add_entry("徳川家康", category="人", when="1543")
+        edge = self.edges(relations.build_graph(store.load_all()))["徳川家康"]
+        assert edge["when"] == "1562 永禄五年（清洲同盟）"
+        assert edge["when_inherited"] is False
+
+    def test_an_unreadable_time_is_not_handed_down(self, add_entry):
+        """読めない文字列を配ると、語 1 つの誤りが関係の本数だけ「読めない」に化ける。"""
+        add_entry("天保の変", category="事件", when="天保三年", relations=[rel(to="誰か")])
+        add_entry("誰か", category="人")
+        edge = self.edges(relations.build_graph(store.load_all()))["誰か"]
+        assert edge["when"] == ""
+        assert edge["when_at"] is None
+
+    def test_the_entry_page_and_the_graph_agree(self, scene):
+        """読む口は 1 つ（`relation_when`）。別々に決めると図と一覧が食い違う。"""
+        honnoji, _, _ = scene
+        entries = store.load_all()
+        listed = {r["term"]: r for r in relations.resolved_relations(honnoji, entries)}
+        drawn = self.edges(relations.build_graph(entries))
+        for term, row in listed.items():
+            assert row["when"] == drawn[term]["when"]
+            assert row["when_inherited"] == drawn[term]["when_inherited"]
+
+    def test_nothing_is_inherited_when_neither_end_has_a_time(self, cast):
+        giovanni, campanella = cast
+        store.save(
+            EntryDraft(term=giovanni.term, category=giovanni.category,
+                       relations=[rel(to=campanella.term)]),
+            ref=giovanni.ref,
+        )
+        edge = relations.build_graph(store.load_all())["edges"][0]
+        assert (edge["when"], edge["when_at"], edge["when_inherited"]) == ("", None, False)

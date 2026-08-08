@@ -14,9 +14,10 @@
 // 読むものが決まっていないと時系列は定義できないので、**この見せ方は `?doc=`
 // のときだけ**（呼ぶ側が面倒を見る。→ graph.js）。
 import {
-  describeNode, describeRelation, estTextWidth, relationWords, svgEl as svg,
+  describeNode, describeRelation, estTextWidth, relationWords,
+  svgEl as svg, svgVerticalText,
 } from "./base.js";
-import { splitLonely, wrapLonely } from "./graph-model.js";
+import { isMainRelation, splitLonely, wrapLonely } from "./graph-model.js";
 
 const PAD = 16;
 const ROW_H = 46;            // 関係 1 本ぶんの高さ
@@ -80,14 +81,19 @@ function marker(id, className) {
  * （伏せた本数を必ず返すのと同じ約束）。並べ替えが同点のときはサーバが返した
  * 順で決める —— 乱数も時刻も混ぜないので、同じ辞書なら毎回同じ絵になる。
  */
-function bandsOf(edges, axis) {
+function bandsOf(edges, axis, nodeOf) {
   const { at, label: labelKey } = AXES[axis] || AXES.read;
   const dated = [];
   const undated = [];
   edges.forEach((edge, i) => {
     (typeof edge[at] === "number" ? dated : undated).push(i);
   });
-  dated.sort((x, y) => edges[x][at] - edges[y][at] || x - y);
+  // **同じ時刻の中では、主（両端が同じカテゴリ）を先に。** 事件から伸びる関係には
+  // 話の筋（事件 → 事件）と顔ぶれ（事件 → 人物・場所）が混ざっていて、顔ぶれの
+  // 多い事件ほど筋が下に埋もれる。**落としはしない**（後ろに回るだけ）
+  const main = (i) => (isMainRelation(edges[i], nodeOf) ? 0 : 1);
+  dated.sort((x, y) => edges[x][at] - edges[y][at] || main(x) - main(y) || x - y);
+  undated.sort((x, y) => main(x) - main(y) || x - y);
 
   const bands = [];
   for (const i of dated) {
@@ -100,7 +106,9 @@ function bandsOf(edges, axis) {
     // 見出しに出る**（人の言葉を置き換えない、という約束のほうを採る）。
     // 読む順の軸では位置から見出しを作るので、この枝はそもそも効かない
     if (last && last.label === label && last.at === edges[i][at]) last.rows.push(i);
-    else bands.push({ label, at: edges[i][at], rows: [i] });
+    // **「だいたい」は帯ごと。** 見出しの文字列が同じものだけを束ねているので、
+    // 同じ帯なら書き方も同じ（`16世紀` と `1501` が同じ帯に来ることはない）
+    else bands.push({ label, at: edges[i][at], rows: [i], about: !!edges[i].when_about });
   }
   if (undated.length) {
     bands.push({ label: UNDATED[axis] || UNDATED.read, rows: undated, undated: true });
@@ -116,7 +124,11 @@ function bandsOf(edges, axis) {
  * @param {function} onEdge 関係を押したときに呼ぶ（編集ダイアログ）
  * @param {string} axis  並べる軸（`read` = 読む順 / `when` = 作中の時刻）
  */
-export function buildTimeline(graph, { onEdge, axis: wanted = "read" } = {}) {
+export function buildTimeline(graph, { onEdge, axis: wanted = "read", rows: unit } = {}) {
+  // **並べるものが 2 つある。**関係（1 行 1 本）と語（1 行 1 語 ＝ 年表）。
+  // 置き換えではない —— 関係の並びは「誰と誰がいつ繋がるか」、語の並びは
+  // 「何がいつ起きたか」で、答える問いが違う（→ `buildTermRows`）
+  if (unit === "node") return buildTermRows(graph, { onEdge, axis: wanted });
   const { nodes, edges } = graph;
   // **受け取り側で名前を変える。** この関数の中では `axis` を軸の線（`<g>`）に
   // 使っている —— 同じ名前で 2 つ宣言すると読み込みごと落ちる（`labels` で
@@ -125,7 +137,7 @@ export function buildTimeline(graph, { onEdge, axis: wanted = "read" } = {}) {
   // 関係の無い語は行にしない（他の見せ方と同じく、下の帯へまとめる）
   const { lonely } = splitLonely(nodes, edges);
   const termOf = new Map(nodes.map((n) => [n.ref, n]));
-  const bands = bandsOf(edges, on);
+  const bands = bandsOf(edges, on, (ref) => termOf.get(ref));
 
   // 列の幅は全体で揃える。行ごとに変えると、同じものを縦に読めない
   const rows = bands.flatMap((b) => b.rows);
@@ -193,7 +205,12 @@ export function buildTimeline(graph, { onEdge, axis: wanted = "read" } = {}) {
         x2: Math.max(width - PAD, PAD + 40), y2: band.top - BAND_GAP / 2,
       }));
     }
-    axis.append(svg("circle", { class: "tl-tick", cx: axisX, cy: band.y, r: 3.5 }));
+    // **だいたいの時刻は目盛りを白抜きにする。** 位置は範囲の頭に置いてあるので、
+    // 実線の点にすると `16世紀` が 1501 年ちょうどに見える（読んだ値で人の言葉を
+    // 置き換えないのと同じ理由 —— 精度まで置き換えない）
+    axis.append(svg("circle", {
+      class: band.about ? "tl-tick about" : "tl-tick", cx: axisX, cy: band.y, r: 3.5,
+    }));
   });
   root.append(axis);
 
@@ -209,6 +226,7 @@ export function buildTimeline(graph, { onEdge, axis: wanted = "read" } = {}) {
         : `${band.label} — この文書のどこで読めるようになるか分かりません（${band.rows.length} 本）`)
       : (on === "when"
         ? `${band.label} — このとき（作中）の関係 ${band.rows.length} 本`
+          + (band.about ? "（だいたいの時刻。範囲の頭に置いています）" : "")
         : `${band.label} — ここで読めるようになる関係 ${band.rows.length} 本`);
     heads.append(svg("g", {
       class: band.undated ? "tl-head undated" : "tl-head",
@@ -416,10 +434,15 @@ function axisNote(axis, bands, edges) {
       ? `この文書を読み進める順に並べています（位置の分からない ${undated.rows.length} 本は最後）。`
       : "この文書を読み進める順に並べています。";
   }
-  if (!undated) return "作中の時刻の順に並べています。";
+  const about = bands.some((b) => b.about);
+  const aboutNote = about
+    ? "だいたいの時刻（16世紀・約1560・1560ごろ）は、白抜きの目盛りでその範囲の頭に置いています。"
+    : "";
+  if (!undated) return `作中の時刻の順に並べています。${aboutNote}`;
   const unreadable = undated.rows.filter((i) => (edges[i].when || "").trim()).length;
   const blank = undated.rows.length - unreadable;
   return "作中の時刻の順に並べています。"
+    + aboutNote
     + (blank ? `時刻を書いていない ${blank} 本は最後にまとめています。` : "")
     + (unreadable
       ? `時刻を書いてあるのに西暦として読めない ${unreadable} 本も同じ帯です`
@@ -454,4 +477,399 @@ function installFocus(root, nodeGroups, touching) {
       cell.addEventListener("focusout", () => light(ref, false));
     }
   }
+}
+
+// --------------------------------------------------------------------------- //
+// 年表（1 行 1 語）
+//
+// **関係の並びとは答える問いが違う。** あちらは「誰と誰がいつ繋がるか」、
+// こちらは「何がいつ起きたか」。事件を順に読むには、関係を 1 本ずつ並べた図では
+// 同じ事件が関係の本数だけ現れてしまう（本能寺の変は 8 行に散る）。
+//
+// **主と従は、軸に載るかどうかで決まる。** 位置のある語（＝事件・出来事）が行に
+// なり、位置の無い相手（＝人物・場所）はその行に**従のチップ**として付く。
+// カテゴリで「これは人物」と決めつける必要は無い —— **人物は期間なので時刻を
+// 書かない**（→ MANUAL）ぶん、自然に従へ落ちる。カテゴリで絞れば、行になる語を
+// そのカテゴリだけに狭められる（範囲外の語は `outside` として来るので行にしない）。
+// --------------------------------------------------------------------------- //
+
+const TERM_H = 34;           // 語 1 行ぶんの高さ
+const TERM_ROW_H = 44;
+const CHIP_H = 20;
+const CHIP_GAP = 6;
+const CHIP_PAD = 14;
+const CHIP_MAX = 6;          // 1 行に出す従の数。超えたぶんは「ほか N」にまとめる
+const ARC_COL = 20;          // 弧 1 本ぶんの列幅
+const ARC_GAP = 12;          // 従の右端と最初の列のあいだ
+
+/** 語 1 つの、その軸での位置。**行になれるのは数を持つものだけ。** */
+function nodeAt(node, on) {
+  const value = node[AXES[on].at];
+  return typeof value === "number" ? value : null;
+}
+
+/** 弧に列を割り当てる。**長いものを外側へ**（短い弧が内側に収まって重ならない）。 */
+function arcColumns(spans) {
+  const order = spans.map((_, i) => i).sort((x, y) => {
+    const a = spans[x];
+    const b = spans[y];
+    return (b.hi - b.lo) - (a.hi - a.lo) || a.lo - b.lo;
+  });
+  const used = [];                       // 列ごとの [lo, hi] の並び
+  const column = new Array(spans.length).fill(0);
+  for (const i of order) {
+    const { lo, hi } = spans[i];
+    let col = 0;
+    // **重なりを許さない。** 同じ列に重ねると 2 本が 1 本に見える
+    while (used[col] && used[col].some((s) => lo < s.hi && s.lo < hi)) col += 1;
+    if (!used[col]) used[col] = [];
+    used[col].push({ lo, hi });
+    column[i] = col;
+  }
+  return { column, count: Math.max(used.length, 0) };
+}
+
+function buildTermRows(graph, { onEdge, axis: wanted = "read" } = {}) {
+  const { nodes, edges } = graph;
+  const on = AXES[wanted] ? wanted : "read";
+  const termOf = new Map(nodes.map((n) => [n.ref, n]));
+
+  // **行になるのは「位置があって、範囲の中にいる語」だけ。** `outside` は
+  // カテゴリで絞ったときに辺の相手として足された語なので、行にすると絞った
+  // 意味が無くなる（`build_graph(only=…)` が相手を足さないのと同じ話）
+  const rowNodes = nodes
+    .filter((n) => !n.outside && !n.missing && nodeAt(n, on) !== null)
+    .sort((a, b) => nodeAt(a, on) - nodeAt(b, on)
+      || (a[AXES[on].label] || "").localeCompare(b[AXES[on].label] || "", "ja")
+      || a.term.localeCompare(b.term, "ja"));
+  const indexOf = new Map(rowNodes.map((n, i) => [n.ref, i]));
+
+  // 帯にまとめる。**束ねるのは「並べ替えの値も見出しも同じ」ものだけ**
+  // （関係の並びの `bandsOf` と同じ規則 —— 人は同じ日を 2 通りに書ける）
+  const bands = [];
+  rowNodes.forEach((node, i) => {
+    const label = node[AXES[on].label] || "";
+    const at = nodeAt(node, on);
+    const last = bands[bands.length - 1];
+    if (last && last.label === label && last.at === at) last.rows.push(i);
+    else bands.push({ label, at, rows: [i], about: !!node.when_about });
+  });
+
+  // 辺を 3 つに仕分ける: 行どうし（弧）/ 行と従（チップ）/ どちらも行でない（数だけ）
+  const arcs = [];
+  const chipsOf = rowNodes.map(() => []);
+  const seenChip = rowNodes.map(() => new Set());
+  let offAxis = 0;
+  for (const edge of edges) {
+    const a = indexOf.get(edge.from);
+    const b = indexOf.get(edge.to);
+    if (a !== undefined && b !== undefined) {
+      if (a !== b) arcs.push({ edge, lo: Math.min(a, b), hi: Math.max(a, b) });
+      continue;
+    }
+    const row = a !== undefined ? a : b;
+    if (row === undefined) {
+      // どちらの端も軸に載っていない関係（人物どうしなど）。**数えて凡例に出す**
+      offAxis += 1;
+      continue;
+    }
+    const otherRef = a !== undefined ? edge.to : edge.from;
+    if (seenChip[row].has(otherRef)) continue;
+    seenChip[row].add(otherRef);
+    chipsOf[row].push({ node: termOf.get(otherRef), ref: otherRef, edge });
+  }
+
+  const { column, count: arcCols } = arcColumns(arcs);
+
+  // 幅。列は全体で揃える（行ごとに変えると縦に読めない）
+  const headW = Math.max(40, ...bands.map((b) => estTextWidth(clip(b.label, HEAD_MAX), 11)));
+  const termW = Math.max(NODE_MIN_W, ...rowNodes.map((n) => nodeWidth(n.term)));
+  const chipW = (text) => estTextWidth(text, 11) + CHIP_PAD;
+  const chipsWidth = (list) => {
+    const shown = list.slice(0, CHIP_MAX);
+    const extra = list.length - shown.length;
+    return shown.reduce((w, c) => w + chipW((c.node && c.node.term) || c.ref) + CHIP_GAP, 0)
+      + (extra ? chipW(`ほか ${extra}`) + CHIP_GAP : 0);
+  };
+  const chipsW = Math.max(0, ...chipsOf.map(chipsWidth));
+
+  const axisX = PAD + headW + AXIS_GAP;
+  const x0 = axisX + STUB;
+  const chipsX = x0 + termW + CHIP_GAP * 2;
+  const gutterX = chipsX + chipsW + ARC_GAP;
+  const width = gutterX + arcCols * ARC_COL + PAD;
+
+  // y を決める
+  const yOf = new Array(rowNodes.length).fill(0);
+  let y = PAD + TERM_ROW_H / 2;
+  for (const band of bands) {
+    band.top = y - TERM_ROW_H / 2;
+    band.y = y;
+    for (const i of band.rows) {
+      yOf[i] = y;
+      y += TERM_ROW_H;
+    }
+    y += BAND_GAP;
+  }
+  const bodyBottom = rowNodes.length ? y - BAND_GAP - TERM_ROW_H / 2 + TERM_H / 2 : PAD;
+
+  // **行にも従にもならなかった語。** 消さずに帯へ出す（他の見せ方と同じ約束）
+  const placedRefs = new Set(rowNodes.map((n) => n.ref));
+  for (const seen of seenChip) for (const ref of seen) placedRefs.add(ref);
+  const rest = nodes.filter((n) => !placedRefs.has(n.ref) && !n.missing);
+  const strip = wrapLonely(rest, {
+    width, top: bodyBottom, pad: PAD, rowHeight: ROW_H_LONELY, gap: LONELY_GAP,
+    widthOf: (node) => estTextWidth(node.term, NODE_FONT) + 28,
+  });
+  const height = strip.bottom + PAD;
+
+  const root = svg("svg", {
+    class: "rel-graph rel-timeline rel-chronicle",
+    width: "100%",
+    height: "100%",
+    viewBox: `0 0 ${Math.ceil(width)} ${Math.ceil(height)}`,
+    role: "img",
+    "aria-label": "用語の相関図（年表の見せ方）",
+  });
+  root.append(svg("defs", {}, [marker("tl-arrow2", "rel-arrowhead")]));
+
+  const axis = svg("g", { class: "tl-axis" });
+  if (rowNodes.length) {
+    axis.append(svg("line", { x1: axisX, y1: PAD, x2: axisX, y2: bodyBottom }));
+  }
+  bands.forEach((band, i) => {
+    if (i) {
+      axis.append(svg("line", {
+        class: "tl-split", x1: PAD, y1: band.top - BAND_GAP / 2,
+        x2: Math.max(width - PAD, PAD + 40), y2: band.top - BAND_GAP / 2,
+      }));
+    }
+    // **だいたいの時刻は目盛りを白抜きにする。** 位置は範囲の頭に置いてあるので、
+    // 実線の点にすると `16世紀` が 1501 年ちょうどに見える（読んだ値で人の言葉を
+    // 置き換えないのと同じ理由 —— 精度まで置き換えない）
+    axis.append(svg("circle", {
+      class: band.about ? "tl-tick about" : "tl-tick", cx: axisX, cy: band.y, r: 3.5,
+    }));
+  });
+  root.append(axis);
+
+  const heads = svg("g", { class: "tl-heads" });
+  for (const band of bands) {
+    // **軸によって言うことが違う**（関係の並びと同じ理由）
+    const detail = (on === "when"
+      ? `${band.label} — このとき（作中）の語 ${band.rows.length} 件`
+      : `${band.label} — ここで出てくる語 ${band.rows.length} 件`)
+      + (band.about ? "（だいたいの時刻。範囲の頭に置いています）" : "");
+    heads.append(svg("g", { class: "tl-head", "data-detail": detail }, [
+      svg("text", {
+        x: axisX - AXIS_GAP, y: band.y, "text-anchor": "end",
+        "dominant-baseline": "central", text: clip(band.label, HEAD_MAX),
+      }),
+      svg("title", { text: detail }),
+    ]));
+  }
+  root.append(heads);
+
+  const lines = svg("g", { class: "rel-edge-lines" });
+  const labels = svg("g", { class: "rel-edge-labels" });
+  const boxes = svg("g", { class: "tl-nodes" });
+  const nodeGroups = new Map(nodes.map((n) => [n.ref, []]));
+  const touching = new Map(nodes.map((n) => [n.ref, []]));
+
+  // 弧（行どうしの関係）。**線は細くて押せない**ので当たり判定を重ねる（他と同じ）
+  arcs.forEach((arc, i) => {
+    const x = gutterX + column[i] * ARC_COL + ARC_COL / 2;
+    const yA = yOf[indexOf.get(arc.edge.from)];
+    const yB = yOf[indexOf.get(arc.edge.to)];
+    const from = termOf.get(arc.edge.from);
+    const to = termOf.get(arc.edge.to);
+    const detail = describeRelation(arc.edge, {
+      from: from && from.term, to: to && to.term,
+    });
+    const d = `M ${chipsX - CHIP_GAP} ${yA} H ${x} V ${yB} H ${chipsX - CHIP_GAP}`;
+    const cls = ["rel-edge", arc.edge.reveal ? "reveal" : ""].filter(Boolean).join(" ");
+    const group = svg("g", {
+      class: "rel-edge-group",
+      tabindex: "0",
+      role: "button",
+      "aria-label": `関係を直す: ${detail}`,
+      "data-detail": detail,
+    }, [
+      svg("path", { d, class: "rel-edge-hit", fill: "none" }),
+      svg("path", {
+        d, class: cls, fill: "none",
+        "marker-end": "url(#tl-arrow2)",
+        "marker-start": arc.edge.mutual ? "url(#tl-arrow2)" : null,
+      }),
+      svg("title", { text: `${detail}（押すと直せます）` }),
+    ]);
+
+    // **一言は縦書き**（列幅 20px に横書きは入らない）。`writing-mode` を
+    // 使わないのは `⇄` が回されるから（→ base.js）
+    const words = relationWords(arc.edge);
+    const text = words
+      ? svgVerticalText(words, x, Math.max(yA, yB) - 8, {
+        max: 10, className: "rel-edge-label", lineHeight: 11,
+      })
+      : null;
+    if (text) text.setAttribute("data-detail", detail);
+
+    lines.append(group);
+    if (text) labels.append(text);
+
+    // **線と一言は一緒に光らせる**（別の層に居るので CSS では届かない）
+    const parts = [group, text].filter(Boolean);
+    const light = (hot) => {
+      for (const node of parts) node.classList.toggle("hot", hot);
+    };
+    const open = () => { if (onEdge) onEdge(arc.edge); };
+    for (const node of parts) {
+      node.addEventListener("pointerenter", () => light(true));
+      node.addEventListener("pointerleave", () => light(false));
+      node.addEventListener("click", open);
+    }
+    group.addEventListener("focus", () => light(true));
+    group.addEventListener("blur", () => light(false));
+    group.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      open();
+    });
+    for (const ref of [arc.edge.from, arc.edge.to]) {
+      const list = touching.get(ref);
+      if (list) list.push({ parts, other: ref === arc.edge.from ? arc.edge.to : arc.edge.from });
+    }
+  });
+
+  // 語の箱と、その行に付く従
+  rowNodes.forEach((node, i) => {
+    const rowY = yOf[i];
+    const cell = svg("g", { class: "rel-node", "data-detail": describeNode(node) }, [
+      svg("a", { href: node.url }, [
+        svg("rect", { x: x0, y: rowY - TERM_H / 2, width: termW, height: TERM_H, rx: 8 }),
+        svg("text", {
+          x: x0 + termW / 2, y: rowY, "text-anchor": "middle",
+          "dominant-baseline": "central", text: clip(node.term, HEAD_MAX),
+        }),
+        svg("title", {
+          text: [node.term, node.path_label, node.summary].filter(Boolean).join(" — "),
+        }),
+      ]),
+    ]);
+    boxes.append(cell);
+    const own = nodeGroups.get(node.ref);
+    if (own) own.push(cell);
+
+    // 従。**押せばその語の辞書ページへ行ける**（ただの飾りにしない）
+    const list = chipsOf[i];
+    const shown = list.slice(0, CHIP_MAX);
+    const extra = list.length - shown.length;
+    let cx = chipsX;
+    for (const chip of shown) {
+      const term = (chip.node && chip.node.term) || chip.ref;
+      const w = chipW(term);
+      const detail = describeRelation(chip.edge, {
+        from: (termOf.get(chip.edge.from) || {}).term,
+        to: (termOf.get(chip.edge.to) || {}).term,
+      });
+      const box = svg("g", {
+        class: ["tl-chip", chip.node && chip.node.missing ? "missing" : ""].filter(Boolean).join(" "),
+        "data-detail": detail,
+      }, [
+        svg("a", {
+          href: (chip.node && chip.node.url) || `/glossary?q=${encodeURIComponent(term)}`,
+        }, [
+          svg("rect", { x: cx, y: rowY - CHIP_H / 2, width: w, height: CHIP_H, rx: 10 }),
+          svg("text", {
+            x: cx + w / 2, y: rowY, "text-anchor": "middle",
+            "dominant-baseline": "central", text: term,
+          }),
+          svg("title", { text: detail }),
+        ]),
+      ]);
+      boxes.append(box);
+      const group = nodeGroups.get(chip.ref);
+      if (group) group.push(box);
+      cx += w + CHIP_GAP;
+    }
+    if (extra) {
+      // **黙って切らない。** 残りは数で出し、全部の名前は乗せたときに読める
+      const term = `ほか ${extra}`;
+      const w = chipW(term);
+      const all = list.slice(CHIP_MAX).map((c) => (c.node && c.node.term) || c.ref).join("、");
+      boxes.append(svg("g", { class: "tl-chip more", "data-detail": `${node.term} — ${all}` }, [
+        svg("rect", { x: cx, y: rowY - CHIP_H / 2, width: w, height: CHIP_H, rx: 10 }),
+        svg("text", {
+          x: cx + w / 2, y: rowY, "text-anchor": "middle",
+          "dominant-baseline": "central", text: term,
+        }),
+        svg("title", { text: all }),
+      ]));
+    }
+  });
+  root.append(lines, boxes, labels);
+
+  if (!rowNodes.length) {
+    root.append(svg("text", {
+      class: "tl-empty",
+      x: PAD,
+      y: PAD + 12,
+      text: on === "when"
+        ? "作中の時刻が書かれた語がありません（事件や出来事に when を書くと並びます）。"
+        : "この文書に出てくる語が見つかりませんでした。",
+    }));
+  }
+
+  if (rest.length) {
+    root.append(svg("g", { class: "rel-lonely-rule" }, [
+      svg("line", {
+        x1: PAD, y1: strip.ruleY, x2: Math.max(width - PAD, PAD + 40), y2: strip.ruleY,
+      }),
+      svg("text", {
+        x: PAD, y: strip.ruleY - 6, class: "rel-lonely-caption",
+        text: on === "when"
+          ? `時刻も、時刻のある語との関係も無い語（${rest.length}）`
+          : `この文書に出てこない語（${rest.length}）`,
+      }),
+    ]));
+    for (const { node, x, y: cy } of strip.cells) {
+      root.append(svg("g", { class: "rel-node", "data-detail": describeNode(node) }, [
+        svg("a", { href: node.url }, [
+          svg("text", {
+            x, y: cy, "text-anchor": "middle", "dominant-baseline": "central", text: node.term,
+          }),
+          svg("title", { text: [node.path_label, node.summary].filter(Boolean).join(" — ") }),
+        ]),
+      ]));
+    }
+  }
+
+  installFocus(root, nodeGroups, touching);
+  let chipCount = 0;
+  for (const seen of seenChip) chipCount += seen.size;
+  return {
+    root,
+    box: { x: 0, y: 0, w: width, h: height },
+    lonely: rest.length,
+    note: termNote(on, rowNodes.length, chipCount, offAxis),
+  };
+}
+
+/**
+ * 年表の凡例。**何を行にして、何を従にしたか**と、**出せなかった数**を書く。
+ *
+ * 書かないと「関係が減った」と読まれる —— 行どうしでない関係は線ではなく
+ * チップになっているだけで、消してはいない。
+ */
+function termNote(axis, rows, chips, offAxis) {
+  const head = axis === "when"
+    ? `作中の時刻が書かれた語 ${rows} 件を、起きた順に並べています。`
+    : `この文書に出てくる語 ${rows} 件を、読む順に並べています。`;
+  const sub = chips
+    ? `軸に載らない相手 ${chips} 件は、その行のうしろに小さく並べています（押すと開けます）。`
+    : "";
+  const off = offAxis
+    ? `どちらの端も軸に載っていない関係が ${offAxis} 本あります（この図には出ません）。`
+    : "";
+  return head + sub + off;
 }

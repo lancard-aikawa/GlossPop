@@ -64,6 +64,14 @@ class TestWhatIsWritten:
                       "作中: 1560-06-12", "判明: 第6章"]:
             assert piece in text, piece
 
+    def test_the_time_on_the_term_itself_comes_out(self):
+        """事件の日付は**語のほう**にある。関係だけ出していると冊子から静かに落ちる。"""
+        text = booklet.build([mk(
+            "本能寺の変", reading="ほんのうじのへん", category="事件",
+            when="1582-06-21 天正十年六月二日", summary="要約。",
+        )])
+        assert "作中: 1582-06-21 天正十年六月二日" in text
+
     def test_the_head_says_how_many(self):
         text = booklet.build([mk("あ", reading="あ")], generated="2026-08-08")
         assert "1 語" in text and "2026-08-08" in text

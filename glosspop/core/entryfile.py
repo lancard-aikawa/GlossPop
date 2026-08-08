@@ -34,6 +34,7 @@ FM_KEYS = (
     "subcategory",
     "summary",
     "examples",
+    "when",
     "relations",
     "tags",
     "source",

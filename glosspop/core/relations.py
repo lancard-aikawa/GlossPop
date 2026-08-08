@@ -18,7 +18,7 @@ from collections.abc import Container
 from dataclasses import dataclass, field
 
 from .linker import entry_url
-from .models import GLOBAL_SCOPE, Entry
+from .models import GLOBAL_SCOPE, Entry, Relation
 
 
 @dataclass
@@ -91,6 +91,44 @@ def _narrowings(origin: Entry | None):
 # グラフ
 # --------------------------------------------------------------------------- #
 
+def relation_when(
+    rel: Relation, origin: Entry, target: Entry | None,
+) -> tuple[str, int | None, bool, bool]:
+    """辺 1 本の作中の時刻。**書かれていなければ両端の語から採る**。
+
+    返すのは ``(表示する文字列, 並べ替えの数, 語から採ったか, だいたいか)``。
+    **「だいたいか」も一緒に返す** —— 文字列と印が別々の道を通ると、継いだ辺で
+    片方だけ古い値になる（読む口は 1 つ、が崩れる）。
+    **ここが唯一の読み口**（相関図と辞書ページが別々に決めると、同じ関係が
+    図では並ぶのに一覧では時刻無し、という食い違いになる）。
+
+    **関係に書いた ``when`` が最優先。** 「いつの関係か」は語そのものの時刻と
+    ずれうる（徳川家康と織田信長の間柄は、どちらの生没とも別の時点で変わる）ので、
+    書いてあればそれが正。
+
+    **無ければ、両端のうち遅いほうを継ぐ。** 読む順の「両端が出そろうところ」
+    (`timeline.annotate()` の ``max(a, b)``) と同じ考え方で、「本能寺の変 →
+    山崎の戦い」が読めるようになるのは遅いほう（山崎）が起きた時点になる。
+
+    **片方にしか書かれていなくても継ぐ。** ここだけ読む順と違う ——
+    あちらは両端とも必ず位置を持つ（同じ文書に出てくる語だから）が、こちらの
+    空欄は「**書いていない**」。両端そろって初めて継ぐ形にすると、**事件 →
+    人物**の関係が全部時刻を失う（人物に生没を書く辞書のほうが珍しい）ので、
+    事件に日付を 1 行書いても時系列には何も出てこない。
+
+    **継ぐのは西暦として読める時刻だけ。** 読めない文字列まで配ると、語 1 つの
+    書き間違いが**関係の本数だけ**「書いたのに読めない」に化けて数を狂わせる。
+    語のほうの間違いは点検 (`doctor`) がその語 1 件として挙げる。
+    """
+    if rel.when:
+        return rel.when, rel.when_at, False, rel.when_about
+    ends = [e for e in (origin, target) if e is not None and e.when_at is not None]
+    if not ends:
+        return "", None, False, False
+    latest = max(ends, key=lambda e: e.when_at)  # type: ignore[arg-type,return-value]
+    return latest.when, latest.when_at, True, latest.when_about
+
+
 def _node(entry: Entry, *, inside: bool) -> dict:
     return {
         "ref": entry.ref,
@@ -102,6 +140,12 @@ def _node(entry: Entry, *, inside: bool) -> dict:
         "scope": entry.scope,
         "path_label": entry.path_label,
         "url": entry_url(entry),
+        # **その語自体の作中の時刻。**辺が時刻を継ぐ元でもある（→ `relation_when`）
+        "when": entry.when,
+        "when_at": entry.when_at,
+        # だいたいの時刻か（`16世紀` `約1560`）。**位置は変わらない** ——
+        # 点が正確に見えないように印を出すためだけに返す
+        "when_about": entry.when_about,
         # 地図の見せ方が使う。**点・線・領域を 1 つに畳んで渡す**（→ models）。
         # 3 通りの場合分けを描く側に持ち込まない
         "map": entry.map,
@@ -124,6 +168,9 @@ def _missing_node(target: str) -> dict:
         "path_label": "未登録",
         # wiki の赤リンク。押したらその語で登録に入れるよう検索へ飛ばす
         "url": f"/glossary?q={target}",
+        "when": "",
+        "when_at": None,
+        "when_about": False,
         "map": "",
         "shape": None,
         "outside": True,
@@ -198,6 +245,7 @@ def build_graph(
                 target_ref = res.entry.ref
                 nodes.setdefault(target_ref, _node(res.entry, inside=False))
 
+            when, when_at, when_inherited, when_about = relation_when(rel, entry, res.entry)
             edges.append({
                 "from": entry.ref,
                 "to": target_ref,
@@ -209,9 +257,14 @@ def build_graph(
                 # **作中の時刻は 2 つ返す**（`timeline.annotate()` の `at` /
                 # `at_label` と同じ形の裏返し）: 表示は人が書いた文字列そのまま、
                 # 並べ替えは先頭の西暦から出した数。読めなければ `None` で、
-                # **黙って寄せない**（時系列が「時刻が分からない」の帯に入れる）
-                "when": rel.when,
-                "when_at": rel.when_at,
+                # **黙って寄せない**（時系列が「時刻が分からない」の帯に入れる）。
+                # 関係に書かれていなければ両端の語から継ぐ（→ `relation_when`）
+                "when": when,
+                "when_at": when_at,
+                # 継いだ値かどうか。**画面に出す** —— 書いていない時刻が並んで
+                # いるのに黙っていると、「この関係に時刻を書いた覚えはない」に見える
+                "when_inherited": when_inherited,
+                "when_about": when_about,
                 "missing": res.entry is None,
                 # 直すのに要るもの: 書き手の何番目の関係か と、書かれている行き先。
                 # ``to`` は解決後の ref なので、ファイルに書いてある文字列とは違う
@@ -238,8 +291,15 @@ def resolved_relations(entry: Entry, entries: list[Entry]) -> list[dict]:
     out: list[dict] = []
     for rel in entry.relations:
         res = resolve(rel.to, entries, origin=entry)
+        when, when_at, when_inherited, when_about = relation_when(rel, entry, res.entry)
         item = {
             **rel.model_dump(),
+            # **相関図と同じ口から採る**（`relation_when`）。ここだけ素の `rel.when`
+            # を出すと、図には並ぶのに一覧では時刻が無い、という食い違いになる
+            "when": when,
+            "when_at": when_at,
+            "when_inherited": when_inherited,
+            "when_about": when_about,
             "mutual": rel.mutual,
             "missing": res.missing,
             "reason": res.reason,
@@ -276,7 +336,11 @@ def backlinks(entry: Entry, entries: list[Entry]) -> list[dict]:
             res = resolve(rel.to, entries, origin=other)
             if res.entry is None or res.entry.ref != entry.ref:
                 continue
+            when, _, when_inherited, when_about = relation_when(rel, other, res.entry)
             out.append({
+                "when": when,
+                "when_inherited": when_inherited,
+                "when_about": when_about,
                 "ref": other.ref,
                 "term": other.term,
                 "url": entry_url(other),

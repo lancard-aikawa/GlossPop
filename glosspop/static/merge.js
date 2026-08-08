@@ -13,6 +13,7 @@ const FIELD_LABELS = {
   source: "出典",
   first_file: "初出のファイル",
   first_locator: "初出の位置",
+  when: "作中の時刻",
 };
 
 let dialog = null;

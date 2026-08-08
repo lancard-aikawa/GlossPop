@@ -176,6 +176,16 @@ class Relation(BaseModel):
         """
         return whenfmt.sort_key(self.when)
 
+    @property
+    def when_about(self) -> bool:
+        """だいたいの時刻として書かれているか（`16世紀` `約1560` `1560ごろ`）。
+
+        **位置は変わらない** —— 印であって別の時刻ではないので、並べ替えの数は
+        付けても付けなくても同じ（ずらす幅を決める根拠が無い）。読むのは
+        `core.whenfmt` 1 か所。
+        """
+        return whenfmt.is_about(self.when)
+
 
 def _point(value: object) -> list[float] | None:
     """``[x, y]`` として読める点だけを返す。読めなければ ``None``。
@@ -200,8 +210,22 @@ class EntryBase(BaseModel):
     summary: str = ""
     definition: str = ""
     examples: list[str] = Field(default_factory=list)
+    #: **その語自体が作中でいつか**（"1582-06-21 天正十年六月二日"）。書き方も
+    #: 読む口も関係の ``when`` と同じ（`core.whenfmt`。**読むのは 1 か所**）。
+    #:
+    #: **関係の ``when`` と役割が違う。** あちらは「その関係がいつ成立するか」で、
+    #: こちらは「その語そのものがいつか」。事件は**それ自体に日付がある**ので、
+    #: ここが無いと同じ日付を関係の本数だけ書き写すことになり、1 本直し忘れた
+    #: ときに**時系列の帯が静かに割れる**（実際にサンプルがそうなっていた）。
+    #:
+    #: **期間は持たない。** 並べるのに要るのは 1 点だけで、終わりを別項目にすると
+    #: 「どちらで並べるか」が増える。範囲は文字で書ける（``1467 応仁の乱（〜1477）``）
+    #: —— ``1467-1477`` は西暦として読めないので `whenfmt` が ``None`` を返す
+    when: str = ""
     #: 他のエントリとの関係（向き・上下・一言）。相関図と辞書ページに出す。
-    #: 旧 ``related``（向きも一言も無いただの名前の並び）はここに吸収する
+    #: 旧 ``related``（向きも一言も無いただの名前の並び）はここに吸収する。
+    #: **``to`` だけ書けば「関連用語一覧」になる** —— 一言も向きも省略できるので、
+    #: 「繋がっている語を並べたいだけ」に 2 つめの項目を足す必要は無い
     relations: list[Relation] = Field(default_factory=list)
     #: 改名・カテゴリ移動で捨てた古い ref。wiki のリダイレクトと同じ役割で、
     #: 参照側を書き換えずに済ませるために持つ (relations.resolve() が見る)
@@ -343,12 +367,26 @@ class EntryBase(BaseModel):
 
     @field_validator(
         "term", "reading", "category", "subcategory", "summary", "definition",
-        "source", "first_file", "first_locator",
+        "source", "first_file", "first_locator", "when",
         mode="before",
     )
     @classmethod
     def _normalize_str(cls, v: object) -> str:
         return "" if v is None else str(v).strip()
+
+    @property
+    def when_at(self) -> int | None:
+        """作中の時刻を並べ替えのための数にしたもの。読めなければ ``None``。
+
+        ``Relation.when_at`` とまったく同じ規則（**読むのは `core.whenfmt`
+        1 か所**）。図と点検が別々に読むと「点検は通るのに並ばない」が起きる。
+        """
+        return whenfmt.sort_key(self.when)
+
+    @property
+    def when_about(self) -> bool:
+        """だいたいの時刻として書かれているか。``Relation.when_about`` と同じ規則。"""
+        return whenfmt.is_about(self.when)
 
     @field_validator("category")
     @classmethod

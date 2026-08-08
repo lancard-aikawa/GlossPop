@@ -1125,6 +1125,10 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
    **作中の時刻は素のまま** —— 並べ替えに使うだけで、何も伏せない。
    同じ色にすると「時刻を書くと伏せられる」と読まれる。 */
 .rel-reveal { color: var(--warn); border-color: var(--warn); }
+/* **語から継いだ時刻は枠を破線に。** 書かれた時刻と同じ見た目で並べると、
+   その関係に時刻を書いたように見えて、消そうとして関係のほうを探し回ることになる
+   （実際の値は語の側にある）。**色は変えない** —— 別の軸ではなく同じ軸の値 */
+.rel-when.inherited { border-style: dashed; color: var(--fg-faint); }
 .rel-sub {
   font-size: var(--fs-11);
   letter-spacing: .08em;
@@ -1415,6 +1419,9 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-timeline .tl-axis line { stroke: var(--border-strong); stroke-width: 1; }
 .rel-timeline .tl-split { stroke: var(--border); stroke-dasharray: 3 4; }
 .rel-timeline .tl-tick { fill: var(--border-strong); }
+/* **だいたいの時刻は白抜き**（`16世紀` `約1560`）。位置は範囲の頭に置いてあるので、
+   実線の点にすると 1501 年ちょうどに見える —— 精度まで置き換えないための印 */
+.rel-timeline .tl-tick.about { fill: var(--bg); stroke: var(--border-strong); stroke-width: 1; }
 .rel-timeline .tl-head text { fill: var(--fg-dim); font: 600 11px var(--sans); }
 /* 位置の出せなかった関係の帯。落としてはいないが、読み進む順ではないと分かるように */
 .rel-timeline .tl-head.undated text { fill: var(--fg-faint); font-weight: 400; }
@@ -1422,6 +1429,25 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-timeline .rel-node text { font: 600 12px var(--sans); }
 /* 人が書いた判明位置。並べ替えには使っていない（計算値と混ぜて読ませない） */
 .rel-timeline .tl-reveal { fill: var(--warn); font: 11px var(--sans); }
+
+/* 年表（1 行 1 語）。**軸に載らない相手は「従」**として行のうしろに小さく出す。
+   語の箱と同じ見た目にしないこと —— 同じ大きさで並べると、どれが行なのか
+   （＝どれが時刻を持つ語なのか）が絵から読めなくなる。 */
+.rel-chronicle .tl-chip rect {
+  fill: var(--panel-2);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.rel-chronicle .tl-chip text { fill: var(--fg-dim); font: 11px var(--sans); }
+.rel-chronicle .tl-chip a:hover rect { stroke: var(--accent); }
+.rel-chronicle .tl-chip a:hover text { fill: var(--fg); }
+/* 未登録の相手（wiki の赤リンク）。段の図の `.missing` と同じ扱い */
+.rel-chronicle .tl-chip.missing rect { stroke-dasharray: 3 3; }
+/* 「ほか N」は行き先が 1 つに決まらないのでリンクにしない（押せると見せない） */
+.rel-chronicle .tl-chip.more rect { fill: none; stroke: none; }
+.rel-chronicle .tl-chip.more text { fill: var(--fg-faint); }
+/* 弧の一言は縦書き。列が細いので、字は本文より小さくする */
+.rel-chronicle .rel-edge-label { font-size: 10px; }
 
 /* 関係の無い語をまとめた帯。**段ではない**と見て分かるように区切る */
 .rel-lonely-rule line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 4; }

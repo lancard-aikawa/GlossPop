@@ -79,6 +79,10 @@ def _entry_block(entry: Entry) -> list[str]:
     facts = [entry.path_label]
     if entry.aliases:
         facts.append("別名: " + " / ".join(entry.aliases))
+    # **その語自体の作中の時刻。**関係のほうだけ出していると、事件の日付が
+    # 語に移ったぶんが冊子から静かに落ちる（画面には出ているので気付けない）
+    if entry.when:
+        facts.append(f"作中: {entry.when}")
     if entry.tags:
         facts.append(" ".join(f"#{t}" for t in entry.tags))
     out += [" ｜ ".join(f for f in facts if f), ""]

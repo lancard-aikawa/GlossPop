@@ -63,10 +63,19 @@ function build() {
           <label class="field"><span>タグ (カンマ区切り)</span>
             <input type="text" data-ref="tags" autocomplete="off"></label>
         </div>
-        <label class="field"><span>出典</span>
-          <input type="text" data-ref="source" autocomplete="off">
-          <p class="hint"><a data-ref="sourceLink" class="ext-link" target="_blank"
-             rel="noreferrer noopener" hidden>出典を開く</a></p></label>
+        <div class="field-row">
+          <label class="field"><span>作中の時刻</span>
+            <input type="text" data-ref="when" autocomplete="off"
+                   placeholder="1582-06-21 天正十年六月二日">
+            <p class="hint">この語自体がいつか（事件・出来事に書きます）。
+               並ぶのは先頭の西暦だけで、そのうしろは元号でも作中の暦でも自由です。
+               大体しか分からないときは <code>16世紀</code> <code>1560年代</code>
+               <code>約1560</code> のように書けます</p></label>
+          <label class="field"><span>出典</span>
+            <input type="text" data-ref="source" autocomplete="off">
+            <p class="hint"><a data-ref="sourceLink" class="ext-link" target="_blank"
+               rel="noreferrer noopener" hidden>出典を開く</a></p></label>
+        </div>
       </div>
       <footer>
         <button type="button" data-ref="draft">✨ AI で下書き</button>
@@ -202,15 +211,30 @@ function currentCategory() {
     : refs.category.value;
 }
 
-/** 初出位置はフォームに出さないが、保存時に落とさないよう保持する。 */
-let firstSeen = { first_file: "", first_locator: "" };
+/**
+ * フォームに出さない項目。**保存時に落とさないよう、開いたときの値を持っておく。**
+ *
+ * `PUT /api/entries/{ref}` はエントリを**丸ごと差し替える**（部分更新ではない）ので、
+ * ここに載せ忘れた項目は**編集ダイアログを開いて更新しただけで静かに消える**。
+ * 画面には何も出ないまま関係と地図の座標が消えるので、気付く手段が無い。
+ *
+ * ここに出さずに済ませているのは、それぞれ**別の専用の口**を持っているから
+ * （関係は `/api/relations`、地図の形は `/api/map-shape`、読みは `/api/readings`）。
+ * **項目を足したらここにも足すこと。**
+ */
+const KEPT_FIELDS = [
+  "first_file", "first_locator",
+  "relations", "map", "pin", "line", "area",
+];
+let kept = {};
 
 function readForm() {
   const listOf = (value) => value.split(",").map((s) => s.trim()).filter(Boolean);
   const draft = {
-    ...firstSeen,
+    ...kept,
     term: refs.term.value.trim(),
     reading: refs.reading.value.trim(),
+    when: refs.when.value.trim(),
     // 「自動」のまま保存されることもある (AI を使わずに手で書いた場合)。
     // サーバに auto は無いので、その場合は全体の辞書にする
     scope: refs.scope.value === "auto" ? "global" : refs.scope.value,
@@ -226,12 +250,11 @@ function readForm() {
 }
 
 function writeForm(data) {
-  firstSeen = {
-    first_file: data.first_file || "",
-    first_locator: data.first_locator || "",
-  };
+  kept = {};
+  for (const f of KEPT_FIELDS) if (data[f] != null) kept[f] = data[f];
   refs.term.value = data.term || "";
   refs.reading.value = data.reading || "";
+  refs.when.value = data.when || "";
   refs.subcategory.value = data.subcategory || "";
   refs.summary.value = data.summary || "";
   refs.definition.value = data.definition || "";
@@ -334,7 +357,7 @@ export async function openEntryEditor({
             spoiler: refs.spoiler.value,
             // 出典が content 内の相対パスなら、サーバが初出位置を数えられる。
             // 編集中は記録済みの初出ファイルのほうが確か（出典は URL のこともある）
-            file: firstSeen.first_file || (isHttpUrl(origin) ? "" : origin),
+            file: kept.first_file || (isHttpUrl(origin) ? "" : origin),
             // ローカル辞書に入れるつもりなら、提案カテゴリでマスターを汚さない
             scope: refs.scope.value,
             // **書き直しでは、いま書かれている説明を渡す。** 編集中は選択テキストも

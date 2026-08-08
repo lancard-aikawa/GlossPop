@@ -454,6 +454,12 @@ def _term_card(
         "path_label": entry.path_label,
         "url": entry_url(entry),
         "persona_url": persona,
+        # **作中の時刻は 2 つ返す**（辺と同じ形）。並べ替えの数を返さないと、
+        # 一覧が**先頭の西暦を自前で読む**ことになる —— 読む口は `core.whenfmt`
+        # 1 か所という約束が崩れ、図と一覧で並びが違う辞書ができる
+        "when": entry.when,
+        "when_at": entry.when_at,
+        "when_about": entry.when_about,
     }
 
 

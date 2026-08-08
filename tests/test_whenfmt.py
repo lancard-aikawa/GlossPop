@@ -91,3 +91,103 @@ class TestWhatIsShown:
     def test_nothing_written_is_empty(self):
         assert whenfmt.written("") == ""
         assert whenfmt.written(None) == ""
+
+
+class TestTheTimeOnTheTermItself:
+    """**時刻は語にも書ける**（事件・出来事）。読む口は関係とまったく同じ。"""
+
+    def test_the_term_reads_its_own_time_through_whenfmt(self):
+        from glosspop.core.models import Entry
+
+        entry = Entry(term="本能寺の変", when="1582-06-21 天正十年六月二日")
+        assert entry.when_at == whenfmt.sort_key(entry.when)
+        assert entry.when_at is not None
+
+    def test_an_unreadable_time_is_none_not_zero(self):
+        """0 に寄せると、いちばん古い出来事として並ぶ。"""
+        from glosspop.core.models import Entry
+
+        assert Entry(term="X", when="天保三年").when_at is None
+
+    def test_a_range_is_not_a_time(self):
+        """**期間は持たない。**`1467-1477` は西暦として読めない（月が 14 と 77 になる）。
+
+        範囲を書きたいときは先頭を 1 点にして、うしろに文字で書く。
+        """
+        from glosspop.core.models import Entry
+
+        assert Entry(term="応仁の乱", when="1467-1477").when_at is None
+        assert Entry(term="応仁の乱", when="1467 応仁の乱（〜1477）").when_at is not None
+
+
+class TestRoughAndApproximateTimes:
+    """**分かっているところまでしか書けない**、が普通の使い方。
+
+    正確な日付を捏造させると辞書が嘘をつくので、粗い書き方をそのまま受ける。
+    見張るのは 3 つ: **粗いものは範囲の頭に置く**（`1560` が `1560-01-01` と
+    同じ扱いなのと同じ規則）、**「だいたい」の印は位置を変えない**、
+    **変換表が要るものは相変わらず読まない**（元号）。
+    """
+
+    @pytest.mark.parametrize("text,year", [
+        ("16世紀", 1501),          # 1501〜1600 を 16 世紀と数える
+        ("1世紀", 1),
+        ("1560年代", 1560),
+        ("1560年", 1560),
+    ])
+    def test_a_rough_time_lands_on_the_head_of_its_range(self, text, year):
+        assert whenfmt.sort_key(text) == whenfmt.sort_key(str(year))
+
+    @pytest.mark.parametrize("text", ["1560年5月19日", "1560 年 5 月 19 日"])
+    def test_a_japanese_date_reads_like_the_iso_one(self, text):
+        assert whenfmt.sort_key(text) == whenfmt.sort_key("1560-05-19")
+
+    @pytest.mark.parametrize("text", ["約1560", "およそ1560", "~1560", "〜1560",
+                                      "ca.1560", "1560ごろ", "1560頃", "1560?", "1560 ごろ"])
+    def test_an_approximate_mark_does_not_move_the_position(self, text):
+        """**印であって別の時刻ではない。** ずらす幅を決める根拠が無い。"""
+        assert whenfmt.sort_key(text) == whenfmt.sort_key("1560")
+        assert whenfmt.is_about(text) is True
+
+    def test_a_century_and_a_decade_are_approximate_without_a_mark(self):
+        assert whenfmt.is_about("16世紀") is True
+        assert whenfmt.is_about("1560年代") is True
+        assert whenfmt.is_about("1560") is False
+        assert whenfmt.is_about("1560-05-19") is False
+
+    def test_an_unreadable_time_is_not_approximate_either(self):
+        """読めないものは「だいたい」ですらない（点検が挙げる側）。"""
+        assert whenfmt.is_about("天正十年") is False
+
+    @pytest.mark.parametrize("text", ["天正十年", "1560〜1570", "15600519", "0世紀"])
+    def test_what_is_still_not_read(self, text):
+        """**幅は持たない**（範囲どうしの前後が決まらない）。元号も相変わらず読まない。"""
+        assert whenfmt.sort_key(text) is None
+
+
+class TestCoarseningToTheYear:
+    """**月日だけ落として年は残す。** 「西暦に直せないが年は分かる」の落としどころ。
+
+    和暦・太陰暦の月日は換算表が無いと西暦に直せないので、直せないものを
+    黙って持たせるより、**確かなところまで**に丸めるほうを採る。
+    """
+
+    def test_it_keeps_the_year_and_the_words_after_it(self):
+        assert whenfmt.year_only("1582-06-02 天正十年六月二日") == "1582 天正十年六月二日"
+
+    def test_the_japanese_form_is_coarsened_too(self):
+        assert whenfmt.year_only("1582年6月2日 天正十年六月二日") == "1582 天正十年六月二日"
+
+    def test_a_time_of_day_goes_with_the_day(self):
+        assert whenfmt.year_only("1560-05-19 10:30 払暁") == "1560 払暁"
+
+    def test_something_already_coarse_is_left_alone(self):
+        for text in ["1560", "16世紀", "1560年代", "約1560"]:
+            assert whenfmt.year_only(text) == text
+
+    def test_an_unreadable_string_is_returned_as_written(self):
+        """読めないものを触っても直らない（点検が挙げる側の話）。"""
+        assert whenfmt.year_only("天正十年六月二日") == "天正十年六月二日"
+
+    def test_the_result_still_sorts(self):
+        assert whenfmt.sort_key(whenfmt.year_only("1582-06-02 天正十年六月二日")) is not None

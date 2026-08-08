@@ -18,11 +18,13 @@ const TEMPLATE = `
   <select id="tagFilter" class="auto-width" title="タグで絞り込む" aria-label="タグで絞り込む">
     <option value="">すべてのタグ</option>
   </select>
-  <!-- 束ね方。**カテゴリ順の置き換えではなく、もう 1 つの引き方**（紙の辞書で
-       いちばん普通の「あいうえお順に通して見る」道が無かった）。覚える -->
+  <!-- 束ね方。**どれも置き換えではなく、別の引き方**（カテゴリ順 = どういう語か、
+       五十音 = 辞書を通して、作中の時刻順 = 起きた順）。相関図の時系列が並べて
+       いるのは**関係**なので、**語そのものを順に並べたもの**はここにしか無い。覚える -->
   <select id="groupBy" class="auto-width" title="束ね方" aria-label="束ね方">
     <option value="category">カテゴリ順</option>
     <option value="reading">五十音順</option>
+    <option value="when" title="作中で起きた順に通して見る（年表）">作中の時刻順</option>
   </select>
   <span class="spacer"></span>
   <!-- 索引（語がどこに何回出てくるか）。**辞書の側から本文を見る唯一の入口**
@@ -403,11 +405,99 @@ function paintByReading(entries) {
   );
 }
 
+// --------------------------------------------------------------------------- //
+// 作中の時刻で通して見る（年表）
+//
+// **3 つめの引き方で、置き換えではない**（カテゴリ順 = どういう語か、五十音 =
+// 辞書を通して、時刻順 = 起きた順）。相関図の時系列が並べているのは**関係**なので、
+// **語そのものを順に並べたもの**はここにしか無い。
+//
+// **並べ替えの数はサーバが渡す** (`when_at`)。ここで先頭の西暦を読み直すと、
+// 読む口が 2 つになって「図では並ぶのに一覧では並ばない」が起きる。
+// --------------------------------------------------------------------------- //
+
+//: 時刻で置けない語の束。**「書いていない」と「書いたのに読めない」を分ける** ——
+//: まとめると、書き間違いが未入力に紛れて見えなくなる（時系列と同じ約束）
+const TIME_NONE = "時刻なし";
+const TIME_BAD = "時刻が読めない";
+
+/** 時刻の束を作る。**見出しは書かれたまま**（人の言葉を置き換えない）。 */
+function timeGroups(entries) {
+  const dated = [];
+  const none = [];
+  const bad = [];
+  for (const e of entries) {
+    if (typeof e.when_at === "number") dated.push(e);
+    else if ((e.when || "").trim()) bad.push(e);
+    else none.push(e);
+  }
+  // **束ねるのは「並べ替えの値も見出しも同じ」ものだけ**（時系列の `bandsOf` と
+  // 同じ規則）。人は同じ日を 2 通りに書けるので、こちらで片方に寄せると
+  // **書いていない文字列が見出しに出る**
+  dated.sort((a, b) => a.when_at - b.when_at
+    || (a.when || "").localeCompare(b.when || "", "ja")
+    || byReading(a, b));
+
+  const rows = [];
+  for (const e of dated) {
+    const last = rows[rows.length - 1];
+    if (last && last[2] === e.when_at && last[0] === e.when) last[1].push(e);
+    else rows.push([e.when, [e], e.when_at]);
+  }
+  if (bad.length) rows.push([TIME_BAD, bad.sort(byReading), null]);
+  if (none.length) rows.push([TIME_NONE, none.sort(byReading), null]);
+  return rows;
+}
+
+/**
+ * 時刻で束ねて描く。**カテゴリはカードに出す**（見出しがカテゴリでなくなるので、
+ * 五十音のときと同じ理由）。
+ *
+ * **飛ぶ帯は出さない。** 五十音は行が 13 個と決まっているが、時刻はいくつでも
+ * 増えるので、同じ帯を作ると数十個の日付が並んで本体より背が高くなる。
+ */
+function paintByWhen(entries) {
+  const rows = timeGroups(entries);
+  if (!rows.length) {
+    list.replaceChildren(el("p", { class: "empty", text: "該当する用語がありません" }));
+    return;
+  }
+  list.replaceChildren(
+    ...rows.map(([head, items]) => el("section", { class: "cat-group", "data-row": head }, [
+      el("h2", {}, [
+        el("span", { text: head }),
+        el("span", { class: "count", text: `${items.length} 語` }),
+      ]),
+      // **書いていないことを責めない。** どうすればここから出られるかだけ書く
+      // （五十音の「読みなし」と同じ扱い。ただし埋める道は用意しない ——
+      // 日付は本文に書いてあるとは限らず、機械が確かめようがない）
+      head === TIME_NONE
+        ? el("p", { class: "hint" }, [
+            el("span", { text: "事件や出来事に " }),
+            el("code", { text: "when: 1582-06-21 天正十年六月二日" }),
+            el("span", { text: " のように書くと、上の年表に並びます（人物は期間なので書きません）。" }),
+          ])
+        : null,
+      head === TIME_BAD
+        ? el("p", {
+            class: "hint",
+            text: "先頭を西暦で書くと並びます（元号だけでは前後が決まりません）。",
+          })
+        : null,
+      el("div", { class: "cards" }, items.map((e) => card(e, { showPath: true }))),
+    ])),
+  );
+}
+
 function paint(entries) {
   // **束ね方を変えるだけならサーバへ行き直さない**（同じものを束ね直すだけ）
   lastEntries = entries;
   if (groupBy.value === "reading") {
     paintByReading(entries);
+    return;
+  }
+  if (groupBy.value === "when") {
+    paintByWhen(entries);
     return;
   }
   const filtering = Boolean(qInput.value.trim() || catFilter.value || tagFilter.value);
@@ -777,7 +867,8 @@ export async function mount(container, { search = "" } = {}) {
   // **サーバへは行き直さない** —— 同じものを束ね直すだけ
   try {
     const saved = localStorage.getItem(GROUP_KEY);
-    if (saved === "reading" || saved === "category") groupBy.value = saved;
+    // **読めない値は既定に落とす**（束ね方を足したら、ここにも足すこと）
+    if (["reading", "category", "when"].includes(saved)) groupBy.value = saved;
   } catch {
     /* 使えない環境でも既定で動く */
   }

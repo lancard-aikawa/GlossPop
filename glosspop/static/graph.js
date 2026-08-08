@@ -42,7 +42,7 @@ const TEMPLATE = `
     <!-- 1 語を中心にした図。**規模に依らない**唯一の見せ方（→ ego.js） -->
     <option value="ego">中心の図（1 語）</option>
     <!-- 時系列は**軸が 2 つ**ある。読む順（その文書のどこで読めるようになるか。
-         文書を開いているときだけ）と、作中の時刻（関係に when を書いたとき）。
+         文書を開いているときだけ）と、作中の時刻（語か関係に when を書いたとき）。
          どちらも無ければ出せないので、そのときは段の図に落として注意書きを出す
          （→ timeline.js） -->
     <option value="timeline">時系列（読む順・作中の時刻）</option>
@@ -53,6 +53,12 @@ const TEMPLATE = `
   <!-- 並べる軸（時系列のときだけ）。**どちらで並べているかは必ず画面に出す** ——
        読む順（読者がいつ読めるか）と作中の時刻は別の時間で、一致しない -->
   <select id="timeAxis" class="auto-width" aria-label="並べる軸" hidden></select>
+  <!-- 並べるもの（時系列のときだけ）。**関係と語は答える問いが違う** ——
+       関係は「誰と誰がいつ繋がるか」、語は「何がいつ起きたか」。置き換えではない -->
+  <select id="timeRows" class="auto-width" aria-label="並べるもの" hidden>
+    <option value="edge" title="1 行 1 関係。誰と誰がいつ繋がるか">関係を並べる</option>
+    <option value="node" title="1 行 1 語。何がいつ起きたか（相手は行のうしろに小さく出る）">語を並べる（年表）</option>
+  </select>
   <!-- どの絵を出すか。**辞書に数枚ある**ので選べないと「ほかに 〇〇 があります」と
        書いておきながら行けない。地図のとき、絵が 2 枚以上あるときだけ出す -->
   <select id="mapPick" class="auto-width" aria-label="地図" hidden></select>
@@ -177,7 +183,7 @@ const TEMPLATE = `
            並べ替えに使うのは**先頭の西暦だけ**で、うしろは書かれたまま出る -->
       <label>作中の時刻
         <input type="text" data-ref="when" autocomplete="off"
-               placeholder="例: 1560-05-19 永禄三年五月十九日（空でよい）"></label>
+               placeholder="例: 1560-05-19 永禄三年五月十九日 / 16世紀 / 約1560（空でよい）"></label>
     </div>
     <footer>
       <button type="button" class="danger" data-ref="remove">削除</button>
@@ -194,7 +200,7 @@ const TEMPLATE = `
 `;
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
-let mapPick, mapLayers, mapEdit, mapDialog, timeAxisPick, mapTimeBar;
+let mapPick, mapLayers, mapEdit, mapDialog, timeAxisPick, timeRowsPick, mapTimeBar;
 //: いま出している時点の顔ぶれ（絵 + 時刻の並び）。**同じなら作り直さない** ——
 //: 掴んでいる最中にスライダが消えるとドラッグが切れる
 let mapTimeKey = "";
@@ -222,16 +228,22 @@ const MODE_WORDS = {
 let mode = "layered";
 
 //: 時系列の**並べる軸**。read = 読者がその文書のどこで読めるようになるか
-//: （`?doc=` が要る）、when = 作中でいつ起きたか（関係に `when` を書いたもの）。
+//: （`?doc=` が要る）、when = 作中でいつ起きたか（語か関係に `when` を書いたもの）。
 //: **どちらも「時間」だが別物**なので、どちらで並べているかは必ず画面に出す。
 //: **覚える** —— 覆いは何度でも開き直されるので、毎回選び直させない
 const TIME_AXIS_KEY = "glosspop.graphTimeAxis";
+//: 時系列で**並べるもの**。edge = 関係（1 行 1 本）/ node = 語（1 行 1 語 ＝ 年表）
+const TIME_ROWS = ["edge", "node"];
+const TIME_ROWS_KEY = "glosspop.graphTimeRows";
 const TIME_AXES = ["read", "when"];
 const AXIS_WORDS = { read: "読む順", when: "作中の時刻" };
 let timeAxis = "read";
 //: 選んだ軸が使えなかったので、もう片方で並べたか（**覚えているほうは
 //: 書き換えない**。押しのけたことは注意書きに出す ——「地図が無いので段の図」と同じ）
 let axisFellBack = "";
+//: 時系列で並べるもの（覚える）。**軸とは別の選択** —— 軸は「どの時間か」、
+//: こちらは「何を 1 行にするか」で、掛け合わせて 4 通りになる
+let timeRows = "edge";
 
 //: 2 つの ref をつないで組の鍵にするための区切り。カテゴリ名も slug も
 //: "<" ">" を弾いているので、ref の中身と衝突しない
@@ -1203,6 +1215,7 @@ function draw(graph) {
       center: egoCenter,
       onCenter: moveCenter,
       axis: drawnAxis,
+      rows: timeRows,
       mapName,
       hidden: mapHidden.get(mapName),
       editing: mapEditing,
@@ -1391,7 +1404,14 @@ function openEdgeEditor(edge) {
   dlg("back").value = edge.back || "";
   dlg("rank").value = edge.rank || "";
   dlg("reveal").value = edge.reveal || "";
-  dlg("when").value = edge.when || "";
+  // **継いだ時刻を欄に入れないこと。** 入れると、この関係を一言だけ直したつもりで
+  // 保存した瞬間に**語の時刻が関係へ焼き付く** —— 事件の日付を関係の本数だけ
+  // 書き写していた元の形に戻り、しかも次に事件の日付を直しても付いてこない。
+  // 継いだぶんは**入力の手引き**として枠の中に薄く出すだけにする
+  dlg("when").value = edge.when_inherited ? "" : (edge.when || "");
+  dlg("when").placeholder = edge.when_inherited
+    ? `空なら「${edge.when}」（語に書いた時刻）で並びます`
+    : "例: 1560-05-19 永禄三年五月十九日 / 16世紀 / 約1560（空でよい）";
   setStatus(dlg("status"), "");
   edgeDialog.showModal();
 }
@@ -1596,6 +1616,23 @@ function paintNotes(graph) {
       "（時系列ではいちばん下にまとめています）。"
     );
   }
+  if (mode === "timeline" && timeRows === "edge") {
+    // **並びを決め切ったことは書く。**書かないと、同じ時刻の中の順番が
+    // 何で決まっているのか分からず、入力順だと思われる
+    lines.push(
+      "同じ時刻の中では、両端が同じカテゴリの関係を先に並べています"
+      + "（事件どうしの筋が、顔ぶれの多さで下に埋もれないように）。"
+    );
+  }
+  if (mode === "timeline" && timeRows === "node") {
+    // **何を行にしているかは必ず書く。** 関係の並びと同じ縦軸に見えるので、
+    // 書かないと「関係が減った」と読まれる（線ではなくチップになっただけ）
+    lines.push(
+      "1 行が 1 語です。軸に載るのは時刻（または読む位置）のある語だけで、"
+      + "残りはその行のうしろに小さく並べています。"
+      + "カテゴリで絞ると、行に出る語をそのカテゴリだけにできます。"
+    );
+  }
   if (centeredByUrl && mode === "ego") {
     // 覚えている見せ方を押しのけたことは書く（次にふつうに開けば元に戻る）
     lines.push(
@@ -1616,7 +1653,7 @@ function paintNotes(graph) {
     // どちらが足りないのかまで書く（「文書を開け」だけだと、時刻を書く道が見えない）
     lines.push(
       "時系列は「読む順」か「作中の時刻」のどちらかが要るので、いまは段の図に"
-      + "しています（ビューアの「🕸 この文書の相関図」から開くか、関係に "
+      + "しています（ビューアの「🕸 この文書の相関図」から開くか、語か関係に "
       + "when（例: 1560-05-19）を書くと出せます）。"
     );
   }
@@ -1774,7 +1811,7 @@ function syncModeOptions() {
  */
 function axisFor(graph) {
   const canRead = !!currentDoc;
-  const canWhen = (graph.edges || []).some((e) => typeof e.when_at === "number");
+  const canWhen = hasWhen(graph);
   const wanted = TIME_AXES.includes(timeAxis) ? timeAxis : "read";
   if (wanted === "when" && canWhen) return "when";
   if (wanted === "read" && canRead) return "read";
@@ -1783,11 +1820,26 @@ function axisFor(graph) {
   return "";
 }
 
+/**
+ * 作中の時刻で並べられるか。**「並べるもの」で見る先が変わる。**
+ *
+ * 語を並べるときは**語の時刻**が要る —— 辺だけを見ると、関係の書かれていない
+ * 事件（日付は書いてある）が 1 件でも、「時刻が無い」と言って軸を落としてしまう。
+ */
+function hasWhen(graph) {
+  if (timeRows === "node") {
+    return (graph.nodes || []).some((n) => !n.outside && typeof n.when_at === "number");
+  }
+  return (graph.edges || []).some((e) => typeof e.when_at === "number");
+}
+
 /** 並べる軸の選択肢（時系列のときだけ出す）。使えない軸は選べなくする。 */
 function paintAxisOptions(graph) {
   timeAxisPick.hidden = mode !== "timeline";
+  timeRowsPick.hidden = mode !== "timeline";
+  timeRowsPick.value = timeRows;
   if (timeAxisPick.hidden) return;
-  const canWhen = (graph.edges || []).some((e) => typeof e.when_at === "number");
+  const canWhen = hasWhen(graph);
   timeAxisPick.replaceChildren(
     el("option", {
       value: "read",
@@ -1799,7 +1851,7 @@ function paintAxisOptions(graph) {
       value: "when",
       text: "作中の時刻",
       disabled: !canWhen,
-      title: "関係に書いた when の順（先頭の西暦で並べます）",
+      title: "語と関係に書いた when の順（先頭の西暦で並べます）",
     }),
   );
   // 実際に描いた軸を映す（落ちたときは落ちた先が出る。覚えているほうは別）
@@ -2058,6 +2110,16 @@ function rememberedNoLabels() {
     return new Set(JSON.parse(localStorage.getItem(MAP_LABELS_KEY) || "[]"));
   } catch {
     return new Set();
+  }
+}
+
+/** 覚えている並べるもの。読めない値は「関係」に落ちる（既定を壊さない）。 */
+function rememberedRows() {
+  try {
+    const saved = localStorage.getItem(TIME_ROWS_KEY);
+    return TIME_ROWS.includes(saved) ? saved : "edge";
+  } catch {
+    return "edge";
   }
 }
 
@@ -2530,8 +2592,16 @@ function paintGraph(graph) {
     // 保存はしていない、と書いておかないと「編集したらずれる」と読まれる
     // **どちらの軸で並べているかで説明が変わる。** 同じ縦軸に見えるので、
     // 書かないと「読む順」と「作中の時刻」を取り違える（そもそも一致しない）
-    timeline: drawnAxis === "when"
-      ? "上から順に、作中で起きた順です（関係に書いた when の、先頭の西暦で並べています）。"
+    timeline: timeRows === "node"
+      ? (drawnAxis === "when"
+        ? "上から順に、作中で起きた順に**語**を並べています（語に書いた when の、先頭の西暦）。"
+          + "行どうしの関係は右の線、軸に載らない相手は行のうしろの小さな枠です（押すと開けます）。"
+          + "人物に時刻を書かないのは、期間（生没）だからです —— そのぶん自然に行のうしろへ回ります。"
+        : "上から順に、この文書に出てくる順に**語**を並べています。"
+          + "左の見出しはその語が初めて出てくる位置（章・ページ・行）。"
+          + "位置は開くたびに本文から数えていて保存はしません。")
+      : drawnAxis === "when"
+      ? "上から順に、作中で起きた順です（語と関係に書いた when の、先頭の西暦で並べています）。"
         + "左の見出しは書かれたままの文字列なので、うしろに元号や作中の暦を書けます。"
         + "時刻を書いていない関係と、西暦として読めない関係は、いちばん下の帯にまとめています。"
         + "「判明: …」は読者がいつ知るかで、こちらの並べ替えには使っていません。"
@@ -2599,6 +2669,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   zoomBar = host.querySelector("#zoom");
   modeSelect = host.querySelector("#mode");
   timeAxisPick = host.querySelector("#timeAxis");
+  timeRowsPick = host.querySelector("#timeRows");
   mapPick = host.querySelector("#mapPick");
   mapLayers = host.querySelector("#mapLayers");
   mapTimeBar = host.querySelector("#mapTimeBar");
@@ -2660,6 +2731,17 @@ export async function mount(host, { search = "", embed = false } = {}) {
   // 絵も URL から指せる（用語ページはその語が置かれている絵を知っている）。
   // **こちらも覚えているほうは書き換えない**
   timeAxis = rememberedAxis();
+  timeRows = rememberedRows();
+  timeRowsPick.addEventListener("change", () => {
+    timeRows = TIME_ROWS.includes(timeRowsPick.value) ? timeRowsPick.value : "edge";
+    try {
+      localStorage.setItem(TIME_ROWS_KEY, timeRows);
+    } catch {
+      /* 使えない環境でも、その画面では効く */
+    }
+    // 並べるものを変えるだけならサーバへ行き直さない（同じデータの描き替え）
+    if (lastGraph) paintGraph(lastGraph);
+  });
   timeAxisPick.addEventListener("change", () => {
     timeAxis = TIME_AXES.includes(timeAxisPick.value) ? timeAxisPick.value : "read";
     try {

@@ -127,6 +127,14 @@ def check(entries: list[Entry], *, maps: Mapping[str, float | None] | None = Non
     issues: list[dict] = []
 
     for entry in entries:
+        # 語そのものの時刻も同じ規則で読む。**こちらのほうが被害が広い** ——
+        # 読めない時刻は関係へも継がれないので（→ `relations.relation_when`）、
+        # その語に繋がる辺がまとめて時系列から落ちる
+        if entry.when and entry.when_at is None:
+            issues.append(_issue(
+                "unreadable_when", WARN, entry,
+                f"この語の時刻「{entry.when}」を西暦として読めません",
+            ))
         for rel in entry.relations:
             # **書いたのに並ばない**（時系列で「時刻が分からない」に落ちる）。
             # 画面には何も出ないので、ここで言わないと気付く手段が無い

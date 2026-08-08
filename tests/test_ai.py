@@ -841,3 +841,51 @@ class TestCooccurrenceContext:
         docs = [("a.md", "ジョバンニ" + "。" * 5000 + "カムパネルラ")]
         await ai.draft_relations(store.load_all(), docs, spoiler="full")
         assert "ジョバンニ" in seen["prompt"]
+
+
+class TestTheDraftedTime:
+    """AI が書いた作中の時刻は**信じてよいところまで**に削る。
+
+    **実測から来ている決まり。** `samples/戦国時代` で走らせたところ、AI は
+    **和暦の月日をそのまま西暦の枠に写した**（「六月二日」→ `06-02`。正しくは
+    1582-06-21 で**3 週間ずれる**）。3 件中 3 件が同じ壊れ方で、**プロンプトで
+    禁じても 3 件中 1 件しか直らなかった**。しかも形は正しいので、西暦として
+    読めるかの検査は通ってしまう —— だから機械で削る。
+    """
+
+    def test_an_unreadable_time_is_dropped(self):
+        """元号だけ・作中の暦だけは落とす（書いても並ばないものを持たせない）。"""
+        assert ai.filter_when("天正十年") == ""
+        assert ai.filter_when("戦国のいつか") == ""
+
+    def test_a_rough_time_survives(self):
+        """**大体の書き方は通す。** ここを落とすと、捏造するか諦めるかの二択に戻る。"""
+        for text in ["16世紀", "1560年代", "約1560", "1560"]:
+            assert ai.filter_when(text) == text
+
+    def test_a_lunisolar_month_pulls_the_head_back_to_the_year(self):
+        """漢数字の月が続いていたら、頭の月日は写しとみなして落とす。"""
+        assert ai.filter_when("1582-06-02 天正十年六月二日") == "1582 天正十年六月二日"
+        assert ai.filter_when("1570-06-28 元亀元年六月二十八日") == "1570 元亀元年六月二十八日"
+
+    def test_even_a_correct_conversion_is_coarsened(self):
+        """**正しく換算されていたぶんも丸まる。** 見分ける手段が無いので、
+        間違った日付を通すより落とすほうを採る（読みと同じ判断）。
+        """
+        assert ai.filter_when("1582-06-21 天正十年六月二日") == "1582 天正十年六月二日"
+
+    def test_a_plain_western_date_is_untouched(self):
+        """和暦が併記されていなければ写しようがない。"""
+        assert ai.filter_when("1560-05-19") == "1560-05-19"
+
+    def test_dates_after_the_calendar_change_are_untouched(self):
+        """**明治六年から和暦と西暦の月日は一致する**ので、揃っていても写しではない。"""
+        assert ai.filter_when("1873-01-01 明治六年一月一日") == "1873-01-01 明治六年一月一日"
+        assert ai.filter_when("2011-03-11 平成二十三年三月十一日") == "2011-03-11 平成二十三年三月十一日"
+
+    def test_the_prompt_says_where_to_stop(self):
+        """**プロンプトの禁止文だけには頼らないが、書いてはおく**（両方要る）。"""
+        prompt = ai.build_prompt("本能寺の変", "本文")
+        assert "作中の時刻" in prompt
+        assert "人物には書かない" in prompt
+        assert "月日を西暦に直さない" in prompt

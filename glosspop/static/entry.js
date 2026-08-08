@@ -76,12 +76,17 @@ function relationRow(rel, onRemove) {
     bits.push(el("span", { class: "rel-reveal", text: `判明: ${rel.reveal}`, title: "相関図では既定で伏せる" }));
   }
   // **判明位置とは別の軸**（あちらは読者がいつ知るか、こちらは作中でいつか）。
-  // 書いてあるものだけ出す —— 時刻を書かない関係のほうが普通
+  // 書いてあるものだけ出す —— 時刻を書かない関係のほうが普通。
+  // **語から継いだぶんは、継いだと分かるように出す** —— 同じ見た目で並べると
+  // 「この関係に時刻を書いた覚えはない」ものが書いたように見え、消そうとして
+  // 関係のほうを探し回ることになる（実際の値は語の側にある）
   if (rel.when) {
     bits.push(el("span", {
-      class: "rel-when",
-      text: `作中: ${rel.when}`,
-      title: "相関図の時系列で、この順に並べます（先頭の西暦で並べ替え）",
+      class: rel.when_inherited ? "rel-when inherited" : "rel-when",
+      text: rel.when_inherited ? `作中: ${rel.when}（語の時刻）` : `作中: ${rel.when}`,
+      title: rel.when_inherited
+        ? "この関係には時刻が書かれていないので、両端の語のうち遅いほうの時刻で並べます"
+        : "相関図の時系列で、この順に並べます（先頭の西暦で並べ替え）",
     }));
   }
   if (rel.missing) bits.push(el("span", { class: "hint", text: rel.reason }));
@@ -488,6 +493,13 @@ function render(entry) {
   }
   if (entry.aliases?.length) {
     head.append(el("p", { class: "aliases", text: `別名: ${entry.aliases.join(" / ")}` }));
+  }
+  // **その語自体の作中の時刻。**別名のすぐ下（語の素性の一部で、説明ではない）。
+  // 書いてある語のほうが少ないので、無いときは行ごと出さない
+  if (entry.when) {
+    head.append(el("p", { class: "aliases" }, [
+      el("span", { class: "rel-when", text: `作中: ${entry.when}` }),
+    ]));
   }
   if (entry.summary) head.append(el("p", { class: "summary", text: entry.summary }));
   if (entry.tags?.length) {

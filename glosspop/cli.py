@@ -228,6 +228,7 @@ def cmd_add(args: argparse.Namespace) -> int:
             "summary": args.summary or "",
             "definition": _read_text_arg(args.definition),
             "examples": _split(args.examples),
+            "when": args.when or "",
             "related": _split(args.related),
             "tags": _split(args.tags),
             "source": args.source or "",
@@ -505,6 +506,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--summary", help="吹き出しに出す 1〜2 文")
     a.add_argument("--definition", help="本文 Markdown ('-' で stdin, '@path' でファイル)")
     a.add_argument("--examples", help="カンマ区切りの使用例")
+    a.add_argument(
+        "--when",
+        help="この語自体の作中の時刻（例: '1582-06-21 天正十年六月二日'）。"
+             "並ぶのは先頭の西暦だけで、そのうしろは元号でも作中の暦でもよい。"
+             "大体しか分からないときは '16世紀' '1560年代' '約1560' も書ける",
+    )
     # 旧名。EntryBase が relations へ畳むので、指定すると向きも一言も無い関係になる
     a.add_argument("--related", help="カンマ区切りの関連語（relations に取り込まれる）")
     a.add_argument("--tags", help="カンマ区切りのタグ")

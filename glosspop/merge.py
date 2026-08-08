@@ -38,7 +38,12 @@ from .core.models import Entry, Relation, now_iso
 
 #: 両側にあって食い違うと人に選ばせる項目。**リストは和集合で畳めるので入れない**
 #: （別名・タグ・使用例は「両方入っていて困る」ことがない）
-CONFLICT_FIELDS = ("reading", "summary", "definition", "source", "first_file", "first_locator")
+CONFLICT_FIELDS = (
+    "reading", "summary", "definition", "source", "first_file", "first_locator",
+    # 語そのものの作中の時刻。**畳めない** —— 同じ事件が 2 件に割れていて日付の
+    # 書き方が違うとき、機械が片方に寄せると時系列の帯が黙って動く
+    "when",
+)
 
 #: 統合しても機械で畳める項目（和集合を採る）
 UNION_FIELDS = ("aliases", "examples", "tags")
@@ -130,6 +135,7 @@ def _entry_view(entry: Entry) -> dict:
         "source": entry.source,
         "first_file": entry.first_file,
         "first_locator": entry.first_locator,
+        "when": entry.when,
         "path_label": entry.path_label,
         "scope": entry.scope,
         "url": entry_url(entry),
