@@ -1814,6 +1814,9 @@ async function deleteMapImage(refs, item) {
  */
 async function saveMapShape(ref, kind, points, { remember = true } = {}) {
   if (remember) rememberShape(ref);
+  // **触っていた場所を先に控える。** 下の `refresh()` が図ごと差し替えるので、
+  // ここで控えないと戻す手掛かりが消える（描き直したあとでは遅い）
+  const spot = focusedMapControl();
   try {
     await api(`/api/map-shape/${encodePath(ref)}`, {
       method: "PUT",
@@ -1821,9 +1824,61 @@ async function saveMapShape(ref, kind, points, { remember = true } = {}) {
     });
     setStatus(statusNode, "地図の位置を保存しました");
     await refresh();
+    restoreMapFocus(spot);
   } catch (err) {
     setStatus(statusNode, err.message, "error");
   }
+}
+
+/**
+ * いま焦点が当たっている地図の操作部。**保存の前に控える。**
+ *
+ * 地図は**保存が即時**（掴んで離したら書く）で、書くたびに `refresh()` が
+ * 図を差し替える —— 焦点を持っていた頂点の丸はそこで消える。マウスは
+ * 1 ドラッグ ＝ 1 保存なので気付けないが、**キーボードでは 1 押しごとに
+ * 焦点が body へ落ち、2 回目以降が効かない**（実測。矢印キーで 1 回しか
+ * 動かせず、＋ と Delete も 1 操作ごとに Tab で戻る必要があった）。
+ * 「掴めない人を締め出さない」と書いてある側だけが効いていない状態だった。
+ */
+function focusedMapControl() {
+  const node = document.activeElement;
+  if (!node) return null;
+  if (node.classList?.contains("rel-map-handle") && node.dataset.ref) {
+    return { ref: node.dataset.ref, vertex: Number(node.dataset.vertex) || 0 };
+  }
+  // ↩ は続けて押す（何手も遡る）ボタンなので、ここも戻す
+  if (node.dataset?.ref === "mapUndo") return { undo: true };
+  // 種別を変えた直後は、その語の頂点を触りに行く番 —— 一覧の頭へ落とさない
+  if (node.dataset?.ref === "mapKind") return { kind: node.dataset.item };
+  return null;
+}
+
+/**
+ * 控えた場所へ焦点を戻す。**無くなっていたら何もしない。**
+ *
+ * 頂点は増えたり減ったりする（＋ / Delete）ので、**同じ添字**へ戻して
+ * 端で丸める —— 消したときは「次の頂点」、足したときは「押した頂点」に残る。
+ * どちらも押した場所の続きなので、キーボードで連続して操作できる。
+ * **「消えたら先頭へ」にはしない**（図の反対側へ飛ぶと、どこを触っていたか
+ * 分からなくなる）。
+ */
+function restoreMapFocus(spot) {
+  if (!spot) return;
+  if (spot.undo) {
+    mapLayers.querySelector("[data-ref=mapUndo]")?.focus();
+    return;
+  }
+  if (spot.kind) {
+    mapLayers.querySelector(
+      `[data-ref=mapKind][data-item="${CSS.escape(spot.kind)}"]`
+    )?.focus();
+    return;
+  }
+  const dots = [...(svgRoot?.querySelectorAll(
+    `.rel-map-handle[data-ref="${CSS.escape(spot.ref)}"]`
+  ) || [])];
+  if (!dots.length) return;                 // 地図から下ろした / 種別が変わった
+  dots[Math.min(Math.max(spot.vertex, 0), dots.length - 1)].focus();
 }
 
 //: 書き換える**前**の形。**保存が即時**（掴んで離したら書く）なので、
@@ -1907,6 +1962,9 @@ function kindPicker(item) {
   const pick = el("select", {
     class: "auto-width",
     "data-ref": "mapKind",
+    // 選ぶと保存 → 描き直しで一覧ごと作り直される。**戻す手掛かり**
+    // （頂点の丸と同じ話。→ `focusedMapControl`）
+    "data-item": item.ref,
     "aria-label": `${item.term} の形`,
     title: "この語の形。線や領域にすると、足りない点は隣に足されます",
   }, [

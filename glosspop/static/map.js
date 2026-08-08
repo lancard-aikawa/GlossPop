@@ -607,6 +607,12 @@ function installHandles(root, pos, onMove, onRefuse, inside) {
         class: "rel-map-handle", cx: q.x, cy: q.y, r: 9,
         tabindex: "0", role: "button",
         "aria-label": `${term} の位置を動かす`,
+        // **どの語のどの頂点か**を出しておく。保存のたびに図を描き直す
+        // （`saveMapShape` → `refresh`）ので、**焦点を戻す手掛かりがここにしか
+        // 無い** —— 無いと、矢印キーは 1 押しごとに焦点が body へ落ちて
+        // 2 回目が効かない（実測。マウスは 1 ドラッグ 1 保存なので気付けない）
+        "data-ref": ref,
+        "data-vertex": String(i),
       });
       dot.append(svg("title", {
         text: `${term}（掴んで動かせます。＋ で足す / Delete で消す）`,

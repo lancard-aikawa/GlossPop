@@ -722,6 +722,49 @@ def test_a_shape_cannot_be_moved_off_the_picture(page, server, seeded):
     assert stopped == pytest.approx([1.0, 0.5]), stopped
 
 
+def test_the_keyboard_can_move_a_vertex_more_than_once(page, server, seeded):
+    """**保存で描き直しても、触っていた頂点に焦点を戻す。**
+
+    地図は掴んで離したら書く（保存が即時）ので、**書くたびに図ごと差し替わる**。
+    戻さないと焦点が body へ落ち、**矢印キーは 1 回しか効かない**（実測: 1 回目で
+    0.30 → 0.32、2 回目は動かず `activeElement` は BODY）。マウスは 1 ドラッグ
+    1 保存なので気付けず、「掴めない人を締め出さない」と書いてある側だけが
+    効いていなかった。**ここが緩んでも画面は正常に見える。**
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", line=[[0.30, 0.30], [0.60, 0.40]],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.locator("svg.rel-map .rel-map-handle").first.wait_for(timeout=10000)
+    page.locator("svg.rel-map .rel-map-handle").first.focus()
+
+    # 1 押し 20px（絵の幅 1000）＝ 0.02 ずつ。**2 回押せば 2 回ぶん動くこと**
+    for _ in range(2):
+        page.keyboard.press("Shift+ArrowRight")
+        page.wait_for_timeout(500)
+    assert store.get(a.ref).line[0] == pytest.approx([0.34, 0.30]), store.get(a.ref).line
+    # 焦点は同じ頂点に残っている（body へ落ちない）
+    assert page.evaluate(
+        "() => document.activeElement?.classList?.contains('rel-map-handle') || false"
+    )
+
+    # 足すのも同じ経路。**押した頂点に焦点が残る**（足したぶんは隣に入る）
+    page.keyboard.press("Insert")
+    page.wait_for_timeout(600)
+    assert page.locator("svg.rel-map .rel-map-handle").count() == 3
+    assert page.evaluate(
+        "() => document.activeElement?.getAttribute('data-vertex')"
+    ) == "0"
+
+
 def test_the_map_can_hide_shapes_with_checkboxes(page, server, seeded):
     """一覧のチェックで、出すものを選べる。
 
