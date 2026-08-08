@@ -182,7 +182,8 @@ export function buildMap(graph, opts = {}) {
   // 名前を変える —— 同じ関数の中で 2 つ宣言すると読み込みごと落ちる（実際に踏んだ）
   const {
     onEdge, onResize, mapName, hidden, labels: showNames = true,
-    editing = false, placing = "", onMove, onPlace, onRefuse,
+    editing = false, placing = null, onMove, onPlace, onRefuse,
+    onPlaceProgress, onPlaceCancel,
   } = opts;
 
   // **どの絵を出すかは、出ている語から決める。** いちばん多く点が乗る絵を既定にし、
@@ -434,16 +435,11 @@ export function buildMap(graph, opts = {}) {
 
   installFocus(root, nodeGroups, touching);
   if (editing) installHandles(root, pos, onMove, onRefuse, inside);
-  if (placing) {
-    // **置くのは絵の上を 1 回押すだけ。** armed の間だけ効く（間違って置かない）
-    root.classList.add("is-placing");
-    root.addEventListener("click", (ev) => {
-      const at = toUser(root, ev);
-      // 絵の**縁の外**（余白）を押されても絵の中に収める —— 外に置くと
-      // 画面には出ないまま座標だけが書かれる（→ `clampTo`）
-      if (at) onPlace?.(placing, [[inside(at).x / W, inside(at).y / W]]);
-    }, { once: true });
-  }
+  const place = placing
+    ? installPlacing(root, placing, {
+      inside, onPlace, onRefuse, onProgress: onPlaceProgress, onCancel: onPlaceCancel,
+    })
+    : null;
 
   // **出していないものは全部数える。** どの絵を出しているかも必ず書く
   const kinds = { point: 0, line: 0, area: 0 };
@@ -464,7 +460,13 @@ export function buildMap(graph, opts = {}) {
         + "線の上の小さな丸で頂点を足し、丸に乗せて出る ✕ で消せます"
         + "（キーボードでは ＋ と Delete）。"
       : "",
-    placing ? "絵の上を押すとそこへ置きます。" : "",
+    // **何をすれば終わるのかを書く。** 点は 1 回押せば終わりだが、線と領域は
+    // 押した数だけ続くので、確定とやめる道を書かないと「押し続けるしかない」
+    placing?.kind === "point" ? "絵の上を押すとそこへ置きます。" : "",
+    placing && placing.kind !== "point"
+      ? `絵の上を順に押して、Enter か「✓ 確定」で${KIND_WORDS[placing.kind]}にします`
+        + `（Esc でやめる。${LEAST[placing.kind]} 点から）。`
+      : "",
     !editing && pending.length
       ? `この絵に置きたいと書いてある語が ${pending.length} 語あります（「置く」から）。` : "",
     unchecked ? `チェックを外した ${unchecked} 語は出していません。` : "",
@@ -483,6 +485,9 @@ export function buildMap(graph, opts = {}) {
     items,
     // まだ置いていない語（絵の名前だけ書いてある）。置く動線はこれで作る
     pending,
+    // 置いている最中なら、確定 / やめる の口。**点は押した時点で終わる**ので
+    // 呼ぶ側は `kind` を見て「✓ 確定」を出すかを決める
+    place,
   };
 }
 
@@ -719,6 +724,93 @@ function installHandles(root, pos, onMove, onRefuse, inside) {
     }
   }
   root.append(layer);
+}
+
+/**
+ * 絵の上を押して形を作る。**種別は押す前に人が宣言する。**
+ *
+ * 点は 1 回押せば終わり。線と領域は**押した数だけ点が増え**、Enter（または
+ * 呼ぶ側が出す「✓ 確定」）で書き込む。これが無いと、線を 1 本引くのに
+ * 「点を置く → 種別を変える → 中点の丸で頂点を足す」を繰り返すことになり、
+ * **この地図でいちばん通る動線（説ごとの進軍路）がいちばん長い**ままになる。
+ *
+ * 守ること 4 つ:
+ *
+ * - **種別を点の数から決めない。** 3 点押したから領域、にはしない —— 書き方が
+ *   種別の宣言そのもの、という約束は画面から作るときも同じ（`fitToKind()` と
+ *   同じ話）。足りないまま確定しようとしたら**断る**（黙って点にしない）
+ * - **下書きは押せなくする**（`pointer-events: none`）。自分が置いた点の上に
+ *   次の点を置けなくなる
+ * - **押した先のリンクを開かせない**（`preventDefault`）。形は `<a>` の中にあるので、
+ *   既に置かれた語の上を押すと**辞書ページへ飛んで置きかけが消える**
+ * - **鍵の listener は自分で片付ける。** 覆いは何度でも開き直され、図は保存の
+ *   たびに差し替わるので、`window` に付けたものが残ると開いた回数だけ増える
+ *   （root が外れていたら自分を外す）
+ */
+function installPlacing(root, { ref, term, kind }, opts) {
+  const { inside, onPlace, onProgress, onCancel, onRefuse } = opts;
+  root.classList.add("is-placing");
+  const draft = svg("g", { class: "rel-map-draft" });
+  root.append(draft);
+  const pts = [];
+
+  const paint = () => {
+    const line = pts.length > 1
+      ? svg(kind === "area" && pts.length > 2 ? "polygon" : "polyline", {
+        class: kind === "area" && pts.length > 2 ? "rel-map-fill" : "rel-map-route",
+        points: asPoints(pts),
+      })
+      : null;
+    draft.replaceChildren(
+      ...(line ? [line] : []),
+      ...pts.map((q) => svg("circle", { class: "rel-map-draft-dot", cx: q.x, cy: q.y, r: 7 })),
+    );
+  };
+
+  const finish = () => {
+    const least = LEAST[kind] || 1;
+    if (pts.length < least) {
+      onRefuse?.(
+        `${KIND_WORDS[kind]}は ${least} 点からです`
+        + `（いま ${pts.length} 点。絵の上を押して足してください）`
+      );
+      return;
+    }
+    onPlace?.(ref, kind, pts.map((q) => [q.x / W, q.y / W]));
+  };
+
+  root.addEventListener("click", (ev) => {
+    const at = toUser(root, ev);
+    if (!at) return;
+    // 既に置かれた語の上を押しても辞書ページへ飛ばさない（置きかけが消える）
+    ev.preventDefault();
+    // 絵の**縁の外**（余白）を押されても絵の中に収める —— 外に置くと
+    // 画面には出ないまま座標だけが書かれる（→ `clampTo`）
+    pts.push(inside(at));
+    paint();
+    if (kind === "point") {
+      finish();
+      return;
+    }
+    onProgress?.(ref, kind, pts.length);
+  });
+
+  const onKey = (ev) => {
+    if (!root.isConnected) {
+      window.removeEventListener("keydown", onKey);
+      return;
+    }
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      finish();
+    } else if (ev.key === "Escape") {
+      ev.preventDefault();
+      onCancel?.();
+    }
+  };
+  window.addEventListener("keydown", onKey);
+
+  return { ref, term, kind, finish, cancel: () => onCancel?.() };
 }
 
 /** 2 点の中間。**足す口の位置**（＝足したときの座標）。 */

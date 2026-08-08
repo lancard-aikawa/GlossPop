@@ -1099,6 +1099,98 @@ def test_a_shape_can_be_dragged_and_placed_on_the_map(page, server, seeded):
     assert len(store.get(b.ref).pin) == 2, store.get(b.ref).pin
 
 
+def test_a_line_can_be_placed_by_clicking_in_turn(page, server, seeded):
+    """**線と領域は、絵の上を順に押して作る。**
+
+    これが無いと、経路 1 本に「点を置く → 種別を変える → 中点の丸で頂点を足す」が
+    要る —— この地図でいちばん通る動線（説ごとの進軍路）がいちばん長くなる。
+
+    **種別は押す前に宣言する。** 押した点の数から機械が決めない（3 点押したから
+    領域、にはしない）ので、足りないまま確定しようとしたら**断る**。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.15, 0.15],
+    ), ref=a.ref)
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition, map="てすと図",
+    ), ref=b.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.select_option("#mapLayers [data-ref=mapPlaceKind]", "line")
+    page.click("#mapLayers [data-ref=mapPending]")
+    page.wait_for_timeout(300)
+    # 種別の名前は `KIND_WORDS` が正（画面の言葉と frontmatter の項目名を繋いである）
+    assert "線 (line)として置いています" in (page.text_content("#mapLayers") or "")
+
+    stage = page.locator("svg.rel-map").bounding_box()
+    at = lambda fx, fy: page.mouse.click(  # noqa: E731
+        stage["x"] + stage["width"] * fx, stage["y"] + stage["height"] * fy
+    )
+
+    # 1 点だけで確定しようとしたら**断る**（黙って点にしない）
+    at(0.5, 0.6)
+    page.wait_for_timeout(200)
+    page.click("#mapLayers [data-ref=mapPlaceDone]")
+    page.wait_for_timeout(400)
+    assert "2 点から" in (page.text_content("#status") or "")
+    assert store.get(b.ref).line == []
+
+    # 2 点目を足せば通る（押した数だけ点が増える）
+    at(0.8, 0.7)
+    page.wait_for_timeout(200)
+    page.click("#mapLayers [data-ref=mapPlaceDone]")
+    page.wait_for_timeout(700)
+    line = store.get(b.ref).line
+    assert len(line) == 2, line
+    assert all(0 <= x <= 1 and 0 <= y <= 0.5 for x, y in line), line
+    # 置き終われば普通の編集に戻る（置く行は消える）
+    assert page.locator("#mapLayers [data-ref=mapPlaceDone]").count() == 0
+
+
+def test_placing_can_be_given_up(page, server, seeded):
+    """**やめる道を出す。** Esc だけにすると、手だけで完結できない
+    （✕ を右クリックにしなかったのと同じ理由）。やめたら何も書かない。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    # **1 語は置いておく** —— 座標を書いた語が 1 つも無いと地図そのものが出ない
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.15, 0.15],
+    ), ref=a.ref)
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition, map="てすと図",
+    ), ref=b.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.check("#mapLayers [data-ref=mapEdit] input")
+    page.select_option("#mapLayers [data-ref=mapPlaceKind]", "area")
+    page.click("#mapLayers [data-ref=mapPending]")
+    page.wait_for_timeout(300)
+
+    stage = page.locator("svg.rel-map").bounding_box()
+    page.mouse.click(stage["x"] + stage["width"] * 0.4, stage["y"] + stage["height"] * 0.5)
+    page.wait_for_timeout(200)
+    page.click("#mapLayers [data-ref=mapPlaceCancel]")
+    page.wait_for_timeout(400)
+
+    assert store.get(b.ref).area == []
+    assert store.get(b.ref).map == "てすと図"          # 置き待ちのまま残る
+    assert page.locator("#mapLayers [data-ref=mapPending]").count() == 1
+
+
 def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded):
     """座標が 1 つも無ければ段の図に落とすが、**黙って差し替えない。**
 

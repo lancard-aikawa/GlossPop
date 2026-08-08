@@ -1627,6 +1627,13 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-map-handle:hover,
 .rel-map-handle:focus { fill: var(--accent); outline: none; }
 .rel-map.is-placing { cursor: crosshair; }
+/* 置いている最中の下書き（`installPlacing`）。**押せなくする** ——
+   置いたばかりの点が次の点を遮ると、線を続けて引けなくなる。
+   見た目は本物の形と同じクラスを借りて、点だけ「まだ確定していない」ぶん薄く。 */
+.rel-map-draft { pointer-events: none; }
+.rel-map-draft .rel-map-route,
+.rel-map-draft .rel-map-fill { opacity: 0.75; stroke-dasharray: 6 4; }
+.rel-map-draft-dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
 
 /* 頂点を足す口（線分の中点）。**掴む丸より小さく・薄く** —— 同じ見た目にすると、
    どれが本物の頂点なのか分からなくなる（数えると点の数が合わない）。 */

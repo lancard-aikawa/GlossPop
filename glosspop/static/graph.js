@@ -1170,11 +1170,25 @@ function draw(graph) {
       mapName,
       hidden: mapHidden.get(mapName),
       editing: mapEditing,
+      // **種別は押す前に宣言する**（点の数から機械が決めない）ので、
+      // 何として置くのかも一緒に渡す
       placing: mapPlacing,
       onMove: saveMapShape,
-      onPlace: (ref, points) => {
-        mapPlacing = "";
-        saveMapShape(ref, "point", points);
+      onPlace: (ref, kind, points) => {
+        mapPlacing = null;
+        saveMapShape(ref, kind, points);
+      },
+      // 押すたびに何点目かを出す。**図は描き直さない**（描き直すと置きかけが
+      // 消える）ので、live に出せる場所はここしかない
+      onPlaceProgress: (ref, kind, count) => setStatus(
+        statusNode,
+        `${KIND_WORDS[kind]}を作っています: ${count} 点`
+        + `（Enter か「✓ 確定」で決定 / Esc でやめる）`
+      ),
+      onPlaceCancel: () => {
+        mapPlacing = null;
+        if (lastGraph) paintGraph(lastGraph);
+        setStatus(statusNode, "置くのをやめました");
       },
       // 断りは**その場に出す**（形が変わらないので、出さないと何も起きて
       // いないように見える）
@@ -1208,6 +1222,10 @@ function draw(graph) {
     // （**ここで落とすと一覧が空になり、外したものを戻せなくなる**。実際に落とした）
     items: drawn.items || [],
     pending: drawn.pending || [],
+    // 置いている最中なら確定 / やめるの口（**ここで落とすと、押しかけの形を
+    // 決める手段が Enter だけになる**。`items` を落として一覧が空になったのと
+    // 同じ間違い）
+    place: drawn.place || null,
   };
 }
 
@@ -1642,8 +1660,14 @@ let mapNoLabels = new Set();
 //: 地図を編集中か（丸を掴んで動かせる）。**覚えない** —— 開くたびに閲覧へ戻す。
 //: 見せ方や絵と違って、うっかり動かすほうの害が大きい
 let mapEditing = false;
-//: 「次に絵を押したらここへ置く」語。1 回置いたら空に戻す
-let mapPlacing = "";
+//: 「次に絵を押したらここへ置く」語と**何として置くか**（`{ ref, term, kind }`）。
+//: 置き終わったら `null` に戻す。**種別を持たせているのは、点の数から機械が
+//: 決めないため** —— 3 点押したから領域、にはしない（書き方が種別の宣言そのもの、
+//: という約束は画面から作るときも同じ）
+let mapPlacing = null;
+//: 次に置くときの種別。**覚えない**（`mapEditing` と同じ）が、続けて何本か
+//: 引くことはあるので、この画面にいる間は選び直させない
+let mapPlaceKind = "point";
 
 //: URL で語を名指しされたので、覚えている見せ方を押しのけて中心の図で開いたか。
 //: これも黙ってやらない（同じ理由）
@@ -1997,6 +2021,65 @@ function kindPicker(item) {
   return pick;
 }
 
+/**
+ * 次に置く形を選ぶ口（置き待ちの語を押す前）。
+ *
+ * **種別は人が宣言する。** 押した点の数から機械が決めない（3 点押したから領域、
+ * にはしない）—— `kindPicker()` が「置いたあとで変える」側で、こちらが
+ * 「置く前に決める」側。**どちらも同じ約束の上にいる。**
+ */
+function placeKindPicker() {
+  const pick = el("select", {
+    class: "auto-width",
+    "data-ref": "mapPlaceKind",
+    "aria-label": "次に置く形",
+    title: "点は 1 回押すだけ。線と領域は、押した数だけ点が増えます",
+  }, Object.entries(KIND_WORDS).map(([value, text]) =>
+    el("option", { value, text, selected: value === mapPlaceKind })));
+  pick.value = mapPlaceKind;
+  // **描き直さない。** 選んだだけでは何も起きない（押してから効く）ので、
+  // ここで図を作り直すと、そのぶん点滅するだけになる
+  pick.addEventListener("change", () => {
+    mapPlaceKind = pick.value;
+  });
+  return pick;
+}
+
+/**
+ * 置いている最中の行（確定 / やめる）。
+ *
+ * **Enter と Esc だけにしない。** 発見できないうえ、この地図は「掴んで置く」
+ * 道具なので、手だけで完結できないと途中で止まる（✕ を右クリックにしなかった
+ * のと同じ理由）。**点は押した時点で終わる**ので、確定は出さない。
+ */
+function placingRow(place) {
+  const row = [el("span", {
+    class: "hint",
+    text: place.kind === "point"
+      ? `「${place.term}」を置きます: 絵の上を押してください`
+      : `「${place.term}」を${KIND_WORDS[place.kind]}として置いています:`,
+  })];
+  if (place.kind !== "point") {
+    row.push(el("button", {
+      type: "button",
+      class: "chip primary",
+      "data-ref": "mapPlaceDone",
+      text: "✓ 確定",
+      title: "ここまでに押した点で決める（Enter でも）",
+      onclick: place.finish,
+    }));
+  }
+  row.push(el("button", {
+    type: "button",
+    class: "chip",
+    "data-ref": "mapPlaceCancel",
+    text: "やめる",
+    title: "置くのをやめる（Esc でも）",
+    onclick: place.cancel,
+  }));
+  return row;
+}
+
 function paintMapLayers(drawn) {
   const items = drawn.items || [];
   mapEdit.hidden = mode !== "map";
@@ -2042,7 +2125,7 @@ function paintMapLayers(drawn) {
   editBox.checked = mapEditing;
   editBox.addEventListener("change", () => {
     mapEditing = editBox.checked;
-    mapPlacing = "";
+    mapPlacing = null;
     if (lastGraph) paintGraph(lastGraph);
   });
   const parts = [
@@ -2113,17 +2196,26 @@ function paintMapLayers(drawn) {
   // **まだ置いていない語**（絵の名前だけ書いてある）。押してから絵を押すと置く。
   // 分類していない —— 「この絵に置きたい」と書いてあるものだけが並ぶ
   const pending = drawn.pending || [];
-  if (mapEditing && pending.length) {
-    parts.push(el("span", { class: "hint", text: "まだ置いていない:" }));
+  if (mapEditing && drawn.place) {
+    // 置いている最中は、**その語のことだけ**を出す（一覧を出したままだと、
+    // 押しかけの形を捨てて別の語へ移れてしまう）
+    parts.push(...placingRow(drawn.place));
+  } else if (mapEditing && pending.length) {
+    parts.push(
+      el("span", { class: "hint", text: "まだ置いていない:" }),
+      // **種別は押す前に選ぶ。** ここが「線や領域を最初から作る」唯一の道で、
+      // 置いてから種別を変える道（`kindPicker`）も今までどおり残してある
+      placeKindPicker(),
+    );
     for (const item of pending) {
       parts.push(el("button", {
         type: "button",
-        class: mapPlacing === item.ref ? "chip primary" : "chip",
+        class: "chip",
         "data-ref": "mapPending",
         text: item.term,
         title: "押してから絵の上を押すと、そこへ置きます",
         onclick: () => {
-          mapPlacing = mapPlacing === item.ref ? "" : item.ref;
+          mapPlacing = { ref: item.ref, term: item.term, kind: mapPlaceKind };
           if (lastGraph) paintGraph(lastGraph);
         },
       }));
