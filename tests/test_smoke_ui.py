@@ -2173,6 +2173,44 @@ def test_a_stale_graph_refuses_to_write(page, server, seeded):
     assert [(r.to, r.label) for r in store.get("登場人物/ジョバンニ").relations] == [("ザネリ", "同級生")]
 
 
+def test_the_glossary_can_be_browsed_in_kana_order(page, server, seeded):
+    """**五十音で通して引く。** カテゴリ順の置き換えではなく、もう 1 つの引き方。
+
+    守ること: **読みが無くてかなで置けない語を黙って「あ」行に混ぜない**
+    （別の束にして数を出す）、**カタカナはひらがなに畳む**（同じ音は同じ行）、
+    束ね方は覚えるが**サーバへは行き直さない**。
+    """
+    # 「ジョバンニ」「カムパネルラ」は読み無しのカタカナ見出し（＝置ける）
+    store.save(EntryDraft(
+        term="銀河鉄道", category="場所", reading="ぎんがてつどう", definition="汽車。",
+    ))
+    store.save(EntryDraft(term="活版所", category="場所", definition="働くところ。"))
+
+    open_glossary(page, server)
+    page.select_option("#groupBy", "reading")
+    page.locator(".kana-bar").wait_for(timeout=10000)
+
+    heads = page.evaluate(
+        "() => [...document.querySelectorAll('#list .cat-group h2 span:first-child')]"
+        ".map((s) => s.textContent)"
+    )
+    # か（カムパネルラ・銀河鉄道）→ し（ジョバンニ）… は行の順で、読みなしは最後
+    assert heads[0] == "か" and heads[-1] == "読みなし"
+    assert "さ" in heads                       # ジョバンニ（カタカナを畳んでいる）
+
+    # **読みなしは「漢字の見出しで読みが無い語」だけ**（活版所）
+    last = page.locator("#list .cat-group").last
+    assert "活版所" in last.inner_text() and "読みを書くと" in last.inner_text()
+    assert "ジョバンニ" not in last.inner_text()
+
+    # 五十音のときはカードにカテゴリを出す（見出しがカテゴリでなくなるので）
+    assert page.locator("#list .card-path").count() >= 1
+
+    # 覚えている（開き直しても五十音のまま）。**サーバへは行き直さない**
+    open_glossary(page, server)
+    assert page.locator("#groupBy").input_value() == "reading"
+
+
 def test_the_index_shows_where_each_term_appears(page, server, seeded):
     """索引。**辞書の側から本文を見る唯一の入口**。
 

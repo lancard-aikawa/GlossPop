@@ -1246,6 +1246,23 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   gap: 6px 12px;
   margin: 0 0 8px;
 }
+/* 五十音の飛び先の帯（`glossary.js` の `jumpBar`）。**中身のある行だけ**が並ぶ。
+   一覧の上に貼り付けておくと、長い辞書でも行を見失わない。 */
+.kana-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 0;
+  margin-bottom: 8px;
+  background: var(--bg);
+}
+/* 五十音で束ねたときだけ出る、そのカードのカテゴリ。**見出しがカテゴリで
+   なくなるぶんの埋め合わせ**なので、要約より弱く出す */
+.card-path { font-size: var(--fs-11); color: var(--fg-faint); margin-top: 4px; }
+
 .map-layers .check { width: auto; }
 /* 時点のスライダ（`timeSlider`）。**幅は決め打ちにしない** —— 狭い画面では
    行のほうが折り返す（ボタンの文字は折り返さない、という約束はここでも同じ）。 */

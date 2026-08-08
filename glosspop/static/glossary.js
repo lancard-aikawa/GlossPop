@@ -18,6 +18,12 @@ const TEMPLATE = `
   <select id="tagFilter" class="auto-width" title="タグで絞り込む" aria-label="タグで絞り込む">
     <option value="">すべてのタグ</option>
   </select>
+  <!-- 束ね方。**カテゴリ順の置き換えではなく、もう 1 つの引き方**（紙の辞書で
+       いちばん普通の「あいうえお順に通して見る」道が無かった）。覚える -->
+  <select id="groupBy" class="auto-width" title="束ね方" aria-label="束ね方">
+    <option value="category">カテゴリ順</option>
+    <option value="reading">五十音順</option>
+  </select>
   <span class="spacer"></span>
   <!-- 索引（語がどこに何回出てくるか）。**辞書の側から本文を見る唯一の入口**
        で、いちばん見たいのは「登録したのに 1 度も出てこない語」のほう -->
@@ -55,11 +61,16 @@ const TEMPLATE = `
 //: 描く先。`mount()` で埋める（`location` は読まない —— 重ねたときに
 //: 「覆いが出しているもの」と食い違う）
 let host = null;
-let list, qInput, catFilter, tagFilter, catDialog;
+let list, qInput, catFilter, tagFilter, catDialog, groupBy;
+
+//: 束ね方を覚える鍵。**読めない値は「カテゴリ順」に落ちる**（既定を壊さない）
+const GROUP_KEY = "glosspop.glossaryGroup";
 const $ = (id) => host.querySelector(`#${id}`);
 
 let tree = [];
 let timer = null;
+//: 直前に描いた一覧。束ね方を変えるだけなら、これを束ね直す
+let lastEntries = null;
 //: 最初の読み込み。**開くのが速すぎたダイアログがこれを待って描き直す**
 let ready = null;
 
@@ -80,7 +91,7 @@ function hasSelection() {
  * こうすると見出しの中クリック・Ctrl クリック（別タブ）はそのまま効き、
  * 要約の上ではふつうに文字を選べる。
  */
-function card(e) {
+function card(e, { showPath = false } = {}) {
   const node = el("div", { class: e.image_url ? "card has-thumb" : "card" }, [
     // **ペルソナの顔は一覧には出さない。** 顔は辞書に 1 枚なので、同じ辞書の
     // カードが並ぶと同じ絵が何十個も繰り返されるだけで、何も区別できない
@@ -95,6 +106,10 @@ function card(e) {
       html: esc(e.term) + (e.reading ? `<span class="r">${esc(e.reading)}</span>` : ""),
     }),
     el("div", { class: "s", text: e.summary || (e.aliases?.length ? `別名: ${e.aliases.join(" / ")}` : "（要約なし）") }),
+    // **読み順で束ねるときは、どのカテゴリの語なのかをカードに出す。**
+    // 見出しがカテゴリでなくなるぶん、ここに書かないと「ソース（料理）」と
+    // 「ソース（プログラミング）」が並んでも見分けられない
+    showPath ? el("div", { class: "card-path", text: e.path_label }) : null,
   ]);
   node.addEventListener("click", (ev) => {
     if (ev.target.closest("a")) return;      // 見出しのリンクはブラウザに任せる
@@ -113,7 +128,120 @@ function card(e) {
  */
 const groupKey = (scope, category) => `${scope}<>${category}`;
 
+// --------------------------------------------------------------------------- //
+// 五十音で通して引く
+//
+// カテゴリで束ねるのは「どういう語か」で引く道で、**辞書を通してあいうえお順に
+// 見る道**が無かった（紙の辞書でいちばん普通の引き方）。**カテゴリ順と置き換えず、
+// 選べるようにする**（見せ方を足すもので置き換えではない、と同じ判断）。
+// --------------------------------------------------------------------------- //
+
+//: 行と、そこに入る先頭の字。**この順に出す。** 濁点・半濁点・小さい字も
+//: 同じ行に入れる（「が」は か行、「ゃ」は や行）—— 別の行に散ると探せない
+const KANA_ROWS = [
+  ["あ", "あいうえおぁぃぅぇぉゔ"],
+  ["か", "かきくけこがぎぐげごゕゖ"],
+  ["さ", "さしすせそざじずぜぞ"],
+  ["た", "たちつてとだぢづでどっ"],
+  ["な", "なにぬねの"],
+  ["は", "はひふへほばびぶべぼぱぴぷぺぽ"],
+  ["ま", "まみむめも"],
+  ["や", "やゆよゃゅょ"],
+  ["ら", "らりるれろ"],
+  ["わ", "わをんゎ"],
+];
+const ROW_LATIN = "英字";
+const ROW_DIGIT = "数字";
+//: かなで置けない語を入れる束。**黙って「あ」行に混ぜない** ——
+//: 漢字の見出しは、読みを書かないかぎりどの行にも置けない
+const ROW_NONE = "読みなし";
+const ROW_ORDER = [...KANA_ROWS.map(([row]) => row), ROW_LATIN, ROW_DIGIT, ROW_NONE];
+
+/**
+ * 先頭の 1 字から行を決める。決まらなければ空。
+ *
+ * **カタカナはひらがなに畳む**（同じ音は同じ行）。長音符「ー」は前の音が
+ * 分からないと置けないので、決まらない側に倒す。
+ */
+function rowOfText(text) {
+  const first = [...String(text || "").trim()][0];
+  if (!first) return "";
+  const code = first.codePointAt(0);
+  // カタカナ → ひらがな（ヴまで）。ここを外すと「ジョバンニ」が読みなしに落ちる
+  const kana = code >= 0x30a1 && code <= 0x30f6 ? String.fromCodePoint(code - 0x60) : first;
+  for (const [row, chars] of KANA_ROWS) if (chars.includes(kana)) return row;
+  if (/[A-Za-z]/.test(first)) return ROW_LATIN;
+  if (/[0-9０-９]/.test(first)) return ROW_DIGIT;
+  return "";
+}
+
+/** その語をどの行に置くか。**読みが正、無ければ見出しそのもの。** */
+function rowOf(e) {
+  return rowOfText(e.reading) || rowOfText(e.term) || ROW_NONE;
+}
+
+/** 読み（無ければ見出し）で並べる。同じなら ref で決め切る（並びを揺らさない）。 */
+function byReading(a, b) {
+  return (a.reading || a.term).localeCompare(b.reading || b.term, "ja")
+    || a.ref.localeCompare(b.ref);
+}
+
+/**
+ * 行の見出しへ飛ぶ帯。**中身のある行だけ出す**（押しても何も起きない字を並べない）。
+ *
+ * 飛び先は id ではなく `data-row` で引く —— 覆いで開くと同じ document に
+ * 複数の画面が居るので、id を撒くと衝突する。
+ */
+function jumpBar(rows) {
+  return el("div", { class: "kana-bar", "data-ref": "kanaBar" }, rows.map(([row, items]) =>
+    el("button", {
+      type: "button",
+      class: "chip",
+      "data-jump": row,
+      text: `${row} ${items.length}`,
+      title: row === ROW_NONE ? "読みが書かれていない語（かなで置けない）" : `${row} 行へ`,
+      onclick: () => {
+        const target = list.querySelector(`[data-row="${CSS.escape(row)}"]`);
+        target?.scrollIntoView({ block: "start", behavior: "smooth" });
+      },
+    })));
+}
+
+/** 五十音で束ねて描く。**カテゴリはカードに出す**（見出しがカテゴリでなくなるので）。 */
+function paintByReading(entries) {
+  const buckets = new Map(ROW_ORDER.map((row) => [row, []]));
+  for (const e of entries) buckets.get(rowOf(e)).push(e);
+  const rows = ROW_ORDER
+    .map((row) => [row, buckets.get(row).sort(byReading)])
+    .filter(([, items]) => items.length);
+
+  if (!rows.length) {
+    list.replaceChildren(el("p", { class: "empty", text: "該当する用語がありません" }));
+    return;
+  }
+  list.replaceChildren(
+    jumpBar(rows),
+    ...rows.map(([row, items]) => el("section", { class: "cat-group", "data-row": row }, [
+      el("h2", {}, [
+        el("span", { text: row }),
+        el("span", { class: "count", text: `${items.length} 語` }),
+      ]),
+      // **読みが無いことを責めない。** どうすればそこへ並ぶかだけ書く
+      row === ROW_NONE
+        ? el("p", { class: "hint", text: "読みを書くと、その行に並びます。" })
+        : null,
+      el("div", { class: "cards" }, items.map((e) => card(e, { showPath: true }))),
+    ])),
+  );
+}
+
 function paint(entries) {
+  // **束ね方を変えるだけならサーバへ行き直さない**（同じものを束ね直すだけ）
+  lastEntries = entries;
+  if (groupBy.value === "reading") {
+    paintByReading(entries);
+    return;
+  }
   const filtering = Boolean(qInput.value.trim() || catFilter.value || tagFilter.value);
   const byCategory = new Map();
   for (const e of entries) {
@@ -453,8 +581,11 @@ export async function mount(container, { search = "" } = {}) {
   qInput = $("q");
   catFilter = $("catFilter");
   tagFilter = $("tagFilter");
+  groupBy = $("groupBy");
   catDialog = $("catDialog");
   tree = [];
+  // **前に開いたときの一覧を持ち越さない**（覆いは何度でも開き直される）
+  lastEntries = null;
 
   // 一覧の要約に出てきた知らない語も、その場で選んで登録できるようにする
   // （ビューア・用語ページと同じ口。ここだけ「新規登録」ボタンからしか入れなかった）
@@ -474,6 +605,22 @@ export async function mount(container, { search = "" } = {}) {
   });
   catFilter.addEventListener("change", reload);
   tagFilter.addEventListener("change", reload);
+  // 束ね方は覚える（覆いは何度でも開き直されるので、毎回選び直させない）。
+  // **サーバへは行き直さない** —— 同じものを束ね直すだけ
+  try {
+    const saved = localStorage.getItem(GROUP_KEY);
+    if (saved === "reading" || saved === "category") groupBy.value = saved;
+  } catch {
+    /* 使えない環境でも既定で動く */
+  }
+  groupBy.addEventListener("change", () => {
+    try {
+      localStorage.setItem(GROUP_KEY, groupBy.value);
+    } catch {
+      /* 使えない環境でも、その画面では効く */
+    }
+    if (lastEntries) paint(lastEntries);
+  });
   $("add").addEventListener("click", onAdd);
   $("manageCats").addEventListener("click", onManageCats);
   catDialog.querySelector("[data-ref=catAdd]").addEventListener("click", addCategory);
