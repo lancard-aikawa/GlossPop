@@ -1194,6 +1194,9 @@ function draw(graph) {
       // いないように見える）
       onRefuse: (message) => setStatus(statusNode, message, "error"),
       labels: !mapNoLabels.has(mapName),
+      // **出すほうを覚える**（名前とは逆）。既定は出さない —— 点が絵になると
+      // 図の見え方が大きく変わるので、頼まれていないのに変えない
+      images: mapFaces.has(mapName),
       // 絵の縦横比は読み込むまで分からない。届いたら入れ物に合わせ直す
       onResize: () => fitView(),
     })
@@ -1657,6 +1660,11 @@ let mapHidden = new Map();
 const MAP_LABELS_KEY = "glosspop.graphMapNoLabels";
 let mapNoLabels = new Set();
 
+//: 地図で**用語の画像を点の代わりに出している絵**。名前とは逆に**出すほうを
+//: 覚える** —— 点が絵になると図の見え方が大きく変わるので、既定は今までどおり丸
+const MAP_FACES_KEY = "glosspop.graphMapFaces";
+let mapFaces = new Set();
+
 //: 地図を編集中か（丸を掴んで動かせる）。**覚えない** —— 開くたびに閲覧へ戻す。
 //: 見せ方や絵と違って、うっかり動かすほうの害が大きい
 let mapEditing = false;
@@ -1956,6 +1964,14 @@ function rememberedNoLabels() {
   }
 }
 
+function rememberedFaces() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(MAP_FACES_KEY) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
 function saveHidden() {
   try {
     const plain = {};
@@ -2019,6 +2035,33 @@ function kindPicker(item) {
     saveMapShape(item.ref, pick.value, next);
   });
   return pick;
+}
+
+/**
+ * 用語の画像を点の代わりに出すかの切り替え（絵ごとに覚える）。
+ *
+ * **既定は出さない。** 名前（既定は出す）と逆にしてあるのは、点が絵になると
+ * 図の見え方が大きく変わるから —— 頼まれていないのに変えない。
+ * **画像を持つ語が 1 つも無いときは呼ぶ側が出さない**（→ `paintMapLayers`）。
+ */
+function faceToggle() {
+  const box = el("input", { type: "checkbox" });
+  box.checked = mapFaces.has(mapName);
+  box.addEventListener("change", () => {
+    if (box.checked) mapFaces.add(mapName);
+    else mapFaces.delete(mapName);
+    try {
+      localStorage.setItem(MAP_FACES_KEY, JSON.stringify([...mapFaces]));
+    } catch {
+      /* 使えない環境でも、その画面では効く */
+    }
+    if (lastGraph) paintGraph(lastGraph);
+  });
+  return el("label", {
+    class: "check",
+    "data-ref": "mapFaces",
+    title: "用語ごとに入れた画像を、点の代わりに出す（無い語は丸のまま）",
+  }, [box, el("span", { text: "用語の画像" })]);
 }
 
 /**
@@ -2154,8 +2197,12 @@ function paintMapLayers(drawn) {
       "data-ref": "mapNames",
       title: "絵に地名が入っているときは外す（乗せれば名前は出ます）",
     }, [nameBox, el("span", { text: "名前を出す" })]),
-    el("span", { class: "hint", text: "地図に出すもの:" }),
   );
+  // **画像を持つ語が 1 つもなければ出さない。** ここは画像を入れる口ではない
+  // （入れるのは用語ページ）ので、押しても何も起きない切り替えを並べても
+  // 迷わせるだけ —— 「絵が無くても 🖼 絵 は出す」（鶏と卵）とは事情が違う
+  if (items.some((item) => item.hasImage)) parts.push(faceToggle());
+  parts.push(el("span", { class: "hint", text: "地図に出すもの:" }));
   for (const [category, list] of groups) {
     const refs = list.map((i) => i.ref);
     const allOn = refs.every((r) => !off.has(r));
@@ -2427,6 +2474,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   mapName = params.get("map") || rememberedMap();
   mapHidden = rememberedHidden();
   mapNoLabels = rememberedNoLabels();
+  mapFaces = rememberedFaces();
   mapPick.addEventListener("change", () => {
     mapName = mapPick.value;
     try {

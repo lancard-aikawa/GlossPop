@@ -1825,6 +1825,30 @@ class TestTheMapImage:
         assert [i["kind"] for i in issues] == ["map_point_outside"]
         assert issues[0]["term"] == "岬"
 
+    def test_the_graph_carries_the_image_of_words_on_the_map(self, client):
+        """地図は点を**用語ごとの画像**にできるので、その URL を足す。
+
+        **足すのは地図に置かれた語だけ。** 全ノードに足すと、地図を出していない
+        ときまで画像の走査（`_image_index()`）が全リクエストで通る。
+        """
+        self._put()
+        client.post("/api/entries", json={
+            "term": "港", "category": "場所", "definition": "船着き場。",
+            "map": "ほんの図", "pin": [0.25, 0.5],
+        })
+        client.post("/api/entries", json={
+            "term": "丘", "category": "場所", "definition": "小高いところ。",
+        })
+        path = store.image_path("場所/港", ".png")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
+
+        nodes = {n["term"]: n for n in client.get("/api/graph").json()["nodes"]}
+        assert "/api/entry-image?ref=" in nodes["港"]["image_url"]
+        assert "v=" in nodes["港"]["image_url"]      # 差し替えても古い絵が出ないように
+        # 置かれていない語には足さない（地図に出ないので使い道が無い）
+        assert "image_url" not in nodes["丘"]
+
     def test_a_picture_whose_size_cannot_be_read_is_still_listed(self, client):
         """**読めないことは「絵が無い」ではない。**
 

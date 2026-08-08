@@ -28,6 +28,11 @@ const GUESS_RATIO = 0.7;
 
 const PAD = 40;
 const DOT_R = 7;
+
+//: 用語の画像を出すときの丸の半径（点の丸の代わりに置く）。**点の丸より
+//: 3 倍大きい**ので、置き場所の取り合い（`taken`）にもこの大きさで参加する ——
+//: 小さいまま数えると、名前の板が絵に重なる
+const FACE_R = 22;
 const FONT = 12;
 const NAME_MAX = 14;
 const WORDS_MAX = 14;
@@ -182,6 +187,7 @@ export function buildMap(graph, opts = {}) {
   // 名前を変える —— 同じ関数の中で 2 つ宣言すると読み込みごと落ちる（実際に踏んだ）
   const {
     onEdge, onResize, mapName, hidden, labels: showNames = true,
+    images: showFaces = false,
     editing = false, placing = null, onMove, onPlace, onRefuse,
     onPlaceProgress, onPlaceCancel,
   } = opts;
@@ -200,6 +206,9 @@ export function buildMap(graph, opts = {}) {
   const items = [...all].map(([ref, p]) => ({
     ref, term: p.node.term || ref, category: p.node.category || "", kind: p.kind,
     color: colors.get(ref) || "",
+    // 呼ぶ側が「用語の画像」の切り替えを出すかを決められるように
+    // （出せる語が 1 つも無いのに切り替えだけ並べても、押しても何も起きない）
+    hasImage: p.kind === "point" && !!p.node.image_url,
   }));
   // **絵の名前だけ書いて形が無い語 = 置き待ち。** 分類していない ——
   // 「この絵に置きたい」と書いてあるものだけを出すので、辞書全体は並ばない
@@ -255,9 +264,16 @@ export function buildMap(graph, opts = {}) {
   // **置き場所の取り合いを先に決める。** 座標は動かせないので、重なったものは
   // 畳むしかない（→ `takeSpot`）。**点そのものを先に取っておく** —— 名前の板が
   // 別の語の点を覆うと、その語が図から消えたのと同じことになる
+  // **点の大きさは 2 通り。** 用語の画像を出しているぶんは丸ごと絵になるので、
+  // 取り置く四角もそのぶん大きい（→ `FACE_R`）
+  const spotR = (p) =>
+    (showFaces && p.kind === "point" && p.node.image_url ? FACE_R : DOT_R);
   const taken = [...pos.values()]
     .filter((p) => p.kind === "point")
-    .map((p) => ({ x: p.x - DOT_R, y: p.y - DOT_R, w: DOT_R * 2, h: DOT_R * 2 }));
+    .map((p) => {
+      const r = spotR(p);
+      return { x: p.x - r, y: p.y - r, w: r * 2, h: r * 2 };
+    });
   const drawable = edges
     .map((edge) => ({ edge, a: pos.get(edge.from), b: pos.get(edge.to) }))
     .filter(({ a, b }) => a && b);
@@ -279,8 +295,9 @@ export function buildMap(graph, opts = {}) {
       (degree.get(refB) - degree.get(refA)) || (a.y - b.y) || (a.x - b.x));
     for (const [ref, p] of order) {
       const label = clip(p.node.term || ref, NAME_MAX);
-      // 点だけは名前を丸の下へ逃がす（丸に重ねると点が読めない）
-      const top = p.kind === "point" ? p.y + DOT_R + 3 : p.y - (FONT + 7) / 2;
+      // 点だけは名前を丸の下へ逃がす（丸に重ねると点が読めない）。
+      // 絵にしているぶんはその大きさで避ける（→ `spotR`）
+      const top = p.kind === "point" ? p.y + spotR(p) + 3 : p.y - (FONT + 7) / 2;
       const box = textBox(label, p.x, top, FONT);
       const tucked = !takeSpot(box, taken);
       if (tucked) tuckedNames++;
@@ -373,6 +390,10 @@ export function buildMap(graph, opts = {}) {
   // **重ねる順は 領域 → 線 → 点** —— 領域を後に描くと点を塗りつぶす
   const nodeGroups = new Map();
   const layers = { area: svg("g"), line: svg("g"), point: svg("g") };
+  // 絵を丸く抜くための型紙。**`<defs>` は 1 つにまとめる**（語ごとに撒くと、
+  // 図の書き出しで参照だけ残って抜けない、が起きうる）
+  const faceDefs = svg("defs");
+  let faceSeq = 0;
   for (const [ref, p] of pos) {
     const node = p.node;
     const term = node.term || ref;
@@ -384,6 +405,27 @@ export function buildMap(graph, opts = {}) {
       body.push(
         svg("polyline", { class: "rel-map-hit", points: asPoints(p.pts) }),
         svg("polyline", { class: "rel-map-route", points: asPoints(p.pts) }),
+      );
+    } else if (showFaces && node.image_url) {
+      // **点だけ絵にする。** 線と領域は形そのものが場所を表しているので、
+      // 真ん中に絵を置くと**自分の形を覆う**（人物地図が効くのは点のほう）。
+      // **画像の無い語は丸のまま** —— 揃わないのは承知のうえで、無い語を
+      // 空の枠にすると「読み込めていない」ように見える
+      const id = `gp-map-face-${faceSeq++}`;
+      faceDefs.append(svg("clipPath", { id }, [
+        svg("circle", { cx: p.x, cy: p.y, r: FACE_R }),
+      ]));
+      body.push(
+        svg("image", {
+          class: "rel-map-face",
+          href: node.image_url,
+          x: p.x - FACE_R, y: p.y - FACE_R, width: FACE_R * 2, height: FACE_R * 2,
+          // **切り取って埋める**（潰さない）。縦横比の違う絵が並んでも歪まない
+          preserveAspectRatio: "xMidYMid slice",
+          "clip-path": `url(#${id})`,
+        }),
+        // 縁。絵が背景に溶けると、どこまでがその語なのか分からなくなる
+        svg("circle", { class: "rel-map-face-ring", cx: p.x, cy: p.y, r: FACE_R }),
       );
     } else {
       body.push(svg("circle", { cx: p.x, cy: p.y, r: DOT_R }));
@@ -431,6 +473,7 @@ export function buildMap(graph, opts = {}) {
     layers[p.kind].append(group);
     nodeGroups.set(ref, group);
   }
+  if (faceSeq) root.append(faceDefs);
   root.append(layers.area, layers.line, layers.point);
 
   installFocus(root, nodeGroups, touching);
@@ -451,6 +494,9 @@ export function buildMap(graph, opts = {}) {
     `「${chosen.name}」の上に ${pos.size} 語を置いています`
     + `（点 ${kinds.point} / 線 ${kinds.line} / 領域 ${kinds.area}）。`,
     showNames ? "" : "名前は消しています（乗せると出ます）。",
+    // **揃わないことを先に書く。** 画像のある語だけが絵になるので、書かないと
+    // 「読み込めていない」に見える
+    showFaces ? "用語の画像がある語は絵で出しています（無い語は丸のまま）。" : "",
     // **畳んだ名前は必ず数える。** 黙って消すと「登録していない語」に見える
     // （伏せた本数を返すのと同じ約束。一言のほうは凡例が出す）
     tuckedNames

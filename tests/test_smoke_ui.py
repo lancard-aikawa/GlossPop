@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import pathlib
 import socket
@@ -513,6 +514,14 @@ def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
 TEST_MAP = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" '
     'width="1000" height="500"><rect width="1000" height="500" fill="#dcd8cc"/></svg>'
+)
+
+
+#: 用語ごとの画像に使う 1x1 の PNG。**本物のバイト列**にしてあるのは、
+#: ブラウザが読めないと `<image>` は残るのに絵が出ず、見ているつもりで
+#: 何も見ていないテストになるため
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 
 
@@ -1097,6 +1106,53 @@ def test_a_shape_can_be_dragged_and_placed_on_the_map(page, server, seeded):
     page.mouse.click(stage["x"] + stage["width"] * 0.6, stage["y"] + stage["height"] * 0.5)
     page.wait_for_timeout(600)
     assert len(store.get(b.ref).pin) == 2, store.get(b.ref).pin
+
+
+def test_the_map_can_show_term_images_instead_of_dots(page, server, seeded):
+    """点を**用語ごとの画像**にできる（人物地図はこれで一気に読める）。
+
+    **既定は丸のまま**（名前と逆に「出すほう」を覚える）—— 点が絵になると図の
+    見え方が大きく変わるので、頼まれていないのに変えない。**画像を持つ語が
+    1 つも無ければ切り替えごと出さない**（ここは画像を入れる口ではないので、
+    押しても何も起きない切り替えを並べても迷わせるだけ）。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    for entry, pin in ((a, [0.25, 0.30]), (b, [0.70, 0.35])):
+        store.save(EntryDraft(
+            term=entry.term, category=entry.category, definition=entry.definition,
+            map="てすと図", pin=pin,
+        ), ref=entry.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    # まだ画像が 1 枚も無いので、切り替えそのものを出さない
+    assert page.locator("#mapLayers [data-ref=mapFaces]").count() == 0
+
+    path = store.image_path(a.ref, ".png")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(TINY_PNG)
+    page.reload()
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.locator("#mapLayers [data-ref=mapFaces]").wait_for(timeout=10000)
+    # 既定は丸のまま（勝手に絵にしない）
+    assert page.locator("svg.rel-map .rel-map-face").count() == 0
+
+    page.check("#mapLayers [data-ref=mapFaces] input")
+    page.locator("svg.rel-map .rel-map-face").wait_for(timeout=10000)
+    # 画像のある語だけが絵になる（無い語は丸のまま。凡例にもそう書く）
+    assert page.locator("svg.rel-map .rel-map-face").count() == 1
+    assert page.locator("svg.rel-map .rel-map-point circle").count() >= 1
+    assert "無い語は丸のまま" in (page.text_content("#legend") or "")
+    # 丸く抜く型紙が図の中にある（外に置くと、書き出した SVG で抜けない）
+    assert page.evaluate(
+        "() => { const i = document.querySelector('svg.rel-map .rel-map-face');"
+        " const id = (i.getAttribute('clip-path') || '').slice(5, -1);"
+        " return !!document.querySelector('svg.rel-map clipPath#' + id); }"
+    )
 
 
 def test_a_line_can_be_placed_by_clicking_in_turn(page, server, seeded):

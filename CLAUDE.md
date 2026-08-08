@@ -539,7 +539,7 @@ DOTALL で書いたら 4 万字の作品でハングした（`.` が行をまた
 
 **用語ごとの画像 (`images/<カテゴリ>/<slug>.<拡張子>`) は顔とは別の軸。**
 顔は「誰が書いているか」で辞書に 1 枚、こちらは**その語そのもの**で語ごと。
-守ること 5 つ:
+守ること 6 つ:
 
 - **鍵は ref（2 段）。名前だけにしない** —— `images/<slug>` にすると
   **カテゴリ違いの同名が同じ画像を指す**（`find_by_surface()` がリストを返す理由と
@@ -555,6 +555,13 @@ DOTALL で書いたら 4 万字の作品でハングした（`.` が行をまた
   （語ごとに `image_file()` を呼ぶと 3000 語で 15,000 回 stat が飛ぶ）
 - **吹き出しでは用語の画像が顔に勝つ**（同じ場所を取り合うので、その語の絵を優先）。
   判断は `popup.js` の `faceOf()` / `hasFace()` の 2 つだけで、呼ぶ側に書かない
+- **地図では点の代わりに出せる**（`map.js` の `FACE_R`。切り替えは絵ごとに覚え、
+  **既定は丸のまま** —— 見え方が大きく変わるので頼まれていないのに変えない）。
+  **点だけ**にすること —— 線と領域は形そのものが場所を表しているので、真ん中に
+  絵を置くと**自分の形を覆う**。**画像のある語だけが絵になる**ことは凡例に書く
+  （書かないと「読み込めていない」に見える）。URL を足すのは `_graph_images()` で、
+  **地図に置かれた語だけ** —— 全ノードに足すと、地図を出していないときまで
+  `_image_index()` の走査が全リクエストで通る
 - **zip には入れるが、取り込みでは消さない**（地図とまったく同じ約束）。
   `images/` は 2 段、`maps/` は 1 段 —— **同じ prefix にまとめない**
 
@@ -1601,7 +1608,7 @@ Playwright を動かして確かめる。
 | 地図の絵の置き場所 / 配る口 | `core.imagefmt`（**画像の拡張子と見分け方と大きさの正**。`store` の `maps_dir` / `map_file` / `map_path` と `archivefmt.map_members` が読む）、`app.IMAGE_TYPES` と `_SVG_SIZED`、MANUAL の「地図に置く」。**配る口には `CSP: sandbox` と `nosniff` を付けたまま**にすること（SVG を通せる根拠がそこにしかない） |
 | 受け入れる画像形式（`IMAGE_SUFFIXES` / `MAP_SUFFIXES`） | `core.imagefmt` の `sniff()` **と `size()` の両方**（片方だけ足すと、その形式の絵で点検が静かに緩む）、`tests/test_imagefmt.py` の「拡張子と読める形式を揃える」、`ai-style.js` の `accept`、`graph.js` の絵ダイアログの `accept` |
 | zip に入れるもの（辞書・マスター・地図の絵・用語ごとの画像） | `core.archivefmt`（**GlossPopApp と共有する形**）、`archive` の `_export_maps` / `_export_images` / `_write_maps` / `_write_images`、`settings.js` の下見の文言、MANUAL の「辞書の書き出し / 取り込み」。**取り込みで消える範囲を広げないこと** |
-| 用語ごとの画像 | `store` の `images_dir` / `image_file` / `image_path` / `list_images` / `move_image` / `delete_image`、`app` の `/api/entry-image` と `_image_url` / `_image_index`、`popup.js` の `faceOf()`、`glossary.js` の `card()`、`entry.js` の `imagePanel()`、MANUAL の「用語ごとの画像」 |
+| 用語ごとの画像 | `store` の `images_dir` / `image_file` / `image_path` / `list_images` / `move_image` / `delete_image`、`app` の `/api/entry-image` と `_image_url` / `_image_index` / `_graph_images`、`popup.js` の `faceOf()`、`glossary.js` の `card()`、`entry.js` の `imagePanel()`、`map.js` の `FACE_R`（地図の点）、MANUAL の「用語ごとの画像」 |
 | 相関図の見せ方を足した | `graph.js` の `MODES` と `MODE_WORDS` と `draw()` の分岐・`TEMPLATE` の `<option>`・凡例、MANUAL の「見せ方は 6 つある」、CLAUDE.md のこの節。**書き出し (`graph-export.js`) は触らなくてよい**（`{ root, box }` を返す限り） |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
 | exe のアイコン | `packaging/icons/*.svg` を直して `uv run python packaging/make-icons.py`。**`.ico` も一緒にコミットする**（ビルド時には作らない）。アプリ側は `static/favicon.svg` と揃える |

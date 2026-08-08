@@ -1291,6 +1291,11 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   stroke-width: 16;
   vector-effect: non-scaling-stroke;
 }
+/* 用語の画像を点の代わりに出したとき（`map.js` の `FACE_R`）。丸く抜くのは
+   `<clipPath>`。**縁を付ける** —— 絵が地図に溶けると、どこまでがその語なのか
+   分からなくなる。乗せたときに縁が変わるのは、丸のときと同じ合図。 */
+.rel-map-face-ring { fill: none; stroke: var(--panel); stroke-width: 3; }
+.rel-map-pin a:hover .rel-map-face-ring { stroke: var(--accent); }
 /* **重なった名前は畳む**（一言の `.rel-edge-label.tucked` と同じ約束）。
    地図は座標が与えられている図なので**逃がす場所が無い** —— 重ねると重なった
    2 つとも読めず、下の絵まで隠す。消してはいないので、乗せる・焦点が当たる・

@@ -967,9 +967,28 @@ def graph(
         timeline.annotate(result, document, _linker())
     # 地図の見せ方が使える絵。**出てくる語から候補を出す**（別に一覧の口を作らない）
     result["maps"] = _graph_maps(result["nodes"])
+    _graph_images(result["nodes"])
     # 何に絞ったのかは画面に出す（絞っていないときは「辞書全体」と言わせる）
     result["doc"] = doc or ""
     return result
+
+
+def _graph_images(nodes: list[dict]) -> None:
+    """用語ごとの画像の URL を**地図に置かれた語にだけ**足す。
+
+    使うのは地図の見せ方（点を絵にする）だけで、そこに出るのは形が書かれた語だけ。
+    **全ノードに足さない** —— `_image_index()` は画像の枚数ぶんディレクトリを歩くので、
+    地図を出していないときまで全リクエストで通ることになる。
+
+    `core` に持たせられないのは、画像の置き場所を知らないから（`maps` と同じ形で
+    **呼ぶ側が足す**）。
+    """
+    placed = [node for node in nodes if node.get("shape")]
+    if not placed:
+        return
+    images = _image_index()
+    for node in placed:
+        node["image_url"] = images.get(node["ref"], "")
 
 
 def _graph_maps(nodes: list[dict]) -> list[dict]:
