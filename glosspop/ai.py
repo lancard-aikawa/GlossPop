@@ -593,6 +593,11 @@ def extract_timeout(limit: int) -> int:
     return llm.estimate_timeout("extract", limit)
 
 
+def readings_timeout(count: int) -> int:
+    """読みの下書きに許す秒数。1 件あたり十数トークンなので、他よりずっと軽い。"""
+    return llm.estimate_timeout("reading", count)
+
+
 def _generate(prompt: str, *, timeout: int | None = None) -> str:
     """AI に投げて本文を受け取る。**この 1 か所だけが外の頭脳に触る。**
 
@@ -1514,3 +1519,100 @@ async def draft_entry(
     if source and not data.get("source"):
         data["source"] = source
     return EntryDraft.model_validate(data)
+
+
+# --------------------------------------------------------------------------- #
+# 読みの下書き
+#
+# 五十音で束ねると「読みが書かれていない語」が初めて見えるようになった
+# （漢字の見出しはどの行にも置けない）。埋める道は 2 つあるが、**入力欄は 1 つ** ——
+# 手で書いても AI に埋めさせても、同じ欄に入って同じ口から保存される。
+#
+# **AI が書いたものをそのまま保存しない。** 読みは**確かめようがある**（かなか
+# どうかは機械で見られる）ので、かなでないものは落とす。人名や地名の読みは
+# そもそも一意に決まらないことがあるので、**分からないものは空で返させる**
+# （候補語で「本文に無い表記」を落としているのと同じ考え方）。
+# --------------------------------------------------------------------------- #
+
+#: 読みとして受け取る文字。ひらがな・カタカナ・長音符・中黒・空白だけ。
+#: **漢字を通さない** —— 通すと「読みが無い」状態のまま行に並んでしまう
+_KANA_ONLY = re.compile(r"^[ぁ-ゖァ-ヺーゝゞ・\s]+$")
+
+#: 一度に頼む語数の上限。**多いほど 1 語あたりの精度が落ちる**うえ、
+#: 途中で切れたときに捨てるものが増える
+MAX_READING_ITEMS = 60
+
+
+def build_readings_prompt(items: list[dict]) -> str:
+    """読みの下書きを頼むプロンプト。**分からないものは空文字**と明示する。
+
+    ``items`` は ``{"term", "summary", "path_label"}`` の並び。要約とカテゴリを
+    添えるのは、**同じ表記でも読みが違う**ことがあるため（「金田」「一」など）。
+    """
+    listed = "\n".join(
+        f"- {item['term']}"
+        + (f"（{item['path_label']}）" if item.get("path_label") else "")
+        + (f" — {item['summary']}" if item.get("summary") else "")
+        for item in items
+    )
+    return "\n".join([
+        "あなたは用語辞書の編集者です。次の見出し語の**読み**をひらがなで答えてください。",
+        "",
+        "## 対象の語",
+        listed,
+        "",
+        "## 守ること",
+        "- 読みは**ひらがな**で書く（カタカナ語もひらがなに直す）。",
+        "- **確信が持てないものは空文字にすること。** 人名・地名は読みが一意に"
+        "決まらないことがあります。**それらしい読みを当てずっぽうで書かないこと** ——"
+        "間違った読みは、書かれていないより悪い（辞書の並びが狂います）。",
+        "- 一覧に無い語を足さないこと。並びは一覧のとおりでなくてよい。",
+        "",
+        "次の JSON 配列だけを出力してください。前置き・後置きの文章、"
+        "コードフェンス以外の説明は一切書かないこと。",
+        '[\n  { "term": "見出し語（一覧のまま）", "reading": "ひらがなの読み。分からなければ空文字" }\n]',
+    ])
+
+
+def filter_readings(raw: list[dict], wanted: list[str]) -> tuple[list[dict], list[dict]]:
+    """AI の申告をそのまま信じずに整える。返すのは (採用, 落としたもの)。
+
+    落とすのは 3 つ: **頼んでいない語**、**空の読み**（分からないと言ってきた
+    ぶん。これは正常なので理由も穏やかに）、**かなでない読み**（漢字や英字が
+    混ざったもの）。落とした理由を返すのは、「なぜ埋まらなかったのか」を
+    画面で言えるようにするため（候補語と同じ）。
+    """
+    allowed = {term: True for term in wanted}
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    seen: set[str] = set()
+
+    for item in raw:
+        term = str(item.get("term") or "").strip()
+        reading = str(item.get("reading") or "").strip()
+        if not term or term in seen:
+            continue
+        seen.add(term)
+        if term not in allowed:
+            dropped.append({"term": term, "reading": reading, "why": "頼んでいない語です"})
+            continue
+        if not reading:
+            dropped.append({"term": term, "reading": "", "why": "読みが分からないと返ってきました"})
+            continue
+        if not _KANA_ONLY.match(reading):
+            dropped.append({"term": term, "reading": reading, "why": "かなではありません"})
+            continue
+        kept.append({"term": term, "reading": " ".join(reading.split())})
+    return kept, dropped
+
+
+async def draft_readings(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """見出し語の読みを下書きする。**保存はしない**（人が直してから保存する）。"""
+    if not items:
+        return [], []
+    prompt = build_readings_prompt(items)
+    timeout = readings_timeout(len(items))
+    raw = await to_thread.run_sync(
+        partial(_generate, timeout=timeout), prompt, abandon_on_cancel=True
+    )
+    return filter_readings(parse_candidates(raw), [item["term"] for item in items])

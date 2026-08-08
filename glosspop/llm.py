@@ -121,9 +121,10 @@ class TransientError(LLMError):
 #: 1 件あたりの所要秒の見積もり。**提供元で桁が違う** —— 同じ 19 語・20 本要求で
 #: Claude 258.6 秒 / Gemini 72.4 秒（実測）。同じ見積もりを当てると、速いほうで
 #: 「駄目だった」と分かるのが遅すぎる
+#: 読みは 1 件あたり十数トークンしか書かせないので、関係や抽出よりずっと軽い
 SECONDS_PER_ITEM: dict[str, dict[str, int]] = {
-    "claude": {"relation": 22, "extract": 10},
-    "gemini": {"relation": 8, "extract": 4},
+    "claude": {"relation": 22, "extract": 10, "reading": 3},
+    "gemini": {"relation": 8, "extract": 4, "reading": 1},
 }
 TIMEOUT_BASE = 60
 

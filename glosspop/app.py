@@ -175,6 +175,31 @@ class RelationsApplyRequest(BaseModel):
     relations: list[RelationItem] = []
 
 
+class ReadingItem(BaseModel):
+    ref: str
+    reading: str = ""
+
+
+class ReadingsApplyRequest(BaseModel):
+    """読みだけをまとめて書き込む。
+
+    **専用の口にしてある**（`/api/map-shape` と同じ理由）—— 一覧が持っているのは
+    エントリの一部だけなので、そこから `EntryDraft` を組み立てて PUT すると
+    **本文も関係も落ちる**。サーバ側で読み直して読みだけ差し替える。
+
+    まとめて受けるのは、**手で書いた欄と AI が埋めた欄が同じ 1 回の保存に混ざる**
+    から（入力欄は 1 つで、埋め方が 2 つある）。
+    """
+
+    readings: list[ReadingItem] = []
+
+
+class ReadingsDraftRequest(BaseModel):
+    """読みの下書きを頼む。**保存はしない**（人が直してから保存する）。"""
+
+    refs: list[str] = []
+
+
 class MapShapeRequest(BaseModel):
     """地図の上の形だけを書き換える。
 
@@ -1144,6 +1169,94 @@ def apply_relations(req: RelationsApplyRequest) -> dict:
             "url": entry_url(saved),
         })
     return {"applied": applied, "results": results}
+
+
+@app.post("/api/readings")
+def apply_readings(req: ReadingsApplyRequest) -> dict:
+    """読みをまとめて書き込む。**読みだけを差し替える。**
+
+    一覧が持っているのはエントリの一部だけなので、そこから組み立てて PUT すると
+    本文も関係も落ちる（`/api/map-shape` と同じ理由で専用の口にしてある）。
+
+    **空文字は「消す」。** 書いた読みを取り消す道が無いと、間違えたときに
+    用語ページまで行くことになる。
+    """
+    applied = 0
+    results: list[dict] = []
+    for item in req.readings:
+        entry = store.get(item.ref)
+        if entry is None:
+            results.append({"ref": item.ref, "ok": False, "detail": f"見つかりません: {item.ref}"})
+            continue
+        draft = EntryDraft.model_validate(entry.model_dump())
+        draft.reading = item.reading
+        try:
+            saved = store.save(draft, ref=item.ref)
+        except store.StoreError as exc:
+            results.append({"ref": item.ref, "ok": False, "detail": str(exc)})
+            continue
+        applied += 1
+        results.append({"ref": saved.ref, "ok": True, "term": saved.term, "reading": saved.reading})
+    return {"applied": applied, "results": results}
+
+
+@app.post("/api/ai/readings")
+async def draft_readings(req: ReadingsDraftRequest) -> dict:
+    """見出し語の読みを下書きする。**保存はしない。**
+
+    五十音で束ねると「読みが無くてどの行にも置けない語」が見える。その埋め方は
+    2 つあるが、**入力欄は 1 つ** —— ここが返すのは欄に入れる値で、保存するのは
+    人が直したあと（`/api/readings`）。
+
+    **かなでないものは落として理由を返す**（`ai.filter_readings()`）。読みは
+    確かめようがあるので、AI の申告をそのまま入れない。
+    """
+    if not ai.available():
+        raise HTTPException(503, "AI が使えません。読みは手で書けます。")
+    asked = []
+    for ref in req.refs[:ai.MAX_READING_ITEMS]:
+        entry = store.get(ref)
+        if entry is None:
+            continue
+        asked.append({
+            "ref": ref, "term": entry.term,
+            "summary": entry.summary, "path_label": entry.path_label,
+        })
+
+    # **同じ用語名が 2 つあるものは頼まない。** AI は用語名で答えるので、
+    # 戻すときにどちらの語か決まらない —— **黙ってどちらかに寄せない**
+    # （`relations.resolve()` が絞りきれないときに寄せないのと同じ）。
+    # 手で書く道は残っているので、そう言って返す
+    counts: dict[str, int] = {}
+    for item in asked:
+        counts[item["term"]] = counts.get(item["term"], 0) + 1
+    items = [item for item in asked if counts[item["term"]] == 1]
+    dropped = [
+        {"term": item["term"], "reading": "",
+         "why": "同じ用語名が複数あるので、どちらの読みか決まりません（手で書いてください）"}
+        for item in asked if counts[item["term"]] > 1
+    ]
+    if not items:
+        raise HTTPException(400, "読みを下書きする語がありません")
+
+    try:
+        kept, more = await ai.draft_readings(items)
+    except ai.AIError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    # **ref に戻して返す**（画面は ref で欄を引く。用語名は鍵にならない）
+    by_term = {item["term"]: item["ref"] for item in items}
+    readings = [
+        {"ref": by_term[hit["term"]], "term": hit["term"], "reading": hit["reading"]}
+        for hit in kept if hit["term"] in by_term
+    ]
+    return {
+        "readings": readings,
+        # 埋まらなかったものは理由つきで返す（黙って欠けさせない）
+        "dropped": [*dropped, *more],
+        "asked": len(items),
+        "truncated": len(req.refs) > len(asked),
+    }
 
 
 @app.post("/api/aliases")

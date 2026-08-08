@@ -207,6 +207,104 @@ function jumpBar(rows) {
     })));
 }
 
+/**
+ * 「読みなし」の束に付ける、読みを埋める道。**入力欄は 1 つ、埋め方が 2 つ。**
+ *
+ * 手で書いても AI に埋めさせても**同じ欄**に入り、**同じ 1 回の保存**で書き込む
+ * （`POST /api/readings`）。別々の口にすると、AI が埋めたぶんだけ先に保存されて
+ * 「手で直したのに戻った」が起きる。
+ *
+ * **AI の答えをそのまま保存しない。** かなでないものはサーバが落とすし、
+ * 落ちたものは理由つきで出す —— 読みは間違っていると**辞書の並びが狂う**ので、
+ * 書かれていないほうがましな場面がある（人が見てから保存する）。
+ */
+function readingForm(items) {
+  const status = el("span", { class: "status", "data-ref": "readStatus" });
+  const inputs = new Map();
+
+  const save = async () => {
+    // **空の欄は送らない。** 空文字は「読みを消す」の意味なので、触っていない
+    // 欄まで送ると、AI が埋めなかった語を消しに行くことになる
+    const readings = [...inputs]
+      .map(([ref, input]) => ({ ref, reading: input.value.trim() }))
+      .filter((r) => r.reading);
+    if (!readings.length) {
+      setStatus(status, "読みが入っていません", "error");
+      return;
+    }
+    setStatus(status, "保存中", "busy");
+    try {
+      const res = await api("/api/readings", { method: "POST", body: { readings } });
+      invalidatePopupCache();
+      setStatus(status, `${res.applied} 語に読みを書きました`);
+      await reload();          // 書いたぶんはその行へ移る（消えるところまで見せる）
+    } catch (err) {
+      setStatus(status, err.message, "error");
+    }
+  };
+
+  const draft = async (button) => {
+    button.disabled = true;
+    setStatus(status, "AI が読みを考えています", "busy");
+    try {
+      const res = await api("/api/ai/readings", {
+        method: "POST",
+        body: { refs: [...inputs.keys()] },
+      });
+      for (const hit of res.readings) {
+        const input = inputs.get(hit.ref);
+        // **手で書いたぶんを上書きしない**（先に書いた人の指定が勝つ）
+        if (input && !input.value.trim()) input.value = hit.reading;
+      }
+      const note = res.dropped.length ? `／埋まらなかった ${res.dropped.length} 語: `
+        + res.dropped.slice(0, 3).map((d) => `${d.term}（${d.why}）`).join("、") : "";
+      setStatus(status, `${res.readings.length} 語を埋めました${note}`);
+    } catch (err) {
+      setStatus(status, err.message, "error");
+    }
+    button.disabled = false;
+  };
+
+  const aiButton = el("button", {
+    type: "button",
+    "data-ref": "readDraft",
+    text: "✨ 読みを下書き",
+    title: "AI に読みを考えさせて、下の欄に入れる（保存はしません）",
+  });
+  aiButton.addEventListener("click", () => draft(aiButton));
+
+  const rows = items.map((e) => {
+    const input = el("input", {
+      type: "text",
+      class: "narrow",
+      "data-ref": "readInput",
+      "data-ref-of": e.ref,
+      placeholder: "よみ",
+      "aria-label": `${e.term} の読み`,
+      // Enter でそのまま保存（1 語だけ直したいときに、ボタンまで行かせない）
+      onkeydown: (ev) => {
+        if (ev.key === "Enter") save();
+      },
+    });
+    inputs.set(e.ref, input);
+    return el("li", { class: "rel-row" }, [
+      el("a", { class: "chip", href: e.url, text: e.term, title: e.path_label }),
+      el("span", { class: "hint", text: e.path_label }),
+      input,
+    ]);
+  });
+
+  return el("div", { class: "reading-form" }, [
+    el("p", { class: "hint", text: "読みを書くと、その行に並びます。手で書いても、AI に下書きさせてもかまいません。" }),
+    el("ul", { class: "rel-list" }, rows),
+    el("div", { class: "cat-row" }, [
+      aiButton,
+      el("button", { type: "button", class: "primary", "data-ref": "readSave", text: "読みを保存", onclick: save }),
+      status,
+    ]),
+  ]);
+}
+
 /** 五十音で束ねて描く。**カテゴリはカードに出す**（見出しがカテゴリでなくなるので）。 */
 function paintByReading(entries) {
   const buckets = new Map(ROW_ORDER.map((row) => [row, []]));
@@ -226,11 +324,11 @@ function paintByReading(entries) {
         el("span", { text: row }),
         el("span", { class: "count", text: `${items.length} 語` }),
       ]),
-      // **読みが無いことを責めない。** どうすればそこへ並ぶかだけ書く
+      // **読みが無いことを責めない。** 埋める道をその場に置くだけ
+      // （カードではなく一覧にするのは、続けて何語も書く場所だから）
       row === ROW_NONE
-        ? el("p", { class: "hint", text: "読みを書くと、その行に並びます。" })
-        : null,
-      el("div", { class: "cards" }, items.map((e) => card(e, { showPath: true }))),
+        ? readingForm(items)
+        : el("div", { class: "cards" }, items.map((e) => card(e, { showPath: true }))),
     ])),
   );
 }

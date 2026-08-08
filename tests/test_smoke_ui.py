@@ -277,15 +277,19 @@ def test_a_term_inside_the_popup_is_followed_in_place(page, server, isolated_dir
     inner.wait_for(timeout=5000)
     inner.click()
 
-    # 消えない。中身だけが相手の語に入れ替わる
-    page.locator(".gloss-pop [data-pop-back]").wait_for(timeout=5000)
+    # 消えない。中身だけが相手の語に入れ替わる。
+    # **`[data-pop-back]` を「描き終わった合図」にしない** —— 戻る道は `paint()` の
+    # 1 か所にあり、**読み込み中の描き方にも出る**（4 通りのどれでも戻れるように、
+    # と決めてある側の帰結）。中身を待たないと「読み込み中…」を掴んで落ちる
+    # （手元で 2 回踏んだ。フレークに見えて、実はテストの待ち方だった）
+    page.locator(".gloss-pop", has_text="級友").wait_for(timeout=5000)
     assert popup.is_visible()
-    assert "級友" in popup.inner_text()
+    assert page.locator(".gloss-pop [data-pop-back]").count() == 1
 
     page.click(".gloss-pop [data-pop-back]")
-    page.locator(".gloss-pop .pop-term", has_text="ジョバンニ").wait_for(timeout=5000)
+    page.locator(".gloss-pop", has_text="活版所で働く少年").wait_for(timeout=5000)
     assert popup.is_visible()
-    assert "活版所で働く少年" in popup.inner_text()
+    assert "ジョバンニ" in popup.locator(".pop-term").inner_text()
 
 
 def test_an_existing_entry_can_be_rewritten_by_ai(page, server, seeded):
@@ -2209,6 +2213,31 @@ def test_the_glossary_can_be_browsed_in_kana_order(page, server, seeded):
     # 覚えている（開き直しても五十音のまま）。**サーバへは行き直さない**
     open_glossary(page, server)
     assert page.locator("#groupBy").input_value() == "reading"
+
+
+def test_a_reading_can_be_written_where_it_is_missing(page, server, seeded):
+    """読みを埋める道を、見えたその場に置く。**入力欄は 1 つ、埋め方が 2 つ**
+    （手で書く / AI に下書きさせる）—— どちらも同じ欄に入り、同じ 1 回で保存する。
+
+    **書けばその行へ移る**（消えるところまで見せる）。
+    """
+    store.save(EntryDraft(term="活版所", category="場所", definition="働くところ。"))
+
+    open_glossary(page, server)
+    page.select_option("#groupBy", "reading")
+    page.locator("[data-ref=readInput]").first.wait_for(timeout=10000)
+    assert page.locator("[data-ref=readInput]").count() == 1
+
+    page.fill("[data-ref=readInput]", "かっぱんじょ")
+    page.click("[data-ref=readSave]")
+    # 書いたぶんは「読みなし」から消えて、か行に並ぶ
+    page.locator("[data-ref=readInput]").first.wait_for(state="detached", timeout=10000)
+    heads = page.evaluate(
+        "() => [...document.querySelectorAll('#list .cat-group h2 span:first-child')]"
+        ".map((s) => s.textContent)"
+    )
+    assert "読みなし" not in heads and "か" in heads
+    assert store.find_by_surface("活版所")[0].reading == "かっぱんじょ"
 
 
 def test_the_index_shows_where_each_term_appears(page, server, seeded):

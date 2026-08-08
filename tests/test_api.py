@@ -457,6 +457,112 @@ def test_searching_by_entry_returns_a_whole_sentence_for_examples(client):
     assert hit["sentence"] == "PUT は冪等なのでリトライしても安全。"
 
 
+class TestWritingReadings:
+    """読みだけをまとめて書き込む口 (`/api/readings`)。
+
+    五十音で束ねると「読みが無くてどの行にも置けない語」が見える。埋め方は
+    **手で書く / AI に下書きさせる**の 2 つあるが、**入力欄は 1 つ**で
+    保存もここ 1 か所を通る（別々の口にすると、AI が埋めたぶんだけ先に保存されて
+    「手で直したのに戻った」が起きる）。
+    """
+
+    def test_it_writes_only_the_reading(self, client):
+        """**読みだけを差し替える。** 一覧はエントリの一部しか持っていないので、
+        そこから組み立てて PUT すると本文も関係も落ちる（`/api/map-shape` と同じ）。
+        """
+        ref = client.post("/api/entries", json={
+            "term": "活版所", "category": "場所", "summary": "働くところ。",
+            "definition": "本文。", "tags": ["銀河"],
+        }).json()["ref"]
+
+        res = client.post("/api/readings", json={
+            "readings": [{"ref": ref, "reading": "かっぱんじょ"}],
+        }).json()
+        assert res["applied"] == 1 and res["results"][0]["ok"] is True
+
+        body = client.get(f"/api/entries/{ref_path(ref)}").json()
+        assert body["reading"] == "かっぱんじょ"
+        # **ほかの項目は残る**（ここが落ちるのが、組み立て直させたときの事故）
+        assert body["definition"] == "本文。" and body["tags"] == ["銀河"]
+
+    def test_an_empty_reading_clears_it(self, client):
+        """空文字は「消す」。取り消す道が無いと、用語ページまで行くことになる。"""
+        ref = client.post("/api/entries", json={
+            "term": "活版所", "category": "場所", "reading": "まちがい", "definition": "本文。",
+        }).json()["ref"]
+        client.post("/api/readings", json={"readings": [{"ref": ref, "reading": ""}]})
+        assert client.get(f"/api/entries/{ref_path(ref)}").json()["reading"] == ""
+
+    def test_a_missing_entry_is_reported_not_fatal(self, client):
+        """1 件失敗しても残りは書く（まとめて書く口の作法）。"""
+        ref = client.post("/api/entries", json={
+            "term": "活版所", "category": "場所", "definition": "本文。",
+        }).json()["ref"]
+        res = client.post("/api/readings", json={"readings": [
+            {"ref": "無い/語", "reading": "ない"},
+            {"ref": ref, "reading": "かっぱんじょ"},
+        ]}).json()
+        assert res["applied"] == 1
+        assert [r["ok"] for r in res["results"]] == [False, True]
+
+
+class TestDraftingReadings:
+    """読みの下書き (`/api/ai/readings`)。**保存はしない。**"""
+
+    def _entry(self, client, term, category="場所"):
+        return client.post("/api/entries", json={
+            "term": term, "category": category, "definition": "本文。",
+        }).json()["ref"]
+
+    def test_it_returns_values_for_the_inputs_and_never_saves(self, client, monkeypatch):
+        monkeypatch.setattr(ai, "available", lambda: True)
+        monkeypatch.setattr(
+            ai, "_generate",
+            lambda *a, **k: '[{"term": "活版所", "reading": "かっぱんじょ"}]',
+        )
+        ref = self._entry(client, "活版所")
+        res = client.post("/api/ai/readings", json={"refs": [ref]}).json()
+        assert res["readings"] == [
+            {"ref": ref, "term": "活版所", "reading": "かっぱんじょ"}
+        ]
+        # **保存はしない**（人が直してから `/api/readings` に送る）
+        assert client.get(f"/api/entries/{ref_path(ref)}").json()["reading"] == ""
+
+    def test_what_cannot_be_used_comes_back_with_a_reason(self, client, monkeypatch):
+        """かなでない読みと、分からないと返ってきたぶんは落として理由を返す。"""
+        monkeypatch.setattr(ai, "available", lambda: True)
+        monkeypatch.setattr(ai, "_generate", lambda *a, **k: json.dumps([
+            {"term": "活版所", "reading": "活版所"},      # かなではない
+            {"term": "銀河", "reading": ""},              # 分からない
+        ], ensure_ascii=False))
+        self._entry(client, "活版所")
+        self._entry(client, "銀河")
+        res = client.post("/api/ai/readings", json={
+            "refs": [e["ref"] for e in client.get("/api/entries").json()],
+        }).json()
+        assert res["readings"] == []
+        assert {d["term"] for d in res["dropped"]} == {"活版所", "銀河"}
+
+    def test_the_same_term_twice_is_not_guessed(self, client, monkeypatch):
+        """**同じ用語名が 2 つあるものは頼まない。** AI は用語名で答えるので、
+        戻すときにどちらの語か決まらない —— 黙ってどちらかに寄せない。
+        """
+        monkeypatch.setattr(ai, "available", lambda: True)
+        monkeypatch.setattr(ai, "_generate", lambda *a, **k: '[]')
+        a = self._entry(client, "ソース", category="料理")
+        b = self._entry(client, "ソース", category="開発")
+        c = self._entry(client, "活版所")
+        res = client.post("/api/ai/readings", json={"refs": [a, b, c]}).json()
+        assert res["asked"] == 1                       # 頼んだのは 活版所 だけ
+        assert [d["term"] for d in res["dropped"]] == ["ソース", "ソース"]
+
+    def test_it_says_so_when_ai_is_not_available(self, client, monkeypatch):
+        monkeypatch.setattr(ai, "available", lambda: False)
+        ref = self._entry(client, "活版所")
+        res = client.post("/api/ai/readings", json={"refs": [ref]})
+        assert res.status_code == 503 and "手で書けます" in res.json()["detail"]
+
+
 class TestTheOccurrenceIndex:
     """巻末索引 (`/api/occurrences`)。**語の側から本文を並べる。**
 
