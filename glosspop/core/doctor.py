@@ -43,6 +43,11 @@ CHECKS: dict[str, dict[str, str]] = {
         "label": "本文が空",
         "hint": "辞書ページに出す説明がありません。",
     },
+    "unreadable_when": {
+        "label": "時刻が西暦で読めない",
+        "hint": "作中の時刻は先頭を西暦で書いてください（例: 1560-05-19 永禄三年五月十九日）。"
+                "元号だけでは前後が決まらないので、時系列では「時刻が分からない」に入ります。",
+    },
     "two_map_shapes": {
         "label": "地図の形が 2 つ以上",
         "hint": "pin（点）・line（線）・area（領域）は 1 つだけ書いてください。"
@@ -123,6 +128,14 @@ def check(entries: list[Entry], *, maps: Mapping[str, float | None] | None = Non
 
     for entry in entries:
         for rel in entry.relations:
+            # **書いたのに並ばない**（時系列で「時刻が分からない」に落ちる）。
+            # 画面には何も出ないので、ここで言わないと気付く手段が無い
+            if rel.when and rel.when_at is None:
+                issues.append(_issue(
+                    "unreadable_when", WARN, entry,
+                    f"「{rel.to}」の時刻「{rel.when}」を西暦として読めません",
+                    target=rel.to,
+                ))
             res = relations.resolve(rel.to, entries, origin=entry)
             if res.entry is not None and res.entry.ref == entry.ref:
                 issues.append(_issue(

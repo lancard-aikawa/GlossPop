@@ -81,6 +81,7 @@ def test_core_has_the_modules_we_expect():
         "relations",
         "render",
         "timeline",
+        "whenfmt",
     ]
 
 

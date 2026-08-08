@@ -206,6 +206,12 @@ def build_graph(
                 "rank": rel.rank,
                 "mutual": rel.mutual,
                 "reveal": rel.reveal,
+                # **作中の時刻は 2 つ返す**（`timeline.annotate()` の `at` /
+                # `at_label` と同じ形の裏返し）: 表示は人が書いた文字列そのまま、
+                # 並べ替えは先頭の西暦から出した数。読めなければ `None` で、
+                # **黙って寄せない**（時系列が「時刻が分からない」の帯に入れる）
+                "when": rel.when,
+                "when_at": rel.when_at,
                 "missing": res.entry is None,
                 # 直すのに要るもの: 書き手の何番目の関係か と、書かれている行き先。
                 # ``to`` は解決後の ref なので、ファイルに書いてある文字列とは違う

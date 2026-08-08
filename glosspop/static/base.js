@@ -189,6 +189,9 @@ export function describeRelation(edge, { from = "", to = "" } = {}) {
   bits.push(edge.mutual ? "相互" : "一方的");
   if (edge.rank) bits.push(RANK_MARK[edge.rank] || `相手が${edge.rank}`);
   if (edge.reveal) bits.push(`判明: ${edge.reveal}`);
+  // **作中の時刻は「判明」と別物**（あちらは読者がいつ知るか）。図の中では
+  // 帯の見出しにしか出ないので、ここに書かないと**行だけを見た人には読めない**
+  if (edge.when) bits.push(`作中: ${edge.when}`);
   return bits.join(" / ");
 }
 

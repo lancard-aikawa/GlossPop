@@ -1498,22 +1498,74 @@ def test_the_timeline_orders_relations_by_where_they_become_readable(page, serve
     page.keyboard.press("Escape")
 
 
-def test_the_timeline_is_only_offered_when_a_document_is_open(page, server, seeded):
-    """辞書全体では時系列を出せない（読むものが決まっていないと定義できない）。
+def test_the_timeline_needs_one_of_its_two_axes(page, server, seeded):
+    """時系列は**軸が 2 つ**（読む順 / 作中の時刻）。どちらも無ければ出せない。
 
     **覚えていた見せ方を黙って別のものに差し替えない。** 何が起きたのかを
-    注意書きに出し、覚えている選択のほうは書き換えない（文書を開いて戻ったら
-    また時系列で出す）。
+    注意書きに出し、覚えている選択のほうは書き換えない（地図と同じ扱い）。
+    **どちらの軸が足りないのかまで書く** —— 「文書を開け」だけだと、時刻を書く
+    という道が見えない。
     """
     page.goto(f"{server}/graph")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    assert page.locator('#mode option[value="timeline"]').is_disabled()
 
     page.evaluate("() => localStorage.setItem('glosspop.graphMode', 'timeline')")
     page.reload()
+    page.locator("svg.rel-graph:not(.rel-timeline)").wait_for(timeout=15000)
+    notes = page.locator("#notes").inner_text()
+    assert "読む順" in notes and "作中の時刻" in notes and "when" in notes
+    # 覚えている選択は書き換えない（次に文書を開けば、また時系列で出す）
+    assert page.locator("#mode").input_value() == "timeline"
+
+
+def test_the_timeline_can_order_by_the_time_in_the_story(page, server, seeded):
+    """**作中の時刻**で並べる軸。読む順（読者がいつ知るか）とは別物で、
+    **文書を開いていなくても出せる**（辞書全体でも定義できる）。
+
+    並べ替えは**先頭の西暦だけ**（元号は変換表が要るので機械には比べられない）。
+    **時刻を書いていない関係のほうが普通**なので、そのぶんは最後の帯にまとめ、
+    「書いていない」と「書いたのに読めない」を**数え分けて**凡例に出す。
+    """
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    zanelli = store.save(EntryDraft(term="ザネリ", category="登場人物", definition="級友。"))
+    teacher = store.save(EntryDraft(term="先生", category="登場人物", definition="教師。"))
+    store.save(
+        EntryDraft(
+            term=a.term, category=a.category, summary=a.summary, definition=a.definition,
+            relations=[
+                # わざと逆順に書く（並べ替えが効いていることを見るため）
+                {"to": zanelli.ref, "label": "同級生", "when": "1560-05-19 永禄三年"},
+                {"to": b.ref, "label": "親友", "when": "1559 前の年"},
+                {"to": teacher.ref, "label": "教わる"},                    # 未入力
+            ],
+        ),
+        ref=a.ref,
+    )
+
+    page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    assert page.locator("#mode").input_value() == "layered"
-    assert "時系列は文書を開いているとき" in page.locator("#notes").inner_text()
+    page.select_option("#mode", "timeline")
+    page.locator("svg.rel-timeline").wait_for(timeout=10000)
+    page.select_option("#timeAxis", "when")
+    page.wait_for_timeout(300)
+
+    # 帯の見出しは**書かれたまま**（先頭の西暦で並べ、表示は書いた文字列）。
+    # 図の中では 14 字で切るので、全文が読めるのは枠 (`data-detail`) のほう
+    heads = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-timeline .tl-head')]"
+        ".map((g) => g.dataset.detail)"
+    )
+    assert [h.split(" —")[0] for h in heads] == [
+        "1559 前の年", "1560-05-19 永禄三年", "時刻が分からない",
+    ]
+    assert page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-timeline .rel-edge-label')]"
+        ".sort((p, q) => Number(p.getAttribute('y')) - Number(q.getAttribute('y')))"
+        ".map((t) => t.textContent)"
+    ) == ["親友", "同級生", "教わる"]
+    # **未入力は数えて出す**（黙って欠けた図にしない）
+    assert "時刻を書いていない 1 本" in (page.text_content("#legend") or "")
 
 
 def test_the_crossing_free_mode_sets_its_words_vertically(page, server, seeded):

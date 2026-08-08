@@ -281,5 +281,7 @@ def _default_relations(keep: Entry, drop: Entry, entries: list[Entry]) -> list[R
         if item["self_reference"]:
             continue
         source = item["keep"] or item["drop"]
-        out.append(Relation(**{k: source[k] for k in ("to", "label", "back", "rank", "reveal")}))
+        # **項目はモデルから引く。** 名前を並べ書きすると、関係に項目を足した
+        # ときに**まとめた瞬間だけ静かに消える**（`when` を足して実際に踏んだ）
+        out.append(Relation(**{k: source[k] for k in Relation.model_fields if k in source}))
     return out

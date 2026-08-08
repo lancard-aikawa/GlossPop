@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from . import whenfmt
+
 UNCATEGORIZED = "未分類"
 
 #: 辞書の置き場所。global = data/glossary、local = 開いているフォルダの .glosspop/
@@ -140,13 +142,16 @@ class Relation(BaseModel):
     back: str = ""           # to → 自分 の一言。空なら一方的
     rank: str = ""           # 上 | 下 | 対等 (to が自分から見てどうか)。空なら未指定
     reveal: str = ""         # この関係が判明する位置 ("第6章")。相関図のネタバレ抑止に使う
+    # **作中でいつか**（"1560-05-19 永禄三年五月十九日"）。`reveal`（読者がいつ
+    # 読めるか）とは別の軸で、並べ替えに使うのは**先頭の西暦だけ** → `core.whenfmt`
+    when: str = ""
 
     @field_validator("to", mode="before")
     @classmethod
     def _normalize_to(cls, v: object) -> str:
         return normalize_link("" if v is None else str(v))
 
-    @field_validator("label", "back", "reveal", mode="before")
+    @field_validator("label", "back", "reveal", "when", mode="before")
     @classmethod
     def _normalize_text(cls, v: object) -> str:
         return "" if v is None else str(v).strip()
@@ -161,6 +166,15 @@ class Relation(BaseModel):
     @property
     def mutual(self) -> bool:
         return bool(self.back)
+
+    @property
+    def when_at(self) -> int | None:
+        """作中の時刻を並べ替えのための数にしたもの。読めなければ ``None``。
+
+        **読むのは 1 か所だけ**（`core.whenfmt`）—— 図と点検で別々に読むと、
+        書ける形がずれて「点検は通るのに並ばない」が起きる。
+        """
+        return whenfmt.sort_key(self.when)
 
 
 def _point(value: object) -> list[float] | None:

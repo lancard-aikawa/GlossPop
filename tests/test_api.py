@@ -875,6 +875,64 @@ def test_graph_hides_revealed_relations_by_default(client):
     assert [e["label"] for e in shown["edges"]] == ["実は兄弟"]
 
 
+def test_graph_carries_the_in_story_time_of_relations(client):
+    """作中の時刻は**2 つ返す**（書かれたままの文字列と、並べ替えのための数）。
+
+    **判明位置とは別の軸。** あちらは読者がいつ知るかで、こちらは作中でいつか。
+    **時刻を書いていない関係が普通**なので、そこは `null` で返して数える側に回す
+    （黙って 0 に寄せると、いちばん古い関係として並んでしまう）。
+    """
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    _person(client, "ザネリ")
+    _person(client, "先生")
+    client.put(
+        f"/api/entries/{ref_path(a)}",
+        json={
+            "term": "ジョバンニ",
+            "category": "登場人物",
+            # **行き先はばらす** —— 同じ相手への 2 本目は Relation の検証が
+            # 1 本に潰すので、ここで重ねると時刻ではなく重複を見ることになる
+            "relations": [
+                {"to": b, "label": "並んで歩く", "when": "1560-05-19 永禄三年五月十九日"},
+                {"to": "ザネリ", "label": "同級生"},                       # 未入力
+                {"to": "先生", "label": "口論する", "when": "永禄三年の夏"},  # 読めない
+            ],
+        },
+    )
+    edges = {e["label"]: e for e in
+             client.get("/api/graph", params={"category": "登場人物"}).json()["edges"]}
+    assert edges["並んで歩く"]["when"] == "1560-05-19 永禄三年五月十九日"
+    assert edges["並んで歩く"]["when_at"] == 15600519000000
+    # 書いていない関係も落とさない（時系列が最後の帯にまとめる）
+    assert edges["同級生"]["when"] == "" and edges["同級生"]["when_at"] is None
+    # 書いてあるが読めないものは、**書かれたままを返しつつ並べない**
+    assert edges["口論する"]["when"] == "永禄三年の夏"
+    assert edges["口論する"]["when_at"] is None
+
+
+def test_a_merge_keeps_the_time_on_relations(client):
+    """**まとめても時刻を落とさない。**
+
+    統合は関係を組み立て直すので、項目を名前で並べ書きしていると
+    **まとめた瞬間だけ静かに消える**（`when` を足したときに実際にそうなっていた）。
+    """
+    a = _person(client, "ジョバンニ")
+    b = _person(client, "カムパネルラ")
+    c = _person(client, "ザネリ")
+    client.put(
+        f"/api/entries/{ref_path(a)}",
+        json={
+            "term": "ジョバンニ",
+            "category": "登場人物",
+            "relations": [{"to": c, "label": "同級生", "when": "1560-05-19"}],
+        },
+    )
+    merged = client.post("/api/merge", json={"keep": a, "drop": b}).json()
+    kept = client.get(f"/api/entries/{ref_path(merged['ref'])}").json()
+    assert [r["when"] for r in kept["relations"]] == ["1560-05-19"]
+
+
 def test_graph_rejects_an_unknown_scope(client):
     assert client.get("/api/graph", params={"scope": "どこか"}).status_code == 400
 

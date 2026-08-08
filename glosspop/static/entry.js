@@ -75,6 +75,15 @@ function relationRow(rel, onRemove) {
   if (rel.reveal) {
     bits.push(el("span", { class: "rel-reveal", text: `判明: ${rel.reveal}`, title: "相関図では既定で伏せる" }));
   }
+  // **判明位置とは別の軸**（あちらは読者がいつ知るか、こちらは作中でいつか）。
+  // 書いてあるものだけ出す —— 時刻を書かない関係のほうが普通
+  if (rel.when) {
+    bits.push(el("span", {
+      class: "rel-when",
+      text: `作中: ${rel.when}`,
+      title: "相関図の時系列で、この順に並べます（先頭の西暦で並べ替え）",
+    }));
+  }
   if (rel.missing) bits.push(el("span", { class: "hint", text: rel.reason }));
   bits.push(el("span", { class: "spacer" }));
   bits.push(el("button", { type: "button", class: "ghost", text: "削除", onclick: onRemove }));
@@ -92,6 +101,9 @@ function backlinkRow(link) {
   if (link.rank) bits.push(el("span", { class: "rel-rank", text: RANK_MARK[link.rank] }));
   if (link.reveal) {
     bits.push(el("span", { class: "rel-reveal", text: `判明: ${link.reveal}`, title: "相関図では既定で伏せる" }));
+  }
+  if (link.when) {
+    bits.push(el("span", { class: "rel-when", text: `作中: ${link.when}` }));
   }
   return el("li", { class: "rel-row" }, bits);
 }
@@ -141,6 +153,14 @@ function relationForm(entry) {
     "aria-label": "判明する位置",
     title: "書いておくと相関図では既定で伏せられます",
   });
+  // **判明する位置とは別の軸。** 空でよい（時刻を書かない関係のほうが普通）
+  const when = el("input", {
+    type: "text",
+    class: "narrow",
+    placeholder: "作中の時刻（任意）",
+    "aria-label": "作中の時刻",
+    title: "例: 1560-05-19 永禄三年五月十九日（先頭の西暦で並べます）",
+  });
   const status = el("span", { class: "status" });
 
   const add = el("button", {
@@ -161,6 +181,7 @@ function relationForm(entry) {
           back: back.value,
           rank: rank.value,
           reveal: reveal.value,
+          when: when.value,
         },
       ];
       await saveRelations(entry, next, status);
@@ -170,7 +191,7 @@ function relationForm(entry) {
   return el("div", { class: "rel-form" }, [
     datalist,
     el("div", { class: "rel-form-line" }, [to, label, back]),
-    el("div", { class: "rel-form-line" }, [rank, reveal, add, status]),
+    el("div", { class: "rel-form-line" }, [rank, reveal, when, add, status]),
     el("p", {
       class: "hint",
       text:

@@ -232,6 +232,7 @@ function describe(rel) {
   if (rel.back) bits.push(`↔ ${rel.back}`);
   if (rel.rank) bits.push(rel.rank);
   if (rel.reveal) bits.push(`判明: ${rel.reveal}`);
+  if (rel.when) bits.push(`作中: ${rel.when}`);
   return bits.join(" · ");
 }
 
@@ -245,8 +246,11 @@ async function apply(plan, fields, relationChoices) {
         keep: plan.keep.ref,
         drop: plan.drop.ref,
         fields,
+        // **関係の項目を足したらここも足す。** 並べ書きなので、忘れると
+        // まとめた瞬間だけその項目が静かに消える（→ CLAUDE.md の一緒に直す表）
         relations: [...relationChoices.values()].map((r) => ({
-          to: r.to, label: r.label, back: r.back, rank: r.rank, reveal: r.reveal,
+          to: r.to, label: r.label, back: r.back, rank: r.rank,
+          reveal: r.reveal, when: r.when,
         })),
       },
     });

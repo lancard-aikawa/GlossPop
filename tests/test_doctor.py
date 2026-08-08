@@ -117,6 +117,40 @@ class TestContentChecks:
         assert report["counts"]["empty_definition"] == 2
 
 
+class TestWhenChecks:
+    """作中の時刻 (`when`)。**書いていないのが普通**なので、そこは黙ること。
+
+    挙げるのは「書いたのに西暦として読めない」だけ —— そのぶんは時系列で
+    「時刻が分からない」の帯に落ちるが、**画面には何も出ない**ので、
+    ここで言わないと気付く手段が無い。
+    """
+
+    def entry(self, add_entry, **kwargs):
+        add_entry("信長", category="人", summary="要約。", definition="本文。", **kwargs)
+        add_entry("光秀", category="人", summary="要約。", definition="本文。")
+
+    def test_nothing_is_said_when_there_is_no_time(self, add_entry):
+        """**未入力は正常。** 全部の関係に時刻が付く辞書のほうが珍しい。"""
+        self.entry(add_entry, relations=[{"to": "光秀", "label": "家臣"}])
+        assert kinds(doctor.check(store.load_all())) == []
+
+    def test_nothing_is_said_when_the_time_can_be_read(self, add_entry):
+        self.entry(add_entry, relations=[
+            {"to": "光秀", "label": "家臣", "when": "1582-06-21 天正十年六月二日"},
+        ])
+        assert kinds(doctor.check(store.load_all())) == []
+
+    def test_an_era_name_alone_is_reported(self, add_entry):
+        """元号だけでは前後が決まらない（変換表を持たない）。**黙って並べない。**"""
+        self.entry(add_entry, relations=[
+            {"to": "光秀", "label": "家臣", "when": "天正十年六月二日"},
+        ])
+        report = doctor.check(store.load_all())
+        assert kinds(report) == ["unreadable_when"]
+        assert "天正十年六月二日" in report["issues"][0]["detail"]
+        assert report["issues"][0]["severity"] == "warn"
+
+
 class TestMapChecks:
     """地図は「書いたのに出ない」が起きやすい。**画面には何も出ない**ので、
     ここで言わないと気付く手段が無い。逆に、置き待ち（絵の名前だけ書いた語）と

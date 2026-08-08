@@ -1114,13 +1114,16 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-row:last-child { border-bottom: 0; }
 .rel-arrow { color: var(--fg-faint); font-size: var(--fs-15); width: 1.2em; text-align: center; }
 .rel-label { font-weight: 600; }
-.rel-rank, .rel-reveal {
+.rel-rank, .rel-reveal, .rel-when {
   font-size: var(--fs-11);
   color: var(--fg-dim);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 1px 8px;
 }
+/* **判明位置は注意の色**（書くと図では既定で伏せる ＝ 図の出方が変わる）。
+   **作中の時刻は素のまま** —— 並べ替えに使うだけで、何も伏せない。
+   同じ色にすると「時刻を書くと伏せられる」と読まれる。 */
 .rel-reveal { color: var(--warn); border-color: var(--warn); }
 .rel-sub {
   font-size: var(--fs-11);

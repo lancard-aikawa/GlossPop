@@ -38,8 +38,19 @@ const HEAD_MAX = 14;
 const WORDS_MAX = 14;
 
 //: 位置を出せなかった関係を入れる帯。**黙って落とさない**ための場所で、
-//: `?doc=` の図では普通は空（両端が出てくる語だけが図に載っているため）
-const UNDATED = "位置が分からない";
+//: 読む順の図では普通は空（両端が出てくる語だけが図に載っているため）。
+//: **軸によって言うことが違う** —— 作中の時刻では「まだ書かれていない」が普通
+const UNDATED = { read: "位置が分からない", when: "時刻が分からない" };
+
+//: 並べる軸。**2 つあり、どちらで並べているかは必ず画面に書く**（→ graph.js）。
+//: read = 読者がその文書のどこで読めるようになるか（サーバが計算する `at`）、
+//: when = 作中でいつ起きたか（人が書いた `when` の先頭の西暦）。
+//: **混ぜないこと** —— 同じ縦軸に 2 つの時間を並べると、読み手にはどちらの順で
+//: 並んでいるのか分からない（そもそも一致しないから 2 つある）
+const AXES = {
+  read: { at: "at", label: "at_label", words: "読む順" },
+  when: { at: "when_at", label: "when", words: "作中の時刻" },
+};
 
 function clip(text, max) {
   const chars = [...String(text || "")];
@@ -69,23 +80,28 @@ function marker(id, className) {
  * （伏せた本数を必ず返すのと同じ約束）。並べ替えが同点のときはサーバが返した
  * 順で決める —— 乱数も時刻も混ぜないので、同じ辞書なら毎回同じ絵になる。
  */
-function bandsOf(edges) {
+function bandsOf(edges, axis) {
+  const { at, label: labelKey } = AXES[axis] || AXES.read;
   const dated = [];
   const undated = [];
   edges.forEach((edge, i) => {
-    (typeof edge.at === "number" ? dated : undated).push(i);
+    (typeof edge[at] === "number" ? dated : undated).push(i);
   });
-  dated.sort((x, y) => edges[x].at - edges[y].at || x - y);
+  dated.sort((x, y) => edges[x][at] - edges[y][at] || x - y);
 
   const bands = [];
   for (const i of dated) {
-    const label = edges[i].at_label || "";
+    const label = edges[i][labelKey] || "";
     const last = bands[bands.length - 1];
-    // 位置は増える一方なので、同じ見出しは必ず続きになる（飛び地はできない）
-    if (last && last.label === label) last.rows.push(i);
-    else bands.push({ label, rows: [i] });
+    // 位置は増える一方なので、同じ見出しは必ず続きになる（飛び地はできない）。
+    // **見出しではなく並べ替えの値で束ねる** —— 作中の時刻は書き方が揃うとは
+    // 限らず（`1560` と `1560-05-19`）、同じ文字列でも別の時刻でありうる
+    if (last && last.label === label && last.at === edges[i][at]) last.rows.push(i);
+    else bands.push({ label, at: edges[i][at], rows: [i] });
   }
-  if (undated.length) bands.push({ label: UNDATED, rows: undated, undated: true });
+  if (undated.length) {
+    bands.push({ label: UNDATED[axis] || UNDATED.read, rows: undated, undated: true });
+  }
   return bands;
 }
 
@@ -95,13 +111,18 @@ function bandsOf(edges) {
  *
  * @param {object} graph  `/api/graph?doc=…` の返り値
  * @param {function} onEdge 関係を押したときに呼ぶ（編集ダイアログ）
+ * @param {string} axis  並べる軸（`read` = 読む順 / `when` = 作中の時刻）
  */
-export function buildTimeline(graph, { onEdge } = {}) {
+export function buildTimeline(graph, { onEdge, axis: wanted = "read" } = {}) {
   const { nodes, edges } = graph;
+  // **受け取り側で名前を変える。** この関数の中では `axis` を軸の線（`<g>`）に
+  // 使っている —— 同じ名前で 2 つ宣言すると読み込みごと落ちる（`labels` で
+  // 一度踏んだのと同じ形）
+  const on = AXES[wanted] ? wanted : "read";
   // 関係の無い語は行にしない（他の見せ方と同じく、下の帯へまとめる）
   const { lonely } = splitLonely(nodes, edges);
   const termOf = new Map(nodes.map((n) => [n.ref, n]));
-  const bands = bandsOf(edges);
+  const bands = bandsOf(edges, on);
 
   // 列の幅は全体で揃える。行ごとに変えると、同じものを縦に読めない
   const rows = bands.flatMap((b) => b.rows);
@@ -177,9 +198,15 @@ export function buildTimeline(graph, { onEdge } = {}) {
   // 乗せたら下の枠に出したい（切った全文がそこでしか読めない）
   const heads = svg("g", { class: "tl-heads" });
   for (const band of bands) {
+    // **軸によって言うことが違う。** 同じ帯を「ここで読める」と「このとき起きた」の
+    // どちらにも読めてしまうと、2 つの時間を混ぜたのと同じことになる
     const detail = band.undated
-      ? `${band.label} — この文書のどこで読めるようになるか分かりません（${band.rows.length} 本）`
-      : `${band.label} — ここで読めるようになる関係 ${band.rows.length} 本`;
+      ? (on === "when"
+        ? `${band.label} — 作中の時刻が書かれていないか、西暦として読めません（${band.rows.length} 本）`
+        : `${band.label} — この文書のどこで読めるようになるか分かりません（${band.rows.length} 本）`)
+      : (on === "when"
+        ? `${band.label} — このとき（作中）の関係 ${band.rows.length} 本`
+        : `${band.label} — ここで読めるようになる関係 ${band.rows.length} 本`);
     heads.append(svg("g", {
       class: band.undated ? "tl-head undated" : "tl-head",
       "data-detail": detail,
@@ -327,7 +354,9 @@ export function buildTimeline(graph, { onEdge } = {}) {
       class: "tl-empty",
       x: PAD,
       y: PAD + 12,
-      text: "この文書では、まだ関係が読める組がありません。",
+      text: on === "when"
+        ? "作中の時刻が書かれた関係がありません。"
+        : "この文書では、まだ関係が読める組がありません。",
     }));
   }
 
@@ -357,7 +386,42 @@ export function buildTimeline(graph, { onEdge } = {}) {
   }
 
   installFocus(root, nodeGroups, touching);
-  return { root, box: { x: 0, y: 0, w: width, h: height }, lonely: lonely.length };
+  return {
+    root,
+    box: { x: 0, y: 0, w: width, h: height },
+    lonely: lonely.length,
+    note: axisNote(on, bands, edges),
+  };
+}
+
+/**
+ * 凡例に足す文。**どちらの軸で並べているか**と、**並ばなかった数**を出す。
+ *
+ * 作中の時刻は**書いていない関係のほうが普通**（全部に時刻が付く辞書のほうが
+ * 珍しい）。だから「時刻が分からない」の帯には 2 種類が混ざる:
+ *
+ * - **まだ書いていない** —— 正常。点検も黙る
+ * - **書いたが西暦として読めない** —— 直せる。点検が挙げる
+ *
+ * **帯は同じでも数は分ける。** まとめて 1 つの数にすると、書き間違いが
+ * 「まだ書いていないぶん」に紛れて見えなくなる（黙って欠けさせない、の一種）。
+ */
+function axisNote(axis, bands, edges) {
+  const undated = bands.find((b) => b.undated);
+  if (axis !== "when") {
+    return undated
+      ? `この文書を読み進める順に並べています（位置の分からない ${undated.rows.length} 本は最後）。`
+      : "この文書を読み進める順に並べています。";
+  }
+  if (!undated) return "作中の時刻の順に並べています。";
+  const unreadable = undated.rows.filter((i) => (edges[i].when || "").trim()).length;
+  const blank = undated.rows.length - unreadable;
+  return "作中の時刻の順に並べています。"
+    + (blank ? `時刻を書いていない ${blank} 本は最後にまとめています。` : "")
+    + (unreadable
+      ? `時刻を書いてあるのに西暦として読めない ${unreadable} 本も同じ帯です`
+        + "（点検の「時刻が西暦で読めない」で直せます）。"
+      : "");
 }
 
 /**
