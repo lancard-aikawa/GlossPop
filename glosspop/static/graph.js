@@ -88,6 +88,11 @@ const TEMPLATE = `
   <span class="spacer"></span>
   <span class="status" id="status"></span>
 </div>
+<!-- 時点のスライダ（地図で、関係に作中の時刻が書いてあるときだけ）。
+     **一覧とは別の入れ物にする** —— 一覧は描き直すたびに作り直すので、同じ所に
+     置くと**掴んでいる最中にスライダごと消えて**ドラッグが切れる（保存のたびに
+     焦点が飛んでいたのと同じ形）。ここは時点の顔ぶれが変わったときだけ作り直す -->
+<div class="map-layers" id="mapTimeBar" hidden></div>
 <!-- 地図に出すものの一覧。**チェックを外したぶんは必ず数えて凡例に出す**
      （黙って欠けた図を出さない、という約束はここでも同じ）。地図のときだけ出す -->
 <div class="map-layers" id="mapLayers" hidden></div>
@@ -189,7 +194,10 @@ const TEMPLATE = `
 `;
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
-let mapPick, mapLayers, mapEdit, mapDialog, timeAxisPick;
+let mapPick, mapLayers, mapEdit, mapDialog, timeAxisPick, mapTimeBar;
+//: いま出している時点の顔ぶれ（絵 + 時刻の並び）。**同じなら作り直さない** ——
+//: 掴んでいる最中にスライダが消えるとドラッグが切れる
+let mapTimeKey = "";
 //: 実際に描いた軸（選んだものと違うことがある。→ `axisFor`）
 let drawnAxis = "";
 let readSoFarCheck, readSoFarBox;
@@ -1225,6 +1233,9 @@ function draw(graph) {
       // **出すほうを覚える**（名前とは逆）。既定は出さない —— 点が絵になると
       // 図の見え方が大きく変わるので、頼まれていないのに変えない
       images: mapFaces.has(mapName),
+      // 時点（`null` は全部）。**覚えない** —— 伏せたまま開き直すと
+      // 「関係が消えた」と読まれる（「ここまで読んだぶん」と同じ約束）
+      upTo: mapAt,
       // 絵の縦横比は読み込むまで分からない。届いたら入れ物に合わせ直す
       onResize: () => fitView(),
     })
@@ -1253,6 +1264,9 @@ function draw(graph) {
     // （**ここで落とすと一覧が空になり、外したものを戻せなくなる**。実際に落とした）
     items: drawn.items || [],
     pending: drawn.pending || [],
+    // 止まれる時点（**ここで落とすとスライダが出ない**。`items` を落として
+    // 一覧が空になったのと同じ間違い）
+    times: drawn.times || [],
     // 置いている最中なら確定 / やめるの口（**ここで落とすと、押しかけの形を
     // 決める手段が Enter だけになる**。`items` を落として一覧が空になったのと
     // 同じ間違い）
@@ -1719,6 +1733,11 @@ let mapPlacing = null;
 //: 引くことはあるので、この画面にいる間は選び直させない
 let mapPlaceKind = "point";
 
+//: 地図の時点（`null` は全部）。関係に書いた作中の時刻で巻き戻すと、
+//: 進軍路が順に伸びる。**覚えない** —— 伏せたまま開き直すと「関係が消えた」と
+//: 読まれる（「ここまで読んだぶん」と同じ約束）
+let mapAt = null;
+
 //: URL で語を名指しされたので、覚えている見せ方を押しのけて中心の図で開いたか。
 //: これも黙ってやらない（同じ理由）
 let centeredByUrl = false;
@@ -2126,6 +2145,73 @@ function kindPicker(item) {
 }
 
 /**
+ * 時点のスライダを出す（地図で、時点が 2 つ以上あるときだけ）。
+ *
+ * **顔ぶれが変わったときだけ作り直す。** 毎回作り直すと、**掴んでいる最中に
+ * スライダごと消えて**ドラッグが切れる（保存のたびに焦点が飛んでいたのと同じ形）。
+ * 止まれる時点が 1 つなら動かしても何も変わらないので、出さない。
+ */
+function paintMapTime(drawn) {
+  const times = drawn.times || [];
+  mapTimeBar.hidden = mode !== "map" || times.length < 2;
+  if (mapTimeBar.hidden) {
+    mapTimeKey = "";
+    return;
+  }
+  const key = `${mapName}|${times.map((t) => t.at).join(",")}`;
+  if (key === mapTimeKey) return;      // 同じ顔ぶれ。掴んでいる最中かもしれない
+  mapTimeKey = key;
+  mapTimeBar.replaceChildren(...timeSlider(times));
+}
+
+/**
+ * 時点のスライダ（地図。関係に作中の時刻が書いてあるときだけ）。
+ *
+ * **いちばん右が「全部」で、そこが既定。** 左へ動かすとその時点までに起きた
+ * 関係だけが残る —— 進軍路が順に伸びるのはこれ。
+ *
+ * 守ること 4 つ:
+ *
+ * - **止まれるのは実際にある時点だけ**（図が変わらない目盛りを並べない）
+ * - **時刻の無い関係は常に出す。** 伏せる側に倒すと、時刻を 1 つ書いただけで
+ *   **それ以外が全部消えた**ように見える（時刻の無い関係のほうが普通）
+ * - **覚えない。** 開くたびに全部へ戻す（伏せたまま開き直すと「関係が消えた」と
+ *   読まれる。「ここまで読んだぶん」と同じ約束）
+ * - **図の外に置く。** 図の中に入れると拡大縮小と移動に巻き込まれる
+ */
+function timeSlider(times) {
+  // 覚えていた時点がこの絵に無ければ「全部」に戻す（絵を切り替えたときなど）
+  let index = times.findIndex((t) => t.at === mapAt);
+  if (index < 0) {
+    mapAt = null;
+    index = times.length;
+  }
+  const range = el("input", {
+    type: "range",
+    class: "map-time",
+    "data-ref": "mapTime",
+    min: "0",
+    max: String(times.length),
+    value: String(index),
+    "aria-label": "時点",
+    title: "いちばん右が全部。左へ動かすと、その時点までの関係だけを出します",
+  });
+  const label = el("span", {
+    class: "hint",
+    "data-ref": "mapTimeLabel",
+    text: index >= times.length ? "全部" : times[index].label,
+  });
+  range.addEventListener("input", () => {
+    const i = Number(range.value);
+    mapAt = i >= times.length ? null : times[i].at;
+    // 文字だけ先に追いつかせる（描き直しは下で走るが、掴んで動かす間も出したい）
+    label.textContent = i >= times.length ? "全部" : times[i].label;
+    if (lastGraph) paintGraph(lastGraph);
+  });
+  return [el("span", { class: "hint", text: "時点:" }), range, label];
+}
+
+/**
  * 用語の画像を点の代わりに出すかの切り替え（絵ごとに覚える）。
  *
  * **既定は出さない。** 名前（既定は出す）と逆にしてあるのは、点が絵になると
@@ -2410,6 +2496,7 @@ function paintGraph(graph) {
   const drawn = draw(graph);
   paintAxisOptions(graph);
   paintMapOptions(graph);
+  paintMapTime(drawn);
   paintMapLayers(drawn);
   paintNotes(graph);
   setStatus(statusNode, `${graph.nodes.length} 語 / ${graph.edges.length} 本の関係`);
@@ -2514,6 +2601,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   timeAxisPick = host.querySelector("#timeAxis");
   mapPick = host.querySelector("#mapPick");
   mapLayers = host.querySelector("#mapLayers");
+  mapTimeBar = host.querySelector("#mapTimeBar");
   mapEdit = host.querySelector("#mapEdit");
   mapDialog = host.querySelector("#mapDialog");
   installMapDialog();
@@ -2550,6 +2638,10 @@ export async function mount(host, { search = "", embed = false } = {}) {
   // **戻せるのは開いている間だけ。** 覆いは何度でも開き直されるので、持ち越すと
   // 「いつのものか分からない形」を戻すボタンが出る（編集を覚えないのと同じ扱い）
   mapUndo = [];
+  // **時点は開くたびに全部へ戻す。** 伏せたまま開き直すと「関係が消えた」と
+  // 読まれる（「ここまで読んだぶん」と同じ約束）
+  mapAt = null;
+  mapTimeKey = "";
 
   // **listener は最初の await より前に付ける。** あとに回すと、その間の操作が
   // 黙って無視される（設定ダイアログと extract.js で 2 回踏んだ）

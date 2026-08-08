@@ -1155,6 +1155,106 @@ def test_the_map_can_show_term_images_instead_of_dots(page, server, seeded):
     )
 
 
+def test_the_map_can_be_rewound_to_a_point_in_time(page, server, seeded):
+    """**時点で巻き戻せる**（関係に作中の時刻が書いてあるとき）。進軍路が順に伸びる。
+
+    守ること: **既定は全部**（伏せたまま開かない）、**時刻の無い関係は常に出す**
+    （伏せる側に倒すと、時刻を 1 つ書いただけで他が全部消えたように見える）、
+    **伏せた本数は必ず出す**（黙って欠けた図にしない）。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    zanelli = store.save(EntryDraft(
+        term="ザネリ", category="登場人物", definition="級友。",
+        map="てすと図", pin=[0.80, 0.40],
+    ))
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition,
+        map="てすと図", pin=[0.55, 0.30],
+    ), ref=b.ref)
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.20, 0.20],
+        relations=[
+            {"to": b.ref, "label": "先に会う", "when": "1560-05-19 朝"},
+            {"to": zanelli.ref, "label": "あとで会う", "when": "1560-05-20 翌日"},
+        ],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # 既定は全部（2 本とも出る）
+    assert page.locator("svg.rel-map .rel-edge-group").count() == 2
+    slider = page.locator("#mapTimeBar [data-ref=mapTime]")
+    slider.wait_for(timeout=10000)
+    assert slider.input_value() == "2"                      # いちばん右 = 全部
+    assert page.locator("#mapTimeBar [data-ref=mapTimeLabel]").inner_text() == "全部"
+
+    # 最初の時点まで巻き戻すと、あとの関係は伏せる
+    slider.fill("0")
+    page.wait_for_timeout(400)
+    assert page.locator("svg.rel-map .rel-edge-group").count() == 1
+    assert page.locator("#mapTimeBar [data-ref=mapTimeLabel]").inner_text() == "1560-05-19 朝"
+    legend = page.text_content("#legend") or ""
+    assert "先の 1 本は伏せています" in legend
+
+    # **掴んでいる最中にスライダごと作り直さない**（作り直すとドラッグが切れる）
+    assert page.evaluate(
+        "() => document.querySelectorAll('#mapTimeBar [data-ref=mapTime]').length"
+    ) == 1
+
+
+def test_the_map_keeps_relations_without_a_time(page, server, seeded):
+    """**時刻の無い関係は常に出す。** 時刻を 1 つ書いただけで、書いていない関係が
+    消えたように見えるのがいちばん困る（時刻の無い関係のほうが普通）。
+    """
+    _put_test_map()
+    a = store.find_by_surface("ジョバンニ")[0]
+    b = store.find_by_surface("カムパネルラ")[0]
+    zanelli = store.save(EntryDraft(
+        term="ザネリ", category="登場人物", definition="級友。",
+        map="てすと図", pin=[0.80, 0.40],
+    ))
+    teacher = store.save(EntryDraft(
+        term="先生", category="登場人物", definition="教師。",
+        map="てすと図", pin=[0.45, 0.60],
+    ))
+    store.save(EntryDraft(
+        term=b.term, category=b.category, definition=b.definition,
+        map="てすと図", pin=[0.55, 0.30],
+    ), ref=b.ref)
+    store.save(EntryDraft(
+        term=a.term, category=a.category, definition=a.definition,
+        map="てすと図", pin=[0.20, 0.20],
+        # **行き先はばらす**（同じ相手への 2 本目は 1 本に潰される）
+        relations=[
+            {"to": b.ref, "label": "先に会う", "when": "1560-05-19 朝"},
+            {"to": zanelli.ref, "label": "あとで会う", "when": "1560-05-20 翌日"},
+            {"to": teacher.ref, "label": "教わる"},                    # 時刻なし
+        ],
+    ), ref=a.ref)
+
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    page.select_option("#mode", "map")
+    page.locator("svg.rel-map").wait_for(timeout=10000)
+    page.locator("#mapTimeBar [data-ref=mapTime]").fill("0")
+    page.wait_for_timeout(400)
+
+    labels = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-map .rel-edge-label')]"
+        ".map((t) => t.textContent)"
+    )
+    # その時点までのものと、時刻の無いものが残る（先のものだけ伏せる）
+    assert sorted(labels) == sorted(["先に会う", "教わる"]), labels
+    assert "時刻の無い 1 本は常に出しています" in (page.text_content("#legend") or "")
+
+
 def test_a_line_can_be_placed_by_clicking_in_turn(page, server, seeded):
     """**線と領域は、絵の上を順に押して作る。**
 

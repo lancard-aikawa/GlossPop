@@ -1247,6 +1247,9 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
   margin: 0 0 8px;
 }
 .map-layers .check { width: auto; }
+/* 時点のスライダ（`timeSlider`）。**幅は決め打ちにしない** —— 狭い画面では
+   行のほうが折り返す（ボタンの文字は折り返さない、という約束はここでも同じ）。 */
+.map-time { flex: 1 1 160px; max-width: 320px; min-width: 120px; }
 /* 図の中の線・領域に振った色の札。**色は図が決めて `items` で渡ってくる**ので、
    ここでは大きさだけ決める（同じ色を 2 か所で作らない）。点には色が無い ——
    重なるのは線と領域だけなので、そこだけ分けている（→ map.js の `shapeColors`）。 */

@@ -190,6 +190,8 @@ export function buildMap(graph, opts = {}) {
     images: showFaces = false,
     editing = false, placing = null, onMove, onPlace, onRefuse,
     onPlaceProgress, onPlaceCancel,
+    // 時点。**`null` は「全部」**（既定）。数を渡すと、そこまでに起きた関係だけを出す
+    upTo = null,
   } = opts;
 
   // **どの絵を出すかは、出ている語から決める。** いちばん多く点が乗る絵を既定にし、
@@ -274,10 +276,31 @@ export function buildMap(graph, opts = {}) {
       const r = spotR(p);
       return { x: p.x - r, y: p.y - r, w: r * 2, h: r * 2 };
     });
-  const drawable = edges
+  const onMap = edges
     .map((edge) => ({ edge, a: pos.get(edge.from), b: pos.get(edge.to) }))
     .filter(({ a, b }) => a && b);
-  const offEdges = edges.length - drawable.length;   // 片端が地図に無い関係
+  const offEdges = edges.length - onMap.length;   // 片端が地図に無い関係
+
+  // **時点で巻き戻せる**（進軍路が順に伸びる）。止まれる時点は**この絵に出ている
+  // 関係のもの**だけ —— 図が変わらない目盛りを並べても、動かした人は壊れたと思う。
+  // 同じ時刻の関係はまとめて 1 つの目盛りにする（`when_at` が鍵で、見出しは
+  // 人が書いた文字列。→ `core.whenfmt` の約束と同じ）
+  const times = [...new Map(
+    onMap
+      .filter(({ edge }) => typeof edge.when_at === "number")
+      .map(({ edge }) => [edge.when_at, edge.when])
+  )]
+    .sort((x, y) => x[0] - y[0])
+    .map(([at, label]) => ({ at, label }));
+  //: 時刻の**書かれていない関係は常に出す**。伏せる側に倒すと、時刻を 1 つ書いた
+  //: だけで**それ以外の関係が全部消えた**ように見える（時刻の無い関係のほうが普通）
+  const untimed = onMap.filter(({ edge }) => typeof edge.when_at !== "number").length;
+  const ahead = upTo === null ? 0
+    : onMap.filter(({ edge }) =>
+      typeof edge.when_at === "number" && edge.when_at > upTo).length;
+  const drawable = upTo === null ? onMap
+    : onMap.filter(({ edge }) =>
+      !(typeof edge.when_at === "number" && edge.when_at > upTo));
 
   // **名前が先、一言は後。** 名前はその語が何なのかを決めるもので、一言は
   // 関係の補足。両方は置けないとき、残すべきなのは名前のほう。
@@ -515,6 +538,17 @@ export function buildMap(graph, opts = {}) {
       : "",
     !editing && pending.length
       ? `この絵に置きたいと書いてある語が ${pending.length} 語あります（「置く」から）。` : "",
+    // **時点で伏せたぶんは必ず数える**（黙って欠けた図を出さない）。
+    // 時刻の無い関係を常に出していることも書く —— 書かないと「この時点では
+    // まだ無いはずの関係が出ている」と読まれる
+    upTo !== null && times.length
+      ? `時点「${times.find((t) => t.at === upTo)?.label || "?"}」までを出しています`
+        + `（先の ${ahead} 本は伏せています`
+        + (untimed ? `。時刻の無い ${untimed} 本は常に出しています` : "")
+        + "）。"
+      : "",
+    upTo === null && times.length > 1
+      ? "時点を戻すと、そこまでに起きた関係だけを出せます。" : "",
     unchecked ? `チェックを外した ${unchecked} 語は出していません。` : "",
     noCoords ? `座標が書かれていない ${noCoords} 語は出していません。` : "",
     elsewhere ? `別の絵にいる ${elsewhere} 語は出していません。` : "",
@@ -531,6 +565,9 @@ export function buildMap(graph, opts = {}) {
     items,
     // まだ置いていない語（絵の名前だけ書いてある）。置く動線はこれで作る
     pending,
+    // 止まれる時点（この絵に出ている関係のものだけ）。**呼ぶ側がスライダを作る**
+    // —— 図の中に置くと、拡大縮小と移動に巻き込まれる
+    times,
     // 置いている最中なら、確定 / やめる の口。**点は押した時点で終わる**ので
     // 呼ぶ側は `kind` を見て「✓ 確定」を出すかを決める
     place,
