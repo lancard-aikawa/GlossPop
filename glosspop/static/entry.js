@@ -107,8 +107,18 @@ function backlinkRow(link) {
   if (link.reveal) {
     bits.push(el("span", { class: "rel-reveal", text: `判明: ${link.reveal}`, title: "相関図では既定で伏せる" }));
   }
+  // **継いだぶんは指されている側でも継いだと分かるように出す**（`relationRow()` と
+  // 同じ見た目）。書いた時刻と同じ形で並べると、消そうとして**相手の関係のほうを
+  // 探し回る** —— 実際の値は語の側にある。ここだけ落とすと、同じ 1 本の関係が
+  // 書いた側と指されている側で違って見える
   if (link.when) {
-    bits.push(el("span", { class: "rel-when", text: `作中: ${link.when}` }));
+    bits.push(el("span", {
+      class: link.when_inherited ? "rel-when inherited" : "rel-when",
+      text: link.when_inherited ? `作中: ${link.when}（語の時刻）` : `作中: ${link.when}`,
+      title: link.when_inherited
+        ? "この関係には時刻が書かれていないので、両端の語のうち遅いほうの時刻で並べます"
+        : "相関図の時系列で、この順に並べます（先頭の西暦で並べ替え）",
+    }));
   }
   return el("li", { class: "rel-row" }, bits);
 }

@@ -107,8 +107,15 @@ function bandsOf(edges, axis, nodeOf) {
     // 読む順の軸では位置から見出しを作るので、この枝はそもそも効かない
     if (last && last.label === label && last.at === edges[i][at]) last.rows.push(i);
     // **「だいたい」は帯ごと。** 見出しの文字列が同じものだけを束ねているので、
-    // 同じ帯なら書き方も同じ（`16世紀` と `1501` が同じ帯に来ることはない）
-    else bands.push({ label, at: edges[i][at], rows: [i], about: !!edges[i].when_about });
+    // 同じ帯なら書き方も同じ（`16世紀` と `1501` が同じ帯に来ることはない）。
+    // **これは作中の時刻の軸の話。** 読む順の帯は本文の位置で束ねているので、
+    // `when_about` を持ち込むと**関係に `16世紀` と書いただけで読む順の目盛りが
+    // 白抜きになる**（「章の位置がだいたい」という意味に読まれる）—— 軸の判定は
+    // ここ 1 か所に置き、目盛りも見出しも凡例もこの値だけを見る
+    else bands.push({
+      label, at: edges[i][at], rows: [i],
+      about: axis === "when" && !!edges[i].when_about,
+    });
   }
   if (undated.length) {
     bands.push({ label: UNDATED[axis] || UNDATED.read, rows: undated, undated: true });
@@ -501,6 +508,9 @@ const CHIP_PAD = 14;
 const CHIP_MAX = 6;          // 1 行に出す従の数。超えたぶんは「ほか N」にまとめる
 const ARC_COL = 20;          // 弧 1 本ぶんの列幅
 const ARC_GAP = 12;          // 従の右端と最初の列のあいだ
+const ARC_LINE_H = 11;       // 縦書きの一言、1 字ぶんの高さ
+const ARC_LABEL_GAP = 8;     // 弧の下側の端点と一言の下端のあいだ
+const ARC_WORDS_MAX = 10;    // 弧の一言に立てる字数の上限（弧が短ければさらに切る）
 
 /** 語 1 つの、その軸での位置。**行になれるのは数を持つものだけ。** */
 function nodeAt(node, on) {
@@ -552,7 +562,9 @@ function buildTermRows(graph, { onEdge, axis: wanted = "read" } = {}) {
     const at = nodeAt(node, on);
     const last = bands[bands.length - 1];
     if (last && last.label === label && last.at === at) last.rows.push(i);
-    else bands.push({ label, at, rows: [i], about: !!node.when_about });
+    // **「だいたい」は作中の時刻の軸だけ**（`bandsOf` と同じ判断）。読む順の帯は
+    // 本文の位置で束ねているので、語に `16世紀` と書いてあることは何も言わない
+    else bands.push({ label, at, rows: [i], about: on === "when" && !!node.when_about });
   });
 
   // 辺を 3 つに仕分ける: 行どうし（弧）/ 行と従（チップ）/ どちらも行でない（数だけ）
@@ -705,11 +717,23 @@ function buildTermRows(graph, { onEdge, axis: wanted = "read" } = {}) {
     ]);
 
     // **一言は縦書き**（列幅 20px に横書きは入らない）。`writing-mode` を
-    // 使わないのは `⇄` が回されるから（→ base.js）
+    // 使わないのは `⇄` が回されるから（→ base.js）。
+    //
+    // **弧の範囲の中に収める。** 下端を弧の下側の端点に揃えて上へ積むのは
+    // 変わらないが、弧の長さを見ずに積むと 10 字で 100px 伸びる —— 隣り合う行を
+    // 結ぶ弧（44px）では**上の行を飛び越えて枠の外（負の y）へ出る**。外形は
+    // `{x:0,y:0,w,h}` なので、出たぶんは `fitView` にも書き出しにも入らない
+    // （画面からも渡した相手からも消える）。範囲の中に収めておけば、**同じ列の弧は
+    // 範囲が重ならない**（`arcColumns`）ぶん一言どうしも重ならない。切った全文は
+    // 下の枠と吹き出しで読める（畳んだ一言と同じ約束）
     const words = relationWords(arc.edge);
-    const text = words
-      ? svgVerticalText(words, x, Math.max(yA, yB) - 8, {
-        max: 10, className: "rel-edge-label", lineHeight: 11,
+    const bottom = Math.max(yA, yB) - ARC_LABEL_GAP;
+    const room = Math.floor((bottom - Math.min(yA, yB)) / ARC_LINE_H);
+    const text = words && room >= 1
+      ? svgVerticalText(words, x, bottom, {
+        max: Math.min(ARC_WORDS_MAX, room),
+        className: "rel-edge-label",
+        lineHeight: ARC_LINE_H,
       })
       : null;
     if (text) text.setAttribute("data-detail", detail);
@@ -790,6 +814,14 @@ function buildTermRows(graph, { onEdge, axis: wanted = "read" } = {}) {
       boxes.append(box);
       const group = nodeGroups.get(chip.ref);
       if (group) group.push(box);
+      // **従も関係の 1 本。** 弧と同じように両端へ登録する —— しないと、
+      // 従に乗せたときに `focusing` だけが立って**年表全体が褪せるのに何も
+      // 濃くならない**（従はこの関係の唯一の見た目なので、光る先が他に無い）。
+      // 行の側に登録するのも同じ理由で、行に乗せたときに顔ぶれが付いてくる
+      for (const [ref, other] of [[node.ref, chip.ref], [chip.ref, node.ref]]) {
+        const touches = touching.get(ref);
+        if (touches) touches.push({ parts: [box], other });
+      }
       cx += w + CHIP_GAP;
     }
     if (extra) {
@@ -797,14 +829,19 @@ function buildTermRows(graph, { onEdge, axis: wanted = "read" } = {}) {
       const term = `ほか ${extra}`;
       const w = chipW(term);
       const all = list.slice(CHIP_MAX).map((c) => (c.node && c.node.term) || c.ref).join("、");
-      boxes.append(svg("g", { class: "tl-chip more", "data-detail": `${node.term} — ${all}` }, [
+      const box = svg("g", { class: "tl-chip more", "data-detail": `${node.term} — ${all}` }, [
         svg("rect", { x: cx, y: rowY - CHIP_H / 2, width: w, height: CHIP_H, rx: 10 }),
         svg("text", {
           x: cx + w / 2, y: rowY, "text-anchor": "middle",
           "dominant-baseline": "central", text: term,
         }),
         svg("title", { text: all }),
-      ]));
+      ]);
+      boxes.append(box);
+      // まとめたぶんも**この行の顔ぶれ**なので、行に乗せたら一緒に濃く出す
+      // （光る先の語は 1 つに決まらないので `other` は持たせない）
+      const rowTouching = touching.get(node.ref);
+      if (rowTouching) rowTouching.push({ parts: [box] });
     }
   });
   root.append(lines, boxes, labels);

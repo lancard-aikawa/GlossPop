@@ -189,5 +189,17 @@ class TestCoarseningToTheYear:
         """読めないものを触っても直らない（点検が挙げる側の話）。"""
         assert whenfmt.year_only("天正十年六月二日") == "天正十年六月二日"
 
+    def test_it_never_makes_an_unreadable_string_readable(self):
+        """**読めない部分を削って「読める時刻」に化けさせない。**
+
+        13 月・32 日は `sort_key()` が読めないと言う（`_pack()` が範囲で弾く）。
+        頭だけ読み直して月日を落とすと `1560` として並んでしまい、**書いていない
+        値で並べた**ことになる。丸めてよいのは、丸める前から読めていたものだけ。
+        """
+        for text in ["1560年13月", "1560-05-32", "0年5月", "15600519"]:
+            assert whenfmt.sort_key(text) is None
+            assert whenfmt.year_only(text) == text
+            assert whenfmt.sort_key(whenfmt.year_only(text)) is None
+
     def test_the_result_still_sorts(self):
         assert whenfmt.sort_key(whenfmt.year_only("1582-06-02 天正十年六月二日")) is not None

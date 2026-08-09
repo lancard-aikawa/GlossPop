@@ -180,6 +180,12 @@ def year_only(text: str) -> str:
     もともと年より粗いので変わらない。
     """
     s = text or ""
+    # **`sort_key()` が読めないものには触らない。** ここで頭だけを読み直すと、
+    # 読めない部分を削ったせいで**読める時刻に化ける**（`1560年13月` は 13 月が
+    # あるので `sort_key()` は `None` なのに、月を落とせば `1560` として並ぶ）。
+    # 書いていない値で並べたことになるので、判断は読む口 1 つに任せる
+    if sort_key(s) is None:
+        return s.strip()
     head = _ABOUT_HEAD.match(s)
     prefix, rest = (s[:head.end()], s[head.end():]) if head else ("", s)
     if _CENTURY.match(rest) or _DECADE.match(rest):
@@ -189,8 +195,6 @@ def year_only(text: str) -> str:
         if found is None or _ENDS.match(rest[found.end():]) is None:
             continue
         year = int(found.groupdict()["year"])
-        if not 1 <= year <= 9999:
-            return s.strip()
         tail = rest[found.end():].strip()
         return f"{prefix.strip()}{year}{' ' + tail if tail else ''}".strip()
     return s.strip()

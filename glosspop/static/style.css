@@ -1488,7 +1488,13 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .rel-timeline.focusing .tl-reveal { opacity: 0.12; }
 .rel-timeline.focusing .tl-reveal.lit { opacity: 1; }
 .rel-timeline .tl-reveal.hot { font-weight: 700; }
-.rel-node, .rel-edge-group, .rel-edge-label, .tl-reveal { transition: opacity 0.12s ease-out; }
+/* 年表の従も同じ扱い。**ここを落とすと、従に乗せたときだけ「全体が褪せて
+   何も濃くならない」** —— 従はその関係の唯一の見た目なので、光る先が他に無い */
+.rel-chronicle.focusing .tl-chip { opacity: 0.12; }
+.rel-chronicle.focusing .tl-chip.lit { opacity: 1; }
+.rel-node, .rel-edge-group, .rel-edge-label, .tl-reveal, .tl-chip {
+  transition: opacity 0.12s ease-out;
+}
 
 /* ---------------------------------------------------------------- 点検 */
 .issue-badge {
