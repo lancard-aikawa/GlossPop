@@ -26,87 +26,101 @@ try {
   <nav class="topnav">
     <a href="/" aria-current="page">ビューア</a>
     <a href="/glossary">辞書</a>
-    <a href="/graph">相関図</a>
+    <a href="/graph" title="辞書を図で見る（段の図・交差しない図・行列・中心の図・時系列・地図）">図</a>
   </nav>
   <span class="spacer"></span>
   <span class="meta" id="count"></span>
 </div>
 
+<!-- **「読むもの」は横一列。** フォルダのパスは横に長く（`C:\…\小説\銀河鉄道`）、
+     幅 280px の縦のパネルに置くと折り返して主戦場（ファイル一覧）を下へ押し下げる。
+     ここなら画面の幅をそのまま使える。
+     **「いま読んでいるもの」はフォルダか URL のどちらか一方**（config 側の
+     不変条件）なので、UI もそのとおり排他のタブにしてある —— 両方を並べると、
+     URL を読んでいる最中にフォルダのファイル一覧が居座って、どちらが効いている
+     辞書なのか画面から読めない。
+     **topbar には入れない** —— あちらはブランド・ナビ・⚙・語数で既に埋まっていて、
+     狭い画面では語数から落として凌いでいる（もう 1 つ足すと横スクロールが出る） -->
+<div class="sourcebar" id="sourceBar" aria-label="読むもの">
+  <div class="side-tabs" role="tablist" id="sourceTabs" aria-label="読むもの">
+    <button type="button" role="tab" data-source-tab="folder" aria-selected="true"
+            aria-controls="sourcePanelFolder" id="sourceTabFolder">📁 フォルダ</button>
+    <button type="button" role="tab" data-source-tab="url" aria-selected="false"
+            aria-controls="sourcePanelUrl" id="sourceTabUrl">🔗 URL</button>
+  </div>
+
+  <!-- **1 行に収める。** ここに置くのは「毎回使うもの」だけ —— たまに使う
+       ＋ その他の開き方 は ⋯ の中、横断検索は結果と同じ場所（左パネル）へ移した。
+       残りをパスの欄が全部取る（横に長いからこのバーを作った） -->
+  <div id="sourcePanelFolder" class="sourcebar-panel" role="tabpanel"
+       aria-labelledby="sourceTabFolder">
+    <button type="button" id="pickFolder" title="OS のダイアログでフォルダを選ぶ">📁 選ぶ…</button>
+    <button type="button" id="favToggle" class="ghost icon"
+            title="このフォルダをお気に入りに入れる" aria-label="お気に入りに入れる">☆</button>
+    <select id="recent" class="auto-width" title="最近開いたフォルダ"
+            aria-label="最近開いたフォルダ"></select>
+    <form id="rootForm" class="sourcebar-form">
+      <input type="text" id="root" placeholder="パスを直接入力" autocomplete="off"
+             title="開くフォルダのパス" aria-label="開くフォルダのパス">
+      <button type="submit" id="rootGo">開く</button>
+    </form>
+  </div>
+
+  <div id="sourcePanelUrl" class="sourcebar-panel" role="tabpanel"
+       aria-labelledby="sourceTabUrl" hidden>
+    <form id="urlForm" class="sourcebar-form">
+      <input type="url" id="url" placeholder="https://example.com/doc" autocomplete="off"
+             title="開く URL" aria-label="開く URL">
+      <button type="submit" id="urlGo">開く</button>
+    </form>
+    <p class="hint" id="urlDict" hidden></p>
+    <form id="urlDictForm" class="sourcebar-form" hidden>
+      <input type="text" id="urlPrefix" placeholder="example.com/docs" autocomplete="off"
+             title="辞書を効かせる範囲 (ドメイン + パス)" aria-label="辞書を効かせる範囲">
+      <button type="submit" id="urlDictGo">作る</button>
+    </form>
+    <p class="hint" id="urlStatus"></p>
+  </div>
+
+  <!-- 畳んでいるときだけ出す「いま読んでいるもの」。畳んだ行が空だと、
+       何のための行なのか分からない -->
+  <span class="hint sourcebar-folded" id="foldedLabel" hidden></span>
+  <!-- ⋯ の中身は viewer.js が menuButton() で作る（＋ その他の開き方…） -->
+  <span id="sourceMenu"></span>
+  <button type="button" id="foldSource" class="ghost icon" aria-expanded="true"
+          aria-controls="sourceBar" title="読むものの行を畳む">⌃</button>
+  <!-- 入力欄から読めないことだけ（既定のフォルダ・親フォルダの辞書・エラー）。
+       **空なら行ごと出さない** —— パスはフル幅の入力欄が持っている -->
+  <p class="hint path-line" id="rootStatus"></p>
+</div>
+
 <div class="layout">
 
   <aside class="side">
-    <!-- **「いま読んでいるもの」はフォルダか URL のどちらか一方**（config 側の
-         不変条件）。UI もそのとおり排他にしてある —— 両方を並べると、URL を
-         読んでいる最中にフォルダのファイル一覧が居座って、どちらが効いている
-         辞書なのか画面から読めない -->
-    <h2>読むもの</h2>
-    <div class="side-tabs" role="tablist" id="sourceTabs">
-      <button type="button" role="tab" data-source-tab="folder" aria-selected="true"
-              aria-controls="sourcePanelFolder" id="sourceTabFolder">📁 フォルダ</button>
-      <button type="button" role="tab" data-source-tab="url" aria-selected="false"
-              aria-controls="sourcePanelUrl" id="sourceTabUrl">🔗 URL</button>
+    <!-- **左は「開くもの」だけ。** フォルダや URL を選ぶ操作は上のバーにある。
+         **検索は入口も結果もここ** —— 探した結果はファイル一覧と入れ替わるので、
+         入口だけ上のバーに置くと、押す場所と出る場所が離れる（1 行で足りる） -->
+    <form id="searchForm" class="side-search">
+      <input type="search" id="contentQ" placeholder="このフォルダの本文を探す" autocomplete="off"
+             title="このフォルダの本文を横断して探す" aria-label="このフォルダの本文を横断して探す">
+      <button type="submit" id="searchGo" class="ghost icon" title="探す" aria-label="探す">🔍</button>
+    </form>
+    <div class="side-head" id="filesHead">
+      <span>ファイル</span>
+      <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"
+              aria-label="ファイル一覧を再読み込み">↻</button>
     </div>
+    <ul class="filelist" id="files"></ul>
 
-    <div id="sourcePanelFolder" role="tabpanel" aria-labelledby="sourceTabFolder">
-      <div class="check-row">
-        <button type="button" id="pickFolder" class="wide">📁 フォルダを選ぶ…</button>
-        <button type="button" id="favToggle" class="ghost icon"
-                title="このフォルダをお気に入りに入れる" aria-label="お気に入りに入れる">☆</button>
-      </div>
-      <select id="recent" class="gap-top" title="最近開いたフォルダ"
-              aria-label="最近開いたフォルダ"></select>
-      <form id="rootForm" class="check-row gap-top">
-        <input type="text" id="root" placeholder="パスを直接入力" autocomplete="off"
-               title="開くフォルダのパス" aria-label="開くフォルダのパス">
-        <button type="submit" id="rootGo">開く</button>
-      </form>
-      <p class="hint" id="rootStatus"></p>
+    <!-- 検索の結果。**一覧と入れ替える**ので、戻る道を必ず出す -->
+    <div id="searchPanel" hidden>
       <div class="side-head">
-        <span>ファイル</span>
-        <button type="button" id="reloadFiles" class="ghost icon" title="ファイル一覧を再読み込み"
-                aria-label="ファイル一覧を再読み込み">↻</button>
+        <span>🔍 検索結果</span>
+        <button type="button" id="searchBack" class="ghost" title="ファイル一覧に戻る">← 一覧</button>
       </div>
-      <ul class="filelist" id="files"></ul>
-      <!-- 検索は畳んでおく（毎回は使わない）。開閉は覚えるので、よく使う人には
-           開いたままになる -->
-      <details class="side-fold" id="searchFold">
-        <summary>🔍 本文を横断検索</summary>
-        <form id="searchForm" class="check-row">
-          <input type="search" id="contentQ" placeholder="このフォルダの本文を探す" autocomplete="off"
-                 title="このフォルダの本文を横断して探す" aria-label="このフォルダの本文を横断して探す">
-          <button type="submit" id="searchGo">探す</button>
-        </form>
-        <p class="hint" id="searchStatus"></p>
-        <div class="search-results" id="searchResults" hidden></div>
-      </details>
+      <p class="hint" id="searchStatus"></p>
+      <div class="search-results" id="searchResults"></div>
     </div>
-
-    <div id="sourcePanelUrl" role="tabpanel" aria-labelledby="sourceTabUrl" hidden>
-      <form id="urlForm" class="check-row">
-        <input type="url" id="url" placeholder="https://example.com/doc" autocomplete="off"
-               title="開く URL" aria-label="開く URL">
-        <button type="submit" id="urlGo">開く</button>
-      </form>
-      <p class="hint" id="urlStatus"></p>
-      <p class="hint" id="urlDict" hidden></p>
-      <form id="urlDictForm" class="check-row gap-top" hidden>
-        <input type="text" id="urlPrefix" placeholder="example.com/docs" autocomplete="off"
-               title="辞書を効かせる範囲 (ドメイン + パス)" aria-label="辞書を効かせる範囲">
-        <button type="submit" id="urlDictGo">作る</button>
-      </form>
-    </div>
-
-    <button type="button" id="otherSource" class="wide gap-top"
-            title="1 つだけのファイル、貼り付けたテキスト">＋ その他の開き方…</button>
-
-    <!-- **AI 設定は「読むもの」の直後。** 文体も顔も、いま読んでいるものの
-         辞書に置かれるので、フォルダ / URL を選ぶ場所の続きにある。中身は
-         ai-style.js が作る（設定ダイアログと同じ部品）。
-         ここから上は「何を読むか」、ここから下は「どう書かせるか」なので、
-         見出しだけでは足りず線で切る -->
-    <hr class="side-rule">
-    <h2 id="sideAiHead">📁 いま読んでいるものの AI 設定</h2>
-    <div id="sideAi"></div>
   </aside>
 
   <main class="doc-wrap">
@@ -117,13 +131,13 @@ try {
         <button type="button" id="speak" title="本文を読み上げる (辞書のリンクと吹き出しはそのまま使える)" hidden>▶ 読み上げ</button>
         <button type="button" id="extract" title="この文書から辞書化する語を挙げる">✨ 用語を抽出</button>
         <!-- 下書きが読むのは「いま開いている文書」。読むものが決まっている場所は
-             ここだけなので、相関図ではなく本文の側に置く -->
+             ここだけなので、図の側ではなく本文の側に置く -->
         <button type="button" id="draftRelations"
                 title="この文書から、登録済みの用語どうしの関係を探す">✨ 関係を下書き</button>
         <!-- フォルダの中のファイルを開いているときだけ。貼り付け / URL には
              サーバ側から読み直せる道が無いので出さない（出しても絞れない） -->
         <a class="btn" id="docGraph" href="/graph"
-           title="この文書に出てくる語だけの相関図" hidden>🕸 この文書の相関図</a>
+           title="この文書に出てくる語だけの図" hidden>🕸 この文書の図</a>
       </div>
       <div class="check-row speech-bar" id="speechBar" hidden>
         <button type="button" id="speakPrev" title="前の段落">◀◀</button>

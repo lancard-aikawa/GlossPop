@@ -31,10 +31,13 @@ const ROUTES = [
     mount: (mod, host, url) => mod.mount(host, { search: url.search }),
   },
   {
+    // **辞書と同じ場所**（一覧と図はタブで並ぶ）。それでも topbar に「図」を
+    // 置いてあるのは、**そこからしか図へ行けないと入口が見つからない**ため
+    // （一度外して実際に見失われた）。同じ場所であることは、着いた先のタブ列が示す
     match: /^\/graph\/?$/,
     load: () => import("./graph.js"),
     nav: "/graph",
-    title: "相関図",
+    title: "辞書の図",
     mount: (mod, host, url) => mod.mount(host, { search: url.search, embed: true }),
   },
   {

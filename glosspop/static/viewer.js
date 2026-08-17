@@ -5,12 +5,11 @@ import {
   esc,
   externalLink,
   firstOnly,
+  menuButton,
   paintEntryCount,
   setStatus,
   watchFirstOnly,
 } from "./base.js";
-// 文体と顔は設定ダイアログと同じ部品。**サイドバーでは 📁 だけを出す**
-import { mountStyleEditor } from "./ai-style.js";
 import { openExtractDialog } from "./extract.js";
 import { installGlossPopup } from "./popup.js";
 import { createTracker, keyFor } from "./progress.js";
@@ -167,6 +166,7 @@ async function setSource(next, { restore = true, highlight = "" } = {}) {
   tracker.switchTo(keyFor(next, currentRoot));
   source = next;
   rememberOpened(next);
+  paintFoldedLabel();          // URL を開いたら畳んだ行もそちらへ
   selection.hide();
   reader?.reset();      // 別の文書になったので読み上げは打ち切る
   note("");
@@ -372,7 +372,22 @@ otherDialog.innerHTML = `
   </form>`;
 document.body.append(otherDialog);
 
-$("otherSource").addEventListener("click", () => otherDialog.showModal());
+// **入口は ⋯ の中。** 「たまたま手元にあるものを 1 回見る」ための開き方なので、
+// 毎回使うもの（フォルダを選ぶ・パス・最近）と同じ行に常時並べると、いちばん
+// 使うパスの欄をそのぶん狭める（→ CLAUDE.md の「操作の置き場所」）。
+// **入口は減らしていない** —— ドロップは今までどおりウィンドウのどこでも効く
+$("sourceMenu").replaceWith(menuButton({
+  ref: "sourceMenu",
+  title: "そのほかの開き方",
+  items: [
+    {
+      label: "＋ その他の開き方…",
+      ref: "otherSource",
+      title: "1 つだけのファイル、貼り付けたテキスト",
+      onSelect: () => otherDialog.showModal(),
+    },
+  ],
+}));
 $("otherClose").addEventListener("click", () => otherDialog.close());
 
 $("pick").addEventListener("click", () => $("file").click());
@@ -568,13 +583,92 @@ $("urlForm").addEventListener("submit", (ev) => {
 
 const SOURCE_TAB_KEY = "glosspop.sourceTab";
 
+//: いま選ばれているタブ。バーの下の行を出すかの判断に要る（`syncRootStatus`）
+let sourceTab = "folder";
+
+// ------------------------------------------------ 「読むもの」の行を畳む
+//
+// **読む面積は縦がすべて**なので、要らないときは畳めるようにする。畳んだ状態は
+// 覚える（開くたびに畳み直させない）。ただし**畳んでも空の帯にはしない** ——
+// いま読んでいるものと、戻す道（⌄）だけは必ず残す。どちらも消すと、この行が
+// 何のためにあるのかも、どうやって出すのかも画面から分からなくなる。
+
+const FOLD_KEY = "glosspop.sourceBarFolded";
+let sourceFolded = false;
+
+function setSourceFolded(on, { remember = true } = {}) {
+  sourceFolded = Boolean(on);
+  $("sourceBar").classList.toggle("is-folded", sourceFolded);
+  const button = $("foldSource");
+  button.textContent = sourceFolded ? "⌄" : "⌃";
+  button.title = sourceFolded ? "読むものの行を出す" : "読むものの行を畳む";
+  button.setAttribute("aria-expanded", String(!sourceFolded));
+  paintFoldedLabel();
+  if (!remember) return;
+  try {
+    if (sourceFolded) localStorage.setItem(FOLD_KEY, "1");
+    else localStorage.removeItem(FOLD_KEY);
+  } catch { /* 覚えられなくても、その場では畳める */ }
+}
+
+/** 畳んでいるときに出す「いま読んでいるもの」。**畳んでいなければ出さない。** */
+function paintFoldedLabel() {
+  const label = $("foldedLabel");
+  label.hidden = !sourceFolded;
+  if (!sourceFolded) return;
+  const url = source?.url || "";
+  label.textContent = url ? `🔗 ${url}` : `📁 ${currentRoot || "（フォルダ未選択）"}`;
+  label.title = label.textContent;
+}
+
+$("foldSource").addEventListener("click", () => setSourceFolded(!sourceFolded));
+
+/** 覚えている畳み方を当てる。**起動時に 1 回だけ**（`currentRoot` が要るので下から呼ぶ）。 */
+function restoreSourceFolded() {
+  let folded = false;
+  try {
+    folded = localStorage.getItem(FOLD_KEY) === "1";
+  } catch { /* 読めなければ畳まない */ }
+  setSourceFolded(folded, { remember: false });
+}
+
+/**
+ * バーの下の行に一言を出す。**空なら行ごと出さない。**
+ *
+ * `kind` は `setStatus()` と同じ（空 / `busy` / `error`）。空のときだけ
+ * `hint path-line` にするのは、パスが**円記号で折り返せない**ため
+ * （そのままだとバーごと横に伸びる）。
+ */
+function noteRoot(text, kind = "", title = "") {
+  const node = $("rootStatus");
+  node.textContent = text || "";
+  node.className = kind ? `status ${kind}` : "hint path-line";
+  node.title = title;
+  syncRootStatus();
+}
+
+/**
+ * 下の行を出すか決める。**出す条件は 2 つとも要る。**
+ *
+ * - フォルダのタブを選んでいること —— URL を読んでいる最中にフォルダのパスが
+ *   残ると、タブを排他にした意味（どちらの辞書が効いているか読める）が消える
+ * - 出すことがあること —— 入力欄がパスを持っているので、同じ文字列をもう一度
+ *   出すと行を 1 つ食うだけ
+ */
+function syncRootStatus() {
+  const node = $("rootStatus");
+  node.hidden = sourceTab !== "folder" || !node.textContent;
+}
+
 function showSourceTab(name, { remember = true } = {}) {
   const tab = name === "url" ? "url" : "folder";
+  sourceTab = tab;
   for (const button of $("sourceTabs").querySelectorAll("[data-source-tab]")) {
     button.setAttribute("aria-selected", String(button.dataset.sourceTab === tab));
   }
   $("sourcePanelFolder").hidden = tab !== "folder";
   $("sourcePanelUrl").hidden = tab !== "url";
+  syncRootStatus();
   if (!remember) return;
   try {
     localStorage.setItem(SOURCE_TAB_KEY, tab);
@@ -603,57 +697,19 @@ try {
   showSourceTab("folder", { remember: false });
 }
 
-// 検索の開閉も覚える。毎回使う人には開いたままになる（既定は閉じたまま）
-const SEARCH_FOLD_KEY = "glosspop.searchOpen";
-try {
-  $("searchFold").open = localStorage.getItem(SEARCH_FOLD_KEY) === "1";
-} catch { /* 読めなければ閉じたまま */ }
-$("searchFold").addEventListener("toggle", () => {
-  try {
-    if ($("searchFold").open) localStorage.setItem(SEARCH_FOLD_KEY, "1");
-    else localStorage.removeItem(SEARCH_FOLD_KEY);
-  } catch { /* 覚えられなくても開閉はできる */ }
-});
-
-// -------------------------------------------- サイドバーの AI 設定（文体・顔）
-//
-// **設定ダイアログと同じ部品**（`ai-style.js`）を、📁 だけに絞って出す。
-// 全体の指定は ⚙ にある —— こちらは「いま開いているもの」の話をする場所なので、
-// 並べると押し間違える（フォルダごとの口調を書いたつもりで全体を書き換える）。
-
-const sideStyle = mountStyleEditor($("sideAi"), {
-  scopes: ["local"],
-  // **置き場所のパスは出さない**（狭いので、折り返した長いパスが枠の大半を食う）。
-  // 全文は ⚙ 側に出る。祖先のものが効いていることと、置けない理由だけは残る
-  showPaths: false,
-});
-
-/**
- * サイドバーの AI 設定を読み直す。
- *
- * **読むものが変わるたびに引き直すこと。** 文体も顔も「いま読んでいるもの」の
- * 辞書から引くので、フォルダや URL を切り替えたら中身が変わる（覚え込むと、
- * 前のフォルダの口調を出したまま保存させることになる）。
- */
-function refreshSideStyle() {
-  return sideStyle.reload();
-}
-
 // ------------------------------------------------- URL ごとのローカル辞書
 
 /**
  * いま読んでいる URL をサーバに伝え、効いている辞書を表示する。
  *
  * **「読むもの」が変わる唯一の関所**（フォルダのファイル・貼り付け・ローカル
- * ファイルは空文字で呼ぶ）なので、タブとサイドバーの AI 設定もここで合わせる。
+ * ファイルは空文字で呼ぶ）なので、上のバーのタブもここで合わせる。
  * 呼ぶ側それぞれに書くと、必ずどれかで抜ける。
  */
 async function paintUrlDictionary(url) {
   const line = $("urlDict");
   const form = $("urlDictForm");
   showSourceTab(url ? "url" : "folder");
-  // 文体も顔も「いま読んでいるもの」の辞書から引くので、切り替えたら引き直す
-  refreshSideStyle();
   try {
     const info = await api("/api/url-context", { method: "POST", body: { url: url || "" } });
     if (!url) {
@@ -700,18 +756,20 @@ async function loadFileList() {
 }
 
 function paintFileList(res) {
-  const root = $("rootStatus");
-  root.className = "hint"; // 直前のエラー表示を戻す
-  root.textContent = res.root + (res.is_default ? "（既定）" : "");
-  root.title = res.root;
+  // **入力欄と同じ文字列を繰り返さない。** パスはフル幅の入力欄が持っているので、
+  // ここに出すのは**入力欄からは読めないこと**だけ（既定のフォルダを開いている
+  // ときは入力欄が空、辞書が親フォルダにあるときはその場所）
+  const notes = [];
+  if (res.is_default) notes.push(`既定のフォルダ: ${res.root}`);
   // 辞書が親フォルダにあるときは黙って使わない (1 巻 2 巻の共有で起きる)
-  if (res.local_is_ancestor) {
-    root.textContent += ` — このフォルダの辞書: ${res.local_dir}`;
-    root.title = `${res.root}\n辞書: ${res.local_dir}`;
-  }
+  if (res.local_is_ancestor) notes.push(`このフォルダの辞書: ${res.local_dir}`);
+  noteRoot(notes.join(" — "), "", res.local_is_ancestor
+    ? `${res.root}\n辞書: ${res.local_dir}`
+    : res.root);
   $("root").value = res.is_default ? "" : res.root;
   currentRoot = res.root;
   paintFolderMenu();
+  paintFoldedLabel();          // 畳んでいるときはそこが唯一の現在地
 
   if (!res.files.length) {
     filesList.replaceChildren(
@@ -742,20 +800,34 @@ function paintFileList(res) {
 // --------------------------------------------------------- 本文の横断検索
 
 /**
+ * 検索結果を出す / 片付ける。**ファイル一覧と入れ替える。**
+ *
+ * どちらも「開く候補の一覧」なので同じ場所（左パネル）に出す。並べて出すと、
+ * 狭いパネルで一覧が下へ押し下がって**結果を見ながら本文を開く**ができない。
+ * **入れ替えた以上、戻る道を必ず出す**（`#searchBack`）—— 検索欄は上のバーに
+ * あるので、空にして押し直す道だけでは離れすぎている。
+ */
+function showSearchPanel(on) {
+  $("searchPanel").hidden = !on;
+  $("filesHead").hidden = on;
+  filesList.hidden = on;
+}
+
+/**
  * 開いているフォルダの本文を横断して探す。
  *
  * 索引は持たない（サーバがその場で読む）。**打ち切りは必ず画面に出す** ——
  * 黙って切ると「この語は無かった」と区別が付かない。
  */
 async function runContentSearch(query) {
-  const box = $("searchResults");
+  showSearchPanel(true);
   setStatus($("searchStatus"), "検索中", "busy");
   $("searchGo").disabled = true;
   try {
     const res = await api(`/api/content-search?q=${encodeURIComponent(query)}`);
     paintSearchResults(res);
   } catch (err) {
-    box.hidden = true;
+    $("searchResults").replaceChildren();
     setStatus($("searchStatus"), err.message, "error");
   } finally {
     $("searchGo").disabled = false;
@@ -764,7 +836,6 @@ async function runContentSearch(query) {
 
 function paintSearchResults(res) {
   const box = $("searchResults");
-  box.hidden = false;
   if (!res.results.length) {
     box.replaceChildren(el("p", { class: "empty", text: `「${res.query}」は見つかりませんでした` }));
   } else {
@@ -805,13 +876,20 @@ function paintSearchResults(res) {
 $("searchForm").addEventListener("submit", (ev) => {
   ev.preventDefault();
   const query = $("contentQ").value.trim();
-  if (!query) {
-    // 空にして押したら結果を畳む（一覧に戻る手段が要る）
-    $("searchResults").hidden = true;
-    setStatus($("searchStatus"), "");
-    return;
-  }
+  if (!query) return backToFiles();       // 空にして押したら一覧へ戻す
   runContentSearch(query);
+});
+
+/** 検索結果を片付けてファイル一覧へ戻す。 */
+function backToFiles() {
+  showSearchPanel(false);
+  $("searchResults").replaceChildren();
+  setStatus($("searchStatus"), "");
+}
+
+$("searchBack").addEventListener("click", () => {
+  backToFiles();
+  $("contentQ").value = "";
 });
 
 // ------------------------------------------------- フォルダの切り替えと履歴
@@ -876,16 +954,13 @@ async function openRoot(path) {
   try {
     const res = await api("/api/content-root", { method: "POST", body: { path } });
     // 別のフォルダの結果を残さない（押すと開けないファイルが並ぶ）
-    $("searchResults").hidden = true;
-    setStatus($("searchStatus"), "");
+    backToFiles();
     paintFileList(res);
     markCurrentFile(null);
     if (!res.is_default) rememberFolder(res.root);
     paintFolderMenu();
-    // 辞書ごと変わるので、文体と顔も引き直す（前のフォルダのものを出さない）
-    refreshSideStyle();
   } catch (err) {
-    setStatus($("rootStatus"), err.message, "error");
+    noteRoot(err.message, "error");
   } finally {
     $("rootGo").disabled = $("pickFolder").disabled = false;
   }
@@ -904,7 +979,7 @@ $("recent").addEventListener("change", () => {
 // OS のフォルダ選択ダイアログはサーバ側で開く (ブラウザは絶対パスをくれない)
 $("pickFolder").addEventListener("click", async () => {
   $("pickFolder").disabled = true;
-  setStatus($("rootStatus"), "フォルダ選択ダイアログを開いています", "busy");
+  noteRoot("フォルダ選択ダイアログを開いています", "busy");
   try {
     const res = await api("/api/pick-folder", {
       method: "POST",
@@ -913,7 +988,7 @@ $("pickFolder").addEventListener("click", async () => {
     if (res.cancelled) paintFileList(await api("/api/content"));
     else await openRoot(res.path);
   } catch (err) {
-    setStatus($("rootStatus"), err.message, "error");
+    noteRoot(err.message, "error");
   } finally {
     $("pickFolder").disabled = false;
   }
@@ -1072,7 +1147,7 @@ installOverlay({
 });
 
 paintEntryCount($("count"));
-refreshSideStyle();
+restoreSourceFolded();
 loadFileList().then(async (listing) => {
   if (await openFromQuery()) return;   // URL の指定が最優先
   if (await openOverlayFromLocation()) return;

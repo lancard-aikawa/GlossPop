@@ -1,5 +1,5 @@
 // 1 語を中心にした見せ方（ego network）。**選んだ語を真ん中に置き、そこから
-// 2 つ先までを環に並べる**。
+// 何つ先までかを選んで環に並べる**（既定は 2 つ先）。
 //
 // **この見せ方だけができること: 規模に依らない。** 他の 4 つはどれも辞書
 // （またはその文書）を一度に出すので、語が増えれば必ず苦しくなる。中心を決めれば
@@ -10,8 +10,8 @@
 // 図の上半分、下の段は下半分、同じ段（対等）は左右に置く。**見せ方を変えても
 // 言っていることを変えない**という約束は、ここでも同じ。
 //
-// **出していないものは必ず数える。** 2 つ先より遠い語、相手が出ていない関係、
-// 多すぎて置けなかった 2 つ先の語 —— 全部まとめて凡例に出す（`hidden` や
+// **出していないものは必ず数える。** 選んだ深さより遠い語、相手が出ていない関係、
+// 多すぎて置けなかった語 —— 全部まとめて凡例に出す（`hidden` や
 // `outside` と同じ約束で、黙って欠けた図を出さない）。
 import {
   describeNode, describeRelation, estTextWidth, relationWords, svgEl as svg,
@@ -36,9 +36,25 @@ const CENTER_FONT = 14;
 const NAME_MAX = 14;
 const WORDS_MAX = 14;
 
-//: 2 つ先に置く語の上限。**規模に依らない**のがこの見せ方の取り柄なので、
-//: 近所が広すぎるときは切る。**切ったことは必ず数えて返す**
-const MAX_RING2 = 60;
+//: 2 つ先より遠くに置く語の上限（**環ごとではなく合計**）。**規模に依らない**のが
+//: この見せ方の取り柄なので、近所が広すぎるときは切る。**切ったことは必ず数えて返す**。
+//: **1 つ先は切らない** —— 直接の関係を落とすと、この図がいちばん答えるはずの問い
+//: （「この語は誰とどう関わるか」）が欠ける。環ごとの上限にすると、深さを増やした
+//: ぶんだけ天井も増えて「規模に依らない」が効かなくなる
+const MAX_FAR = 120;
+
+//: 何つ先まで出すか。**既定は 2。** 1 は用語ページの関係一覧とほぼ同じで、
+//: 3 以上は密な辞書だと辞書全体に近づいて取り柄（規模に依らない）が薄れる ——
+//: **それでも選べるようにしてある**。「この人物の直接の関係だけ」を見たいときと、
+//: 「もう一歩だけ広く」を見たいときが実際にあり、**どちらも既定では出せない**
+export const DEPTHS = [1, 2, 3, 4];
+export const DEFAULT_DEPTH = 2;
+
+/** 読めない深さは既定に落とす（覚えている値・URL のどちらから来ても通す口）。 */
+export function normalizeDepth(value) {
+  const n = Number(value);
+  return DEPTHS.includes(n) ? n : DEFAULT_DEPTH;
+}
 
 //: 段（上下）ごとの置き場所。角度は**12 時から時計回り**の度
 //: （x = sin、y = -cos。SVG の y は下向き）。上の段は 12 時、下の段は 6 時、
@@ -93,8 +109,16 @@ export function resolveCenter(nodes, edges, wanted) {
   return best;
 }
 
-/** 中心から 1 つ先・2 つ先の語を集める（`parent` は 1 つ先のどれから伸びたか）。 */
-function rings(center, edges) {
+/**
+ * 中心から ``depth`` つ先までの語を、環ごとに集める。
+ *
+ * `parent` は**1 つ内側のどれから伸びたか**。次の環をその親と同じ側へ寄せるのに
+ * 使う（番号で機械的に割ると、左に居る親から右端まで線が図を横切る）。
+ *
+ * **同じ語は最初に届いた環にだけ置く**（幅優先）。中心からの遠さがその語の
+ * 段になるので、あとの環で置き直すと近さが嘘になる。
+ */
+function ringsOf(center, edges, depth) {
   const near = new Map();                         // ref → 隣の ref の集合
   const add = (a, b) => {
     if (!near.has(a)) near.set(a, new Set());
@@ -104,20 +128,32 @@ function rings(center, edges) {
     add(e.from, e.to);
     add(e.to, e.from);
   }
-  const ring1 = [...(near.get(center) || [])];
-  const seen = new Set([center, ...ring1]);
-  const ring2 = [];
+  const seen = new Set([center]);
+  const rings = [];
+  let frontier = [center];
+  let far = 0;                                    // 2 つ先より遠くに置いた数
   let dropped = 0;
-  for (const parent of ring1) {
-    for (const ref of near.get(parent) || []) {
-      if (seen.has(ref)) continue;
-      seen.add(ref);
-      // **切ったことは数えて返す**（黙って欠けた図を出さない）
-      if (ring2.length >= MAX_RING2) dropped++;
-      else ring2.push({ ref, parent });
+  for (let step = 0; step < depth; step++) {
+    const ring = [];
+    for (const parent of frontier) {
+      for (const ref of near.get(parent) || []) {
+        if (seen.has(ref)) continue;
+        seen.add(ref);
+        // **切ったことは数えて返す**（黙って欠けた図を出さない）。
+        // 上限を見るのは 2 つ先から —— 1 つ先は直接の関係なので切らない
+        if (step && far >= MAX_FAR) {
+          dropped++;
+          continue;
+        }
+        if (step) far++;
+        ring.push({ ref, parent });
+      }
     }
+    if (!ring.length) break;                      // これ以上は伸びない
+    rings.push(ring);
+    frontier = ring.map((item) => item.ref);
   }
-  return { ring1, ring2, dropped };
+  return { rings, dropped };
 }
 
 /**
@@ -182,29 +218,18 @@ function spread(items, { level, center, order }) {
  * @param {function} onEdge   関係を押したときに呼ぶ（編集ダイアログ）
  * @param {string}   center   中心にしたい ref（無ければいちばん多く繋がっている語）
  * @param {function} onCenter まわりの語を押したときに呼ぶ（中心を移す）
+ * @param {number}   depth    何つ先まで出すか（既定は 2）
  */
-export function buildEgo(graph, { onEdge, center: wanted, onCenter } = {}) {
+export function buildEgo(graph, { onEdge, center: wanted, onCenter, depth } = {}) {
   const { nodes, edges } = graph;
   const byRef = new Map(nodes.map((n) => [n.ref, n]));
   const center = resolveCenter(nodes, edges, wanted);
-  const { ring1, ring2, dropped } = rings(center, edges);
+  const steps = normalizeDepth(depth);
+  const { rings, dropped } = ringsOf(center, edges, steps);
 
   // 段は**図全体**から出す（中心を移しても上下が変わらないように）
   const level = levelsOf(nodes, edges);
   const order = seedOrder(nodes, edges);
-
-  const first = spread(
-    ring1.map((ref) => ({ ref, term: byRef.get(ref)?.term || ref })),
-    { level, center, order },
-  );
-  const r1 = Math.max(MIN_R1, first.needed);
-  const second = spread(
-    ring2.map(({ ref, parent }) => ({
-      ref, term: byRef.get(ref)?.term || ref, at: first.angles.get(parent),
-    })),
-    { level, center, order },
-  );
-  const r2 = Math.max(r1 + RING_GAP, second.needed);
 
   // 位置。中心は原点で、あとで枠ぶんだけずらす
   const pos = new Map([[center, { x: 0, y: 0, w: nodeWidth(byRef.get(center)?.term || center, CENTER_FONT), h: CENTER_H, ring: 0 }]]);
@@ -218,17 +243,40 @@ export function buildEgo(graph, { onEdge, center: wanted, onCenter } = {}) {
       ring,
     });
   };
-  for (const ref of ring1) place(ref, first.angles.get(ref) ?? 0, r1, 1);
-  for (const { ref } of ring2) place(ref, second.angles.get(ref) ?? 0, r2, 2);
+
+  // 環は内側から順に決める。**半径は 1 つ内側より必ず外**（詰まっている扇に
+  // 合わせて広げるので、外の環ほど大きくなる）。角度は覚えておいて、次の環を
+  // 親と同じ側へ寄せるのに使う
+  const angles = new Map();
+  const radii = [];
+  let radius = 0;
+  rings.forEach((ring, i) => {
+    const laid = spread(
+      ring.map(({ ref, parent }) => ({
+        ref,
+        term: byRef.get(ref)?.term || ref,
+        // 1 つ先には親（＝中心）の向きが無いので、いつもどおり左右へ分ける
+        at: i ? angles.get(parent) : undefined,
+      })),
+      { level, center, order },
+    );
+    radius = i ? Math.max(radius + RING_GAP, laid.needed) : Math.max(MIN_R1, laid.needed);
+    radii.push(radius);
+    for (const [ref, angle] of laid.angles) angles.set(ref, angle);
+    for (const { ref } of ring) place(ref, laid.angles.get(ref) ?? 0, radius, i + 1);
+  });
+  //: いちばん外の環。**枠はここから作る**（環の目印まで入れないと、語の無い
+  //: 向きで円がはみ出して切れる）
+  const outer = radii[radii.length - 1] || MIN_R1;
 
   // 描くのは**両端が出ている関係すべて**。相手が出ていないものは数えて返す
   const shown = edges.filter((e) => pos.has(e.from) && pos.has(e.to));
   const outside = edges.length - shown.length;
 
-  let minX = -r2 - PAD;
-  let minY = -r2 - PAD;
-  let maxX = r2 + PAD;
-  let maxY = r2 + PAD;
+  let minX = -outer - PAD;
+  let minY = -outer - PAD;
+  let maxX = outer + PAD;
+  let maxY = outer + PAD;
   for (const p of pos.values()) {
     minX = Math.min(minX, p.x - p.w / 2 - PAD);
     maxX = Math.max(maxX, p.x + p.w / 2 + PAD);
@@ -250,8 +298,7 @@ export function buildEgo(graph, { onEdge, center: wanted, onCenter } = {}) {
 
   // 環の目印。**飾りは当たり判定を持たない**（線やノードの上に乗ると押せなくなる）
   const guides = svg("g", { class: "ego-guides" });
-  guides.append(svg("circle", { cx: 0, cy: 0, r: r1 }));
-  if (ring2.length) guides.append(svg("circle", { cx: 0, cy: 0, r: r2 }));
+  for (const r of radii) guides.append(svg("circle", { cx: 0, cy: 0, r }));
   root.append(guides);
 
   const lines = svg("g", { class: "rel-edge-lines" });
@@ -345,8 +392,12 @@ export function buildEgo(graph, { onEdge, center: wanted, onCenter } = {}) {
     const node = byRef.get(ref);
     const term = node?.term || ref;
     const middle = ref === center;
+    // `ego-far` は**2 つ先より遠いぶん全部**（薄くする側）。`ego-ringN` は
+    // そのうえでの遠さで、CSS はどちらも使う —— 環の目印だけだと読み落とす
     const cls = [
-      "rel-node", middle ? "ego-center" : `ego-ring${p.ring}`,
+      "rel-node",
+      middle ? "ego-center" : `ego-ring${p.ring}`,
+      !middle && p.ring > 1 ? "ego-far" : "",
       node?.missing ? "missing" : "", node?.outside ? "outside" : "",
     ].filter(Boolean).join(" ");
     const shape = [
@@ -394,12 +445,12 @@ export function buildEgo(graph, { onEdge, center: wanted, onCenter } = {}) {
   // 分からないと、この図だけを見て「関係はこれで全部」と読まれる
   const away = nodes.length - pos.size;
   const note = [
-    `「${byRef.get(center)?.term || ""}」から 2 つ先までを出しています`
+    `「${byRef.get(center)?.term || ""}」から ${steps} つ先までを出しています`
     + `（${pos.size} 語）。まわりの語を押すとそこが中心になります。`,
-    away ? `ほか ${away} 語は 2 つ先より遠いので出していません。` : "",
-    dropped ? `2 つ先の語が多いので ${dropped} 語は置いていません。` : "",
+    away ? `ほか ${away} 語は ${steps} つ先より遠いので出していません。` : "",
+    dropped ? `近所が広いので ${dropped} 語は置いていません。` : "",
     outside ? `相手がここに出ていない関係を ${outside} 本伏せています。` : "",
-    ring1.length ? "" : "この語にはまだ関係が書かれていません。",
+    rings.length ? "" : "この語にはまだ関係が書かれていません。",
   ].filter(Boolean).join("");
 
   return {
@@ -409,6 +460,8 @@ export function buildEgo(graph, { onEdge, center: wanted, onCenter } = {}) {
     tucked,
     note,
     center,
+    // 実際に出した深さ（読めない値は既定に落ちているので、呼ぶ側はこれを見る）
+    depth: steps,
   };
 }
 

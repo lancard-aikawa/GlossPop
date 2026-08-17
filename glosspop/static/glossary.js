@@ -1,5 +1,6 @@
 // 辞書一覧: カテゴリマスターの順にグルーピングして表示。
-import { api, el, esc, paintEntryCount, setStatus } from "./base.js";
+import { api, el, esc, menuButton, paintEntryCount, setStatus } from "./base.js";
+import { installTabKeys, LIST_TAB, paintDictTabs } from "./dict-tabs.js";
 import { openEntryEditor } from "./editor.js";
 import { installSelectionAdd } from "./select-add.js";
 import { invalidatePopupCache } from "./popup.js";
@@ -9,15 +10,27 @@ const TEMPLATE = `
 <h1>用語辞書</h1>
 <p class="lede" id="lede"></p>
 
+<!-- **一覧も「見方」の 1 つ。** 図と同じ列に並べてある —— 同じ辞書を別の見方で
+     出しているだけなのに、以前は topbar が「辞書」と「相関図」に割れていて
+     別の場所に見えていた。中身は dict-tabs.js が作る（**ここに写しを置かない**）。
+     バッククォートを書かないこと（テンプレート文字列の中） -->
+<div class="view-tabs" role="tablist" id="viewTabs" aria-label="辞書の見方"></div>
+
 <div class="toolbar">
   <input type="search" id="q" placeholder="用語・別名・本文を検索" autocomplete="off"
          title="用語・別名・本文を検索" aria-label="用語・別名・本文を検索">
   <select id="catFilter" class="auto-width" title="カテゴリで絞り込む" aria-label="カテゴリで絞り込む">
     <option value="">すべてのカテゴリ</option>
   </select>
-  <select id="tagFilter" class="auto-width" title="タグで絞り込む" aria-label="タグで絞り込む">
-    <option value="">すべてのタグ</option>
-  </select>
+  <!-- タグは**マスターが無い**ので、使われているぶんだけ数え上げたものが並ぶ。
+       **select にしないこと** —— 実データで 34 語の辞書にタグが 69 個（うち 58 個は
+       1 語にしか付いていない）あり、開いた時点で読めなかった。入力欄なら打てば絞れて、
+       空のまま開けば今までどおり全部出る（→ CLAUDE.md「選択肢が数十個になる select
+       は作らない」）。**候補から件数を落とさないこと** -->
+  <input type="search" id="tagFilter" class="auto-width tag-filter" list="tagOptions"
+         placeholder="#タグで絞り込む" autocomplete="off"
+         title="タグで絞り込む" aria-label="タグで絞り込む">
+  <datalist id="tagOptions"></datalist>
   <!-- 束ね方。**どれも置き換えではなく、別の引き方**（カテゴリ順 = どういう語か、
        五十音 = 辞書を通して、作中の時刻順 = 起きた順）。相関図の時系列が並べて
        いるのは**関係**なので、**語そのものを順に並べたもの**はここにしか無い。覚える -->
@@ -27,13 +40,13 @@ const TEMPLATE = `
     <option value="when" title="作中で起きた順に通して見る（年表）">作中の時刻順</option>
   </select>
   <span class="spacer"></span>
-  <!-- 索引（語がどこに何回出てくるか）。**辞書の側から本文を見る唯一の入口**
-       で、いちばん見たいのは「登録したのに 1 度も出てこない語」のほう -->
-  <a class="btn" href="/occurrences" title="登録した語が本文のどこに出てくるかを並べる">📇 索引</a>
-  <!-- 冊子。zip は**データの持ち運び**で、**人に渡して読ませる形**が無かった -->
-  <button type="button" id="booklet" title="辞書を 1 枚にまとめて書き出す（読む用）">📖 冊子</button>
-  <button type="button" id="manageCats">カテゴリ管理</button>
   <button type="button" class="primary" id="add">＋ 新規登録</button>
+  <!-- ⋯ の中身は mount() が menuButton() で作る（索引 / 冊子 / カテゴリ管理）。
+       **ここへ直接ボタンを戻さないこと** —— 8 個並べていたときは 1280px で行が
+       折り返し、spacer のせいで「絞り込み」と「操作」の境目が消えていた
+       （→ docs/ui-inventory.md）。置き場所の決め方は CLAUDE.md の表。
+       **バッククォートを書かないこと**（テンプレート文字列の中） -->
+  <span id="listMenu"></span>
 </div>
 
 <div id="list"></div>
@@ -109,6 +122,8 @@ const $ = (id) => host.querySelector(`#${id}`);
 
 let tree = [];
 let timer = null;
+//: タグの入力欄用。検索欄とは別に持つ（片方の打鍵がもう片方の待ちを消さない）
+let tagTimer = null;
 //: 直前に描いた一覧。束ね方を変えるだけなら、これを束ね直す
 let lastEntries = null;
 //: 最初の読み込み。**開くのが速すぎたダイアログがこれを待って描き直す**
@@ -371,10 +386,13 @@ function installBooklet() {
     location.href = `/api/booklet?${query}`;
     setTimeout(() => setStatus(ref("bkStatus"), "書き出しました"), 1200);
   });
-  $("booklet").addEventListener("click", () => {
-    setStatus(ref("bkStatus"), "");
-    dialog.showModal();
-  });
+}
+
+/** 冊子ダイアログを開く（⋯ メニューから）。 */
+function openBooklet() {
+  const dialog = $("bookletDialog");
+  setStatus(dialog.querySelector("[data-ref=bkStatus]"), "");
+  dialog.showModal();
 }
 
 /** 五十音で束ねて描く。**カテゴリはカードに出す**（見出しがカテゴリでなくなるので）。 */
@@ -500,7 +518,7 @@ function paint(entries) {
     paintByWhen(entries);
     return;
   }
-  const filtering = Boolean(qInput.value.trim() || catFilter.value || tagFilter.value);
+  const filtering = Boolean(qInput.value.trim() || catFilter.value || tagSelection());
   const byCategory = new Map();
   for (const e of entries) {
     const gk = groupKey(e.scope, e.category);
@@ -561,6 +579,8 @@ function paint(entries) {
 }
 
 async function reload() {
+  // 絞りが変わったら、図へ渡すタブのリンクも作り直す（持っていく先を合わせる）
+  paintTabs();
   const params = new URLSearchParams();
   if (qInput.value.trim()) params.set("q", qInput.value.trim());
   const picked = categorySelection();
@@ -568,7 +588,7 @@ async function reload() {
     params.set("category", picked.category);
     params.set("scope", picked.scope);
   }
-  if (tagFilter.value) params.set("tag", tagFilter.value);
+  if (tagSelection()) params.set("tag", tagSelection());
   const qs = params.toString();
   list.setAttribute("aria-busy", "true");
   try {
@@ -609,6 +629,17 @@ async function loadCategories() {
   catFilter.value = current;
 }
 
+/**
+ * タブ列を描き直す。**いまの絞り込みを図へ渡す**ので、絞りを変えたら描き直す。
+ *
+ * 「文学の一覧」から図のタブを押したら「文学の図」が出てほしい —— 落とすと、
+ * 渡った先で絞り込み直すことになる。用語ページから「カテゴリ全体の図 →」を
+ * 消せたのはこれがあるから（**全体への出口はパンくずの側**）。
+ */
+function paintTabs() {
+  paintDictTabs($("viewTabs"), { current: LIST_TAB, scope: categorySelection() });
+}
+
 /** 絞り込みの選択を {scope, category} に戻す。 */
 function categorySelection() {
   if (!catFilter.value) return { scope: null, category: null };
@@ -632,14 +663,19 @@ async function loadTags() {
   } catch {
     tags = [];
   }
-  const current = tagFilter.value;
-  tagFilter.replaceChildren(
-    el("option", { value: "", text: "すべてのタグ" }),
-    ...tags.map((t) => el("option", { value: t.name, text: `#${t.name} (${t.count})` })),
+  // **件数は落とさない**（どれが効くのか分からなくなる）。`value` は名前だけにして
+  // おくこと —— 選ぶと入力欄に入る文字列そのものなので、件数を混ぜると絞りに使えない
+  $("tagOptions").replaceChildren(
+    ...tags.map((t) => el("option", { value: t.name, label: `${t.count} 語` })),
   );
-  // 選んでいたタグが最後の 1 語から外れると選択肢ごと消える。その場合は「すべて」に戻る
-  tagFilter.value = current;
+  // 選んでいたタグが最後の 1 語から外れても、入力欄の文字は消さない
+  // （0 件だと分かるほうが、黙って全件に戻るより親切）
   tagFilter.disabled = !tags.length;
+}
+
+/** 入力されたタグ。`#` を付けて打つ人がいるので落とす。 */
+function tagSelection() {
+  return tagFilter.value.trim().replace(/^#/, "");
 }
 
 // ------------------------------------------------------------ カテゴリ管理
@@ -856,13 +892,23 @@ export async function mount(container, { search = "" } = {}) {
     },
   });
 
+  // **一覧も見方の 1 つ。** 図へのタブはリンクなので、覆いに重ねたままでも
+  // ページとして開いていても同じ道を通る（`overlay.js` が `<a href>` を拾う）
+  paintTabs();
+  installTabKeys($("viewTabs"));
+
   // **listener は最初の await より前に付ける**（その間の操作を落とさない）
   qInput.addEventListener("input", () => {
     clearTimeout(timer);
     timer = setTimeout(reload, 180);
   });
   catFilter.addEventListener("change", reload);
-  tagFilter.addEventListener("change", reload);
+  // タグは入力欄になったので、`change`（＝候補を選んだ / 欄を離れた）だけでは
+  // 打っている途中に効かない。検索欄と同じ間合いで待つ
+  tagFilter.addEventListener("input", () => {
+    clearTimeout(tagTimer);
+    tagTimer = setTimeout(reload, 180);
+  });
   // 束ね方は覚える（覆いは何度でも開き直されるので、毎回選び直させない）。
   // **サーバへは行き直さない** —— 同じものを束ね直すだけ
   try {
@@ -882,7 +928,26 @@ export async function mount(container, { search = "" } = {}) {
   });
   installBooklet();
   $("add").addEventListener("click", onAdd);
-  $("manageCats").addEventListener("click", onManageCats);
+  // **たまに使うものは ⋯ の中**（→ CLAUDE.md「操作の置き場所は 5 つしかない」）。
+  // ここには消える操作が無いので区切り線も無い。カテゴリの削除はダイアログの中で
+  // 「空のときだけ」と決まっているので、そちらの担保に任せる
+  $("listMenu").replaceWith(menuButton({
+    ref: "listMenu",
+    title: "そのほかの操作",
+    items: [
+      {
+        label: "📇 索引",
+        href: "/occurrences",
+        title: "登録した語が本文のどこに出てくるかを並べる",
+      },
+      {
+        label: "📖 冊子として書き出す…",
+        title: "辞書を 1 枚にまとめて書き出す（読む用）",
+        onSelect: openBooklet,
+      },
+      { label: "カテゴリ管理…", onSelect: onManageCats },
+    ],
+  }));
   catDialog.querySelector("[data-ref=catAdd]").addEventListener("click", addCategory);
   catDialog.querySelector("[data-ref=catNew]").addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {

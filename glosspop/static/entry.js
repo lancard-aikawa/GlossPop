@@ -1,5 +1,8 @@
 // 辞書の 1 語ページ。URL は /glossary/<カテゴリ>/<slug>
-import { api, el, esc, paintEntryCount, RANK_MARK, RANK_OPTIONS, setStatus, sourceNode } from "./base.js";
+import {
+  api, el, esc, menuButton, paintEntryCount, RANK_MARK, RANK_OPTIONS, setStatus, sourceNode,
+} from "./base.js";
+import { installTabKeys } from "./dict-tabs.js";
 import { installGlossPopup, invalidatePopupCache } from "./popup.js";
 import { installSelectionAdd } from "./select-add.js";
 import { openEntryEditor, encodePath } from "./editor.js";
@@ -13,6 +16,9 @@ let root = null;
 let countNode = null;
 let initialRef = "";
 let selection = null;
+
+//: 「関係を足す」を開いたままにしておくかの記憶。**畳んだままが既定**
+const REL_FORM_KEY = "glosspop.entryRelForm";
 
 /** 表記 -> [{ref, path_label}] の索引。関連語をリンクにするために使う。 */
 let index = new Map();
@@ -313,37 +319,11 @@ function appearancesSection(entry) {
   return section("本文での使われ方", box);
 }
 
-/**
- * 地図への入口。**`map:` が書いてあるときだけ**出す。
- *
- * 座標は用語のファイルに書くのに、**地図はここから開けなかった** —— 置く動線も
- * 相関図の覆いの中にしか無く、用語ページからは自分がどこに置かれているのかも
- * 分からなかった。`?mode=map` で見せ方まで名指しするのは、覚えている見せ方が
- * 段の図の人に効かせるため（`?ref=` の「中心の図で開く」と同じ話）。
- *
- * **形が無いときは「置く」と書く。** 絵の名前だけ書いた語は地図の側で
- * 「置き待ち」として並ぶので、行き先は同じでよい（`map.js` の `pending`）。
- * **形だけあって `map:` が無いときは出さない** —— どの絵の話か決まらないし、
- * そちらは点検が挙げる（`shape_without_map`）。
- */
-function mapLink(entry) {
-  if (!entry.map) return null;
-  const placed = Boolean(entry.pin?.length || entry.line?.length || entry.area?.length);
-  const query = new URLSearchParams({
-    mode: "map",
-    map: `${entry.scope}/${entry.map}`,
-    ref: entry.ref,
-  });
-  return el("a", {
-    class: "btn",
-    "data-ref": "mapLink",
-    href: `/graph?${query}`,
-    title: placed
-      ? `「${entry.map}」の上のこの語を見る`
-      : `「${entry.map}」の上にこの語を置く`,
-    text: placed ? "🗺 地図で見る →" : "🗺 地図に置く →",
-  });
-}
+//: 地図への入口は**タブ**（`entryTabs()`）。以前はボタンで `/graph?mode=map` へ
+//: 飛ばしていたが、飛んだ先には戻る道が「ブラウザの戻る」しか無かった。
+//: **`map:` が書いてあるときだけ出す**のは変えていない ——
+//: **形だけあって `map:` が無いときは出さない**（どの絵の話か決まらないし、
+//: そちらは点検が挙げる。`shape_without_map`）。
 
 function relationsSection(entry) {
   const resolved = entry.relations_resolved || [];
@@ -369,24 +349,37 @@ function relationsSection(entry) {
     parts.push(el("ul", { class: "rel-list" }, links.map(backlinkRow)));
   }
   parts.push(status);
-  parts.push(relationForm(entry));
+  // **入力 7 個を常時開いておかない**（→ CLAUDE.md「操作の置き場所は 5 つしかない」）。
+  // 関係の一覧と下の操作が縦に離れて、書いたものを見ながら次を足せなかった。
+  // **開閉は覚える** —— よく足す人には開いたままになる（横断検索と同じ扱い）
+  const formFold = el("details", { class: "rel-form-fold" }, [
+    el("summary", { text: "＋ 関係を足す" }),
+    relationForm(entry),
+  ]);
+  try {
+    formFold.open = localStorage.getItem(REL_FORM_KEY) === "1";
+  } catch {
+    /* 使えない環境では畳んだまま（既定） */
+  }
+  formFold.addEventListener("toggle", () => {
+    try {
+      if (formFold.open) localStorage.setItem(REL_FORM_KEY, "1");
+      else localStorage.removeItem(REL_FORM_KEY);
+    } catch {
+      /* 保存できなくてもその画面では効く */
+    }
+  });
+  parts.push(formFold);
   parts.push(
     el("p", { class: "rel-actions" }, [
-      el("a", {
-        class: "btn",
-        href: `/graph?category=${encodeURIComponent(entry.category)}` +
-          (entry.scope === "local" ? "&scope=local" : ""),
-        text: "相関図で見る →",
-      }),
-      // **カテゴリで絞らない。** 中心の図が出すのは「この語の近所」なので、
-      // 絞ると別のカテゴリに居る相手が落ちて近所が欠ける
-      el("a", {
-        class: "btn",
-        href: `/graph?ref=${encodeURIComponent(entry.ref)}`,
-        title: "この語を真ん中に置いて、2 つ先までの関係を見る",
-        text: "この語を中心に →",
-      }),
-      mapLink(entry),
+      // **ここに「カテゴリ全体の図」を戻さないこと。** 関係は**その語から見た
+      // 書き方**しかしていない（向きの基準は「自分から to を見て」に固定）ので、
+      // その並びの下にカテゴリ全体・辞書全体への出口があると層が飛ぶ。
+      // **広い範囲への出口はパンくずの側**（`辞書 / 文学`）—— カテゴリを押せば
+      // その絞り込みの一覧が出て、そこのタブがそのまま「文学の図」へ渡る
+      // （`dict-tabs.js` が絞り込みを持っていく）。
+      // 残しているのはどれも**この語についての操作**だけ。
+      //
       // **1 語ぶんの下書き。** 全体まとめての下書きはビューアにあるが、
       // 「この語だけ関係が空のまま」を埋める道がここに無かった
       el("button", {
@@ -410,7 +403,9 @@ function relationsSection(entry) {
       }),
     ])
   );
-  return section("関係", parts);
+  // **見出しは付けない。** タブの名前が「関係」なので、中でもう一度言うと
+  // 同じ語が 2 段に並ぶだけになる（「この語を指している側」の小見出しは残す）
+  return el("section", { class: "entry-section" }, parts);
 }
 
 /**
@@ -480,6 +475,106 @@ function imagePanel(entry) {
   return box;
 }
 
+// --------------------------------------------------------------------------- //
+// この語の見方（タブ）
+//
+// **辞書の一覧と図を同じタブ列にしたのと同じ話。** 記事とその語の図は「同じ語の
+// 別の見方」なので、ボタンで別の場所へ飛ばすのをやめてタブで切り替える。
+// **語は固定したまま**見方だけが変わる（飛ぶと、戻る道は「戻る」しかなかった）。
+//
+// 辞書ぜんぶの見方（`dict-tabs.js` の 6 つ）とは**別の列**。あちらは「辞書を
+// どう見るか」、こちらは「この語をどう見るか」で、範囲が違う。
+// **地図があちらの列から外れたのも同じ理由**（絵 1 枚ぶんの見方なので、範囲は
+// 辞書ぜんぶではない）—— こちらの 🗺 は今までどおり。
+// --------------------------------------------------------------------------- //
+
+//: いま見ているタブ。**語が変わったら記事へ戻す**（`mount()` と `goTo()`）——
+//: 別の語を開いたのに図が出ていると、どの語の図なのか分からない
+let entryTab = "entry";
+
+/**
+ * この語のタブ。**地図は `map:` が書いてあるときだけ**出す。
+ *
+ * 辞書の見方のタブ（`dict-tabs.js`）は 1 つも隠さないが、こちらは違う ——
+ * あちらは「辞書をどう見るか」でどの辞書にも 6 通りあるのに対し、こちらの地図は
+ * **その語が絵に結びつけられているかどうか**で、書いていなければ出すものが無い。
+ * 座標がまだ無いのは正常（「置き待ち」）なので、そのときも出す。
+ */
+function entryTabs(entry) {
+  // **関係の一覧と「この語の図」は同じものの別の見方**（並びと絵）。隣に置くと
+  // それが読めるので、辞書タブの下にぶら下げるのをやめた
+  const links = (entry.relations_resolved || []).length + (entry.backlinks || []).length;
+  const tabs = [
+    { id: "entry", label: "辞書", hint: "この語の説明・使用例・本文での使われ方" },
+    {
+      id: "relations",
+      // **本数を出す。** 畳んだ先に何かあるのかは、開くまで分からない
+      label: links ? `関係 ${links}` : "関係",
+      hint: "この語の関係の一覧（この語を指している側も出る）",
+    },
+    // **何つ先までかは図の側で選べる**ので、ここでは言い切らない
+    // （既定は 2 つ先。→ `ego.js` の `DEPTHS`）
+    { id: "ego", label: "この語の図", hint: "この語を真ん中に置いて、まわりの関係を見る" },
+  ];
+  if (entry.map) {
+    const placed = Boolean(entry.pin?.length || entry.line?.length || entry.area?.length);
+    tabs.push({
+      id: "map",
+      label: "🗺 地図",
+      hint: placed ? `「${entry.map}」の上のこの語を見る` : `「${entry.map}」の上にこの語を置く`,
+    });
+  }
+  return tabs;
+}
+
+/** その語の図を出すときに graph へ渡す `?...`。**名指しなので `?ref=` を使う。** */
+function tabSearch(entry, tab) {
+  if (tab === "map") {
+    return `?${new URLSearchParams({ mode: "map", map: `${entry.scope}/${entry.map}`, ref: entry.ref })}`;
+  }
+  // **カテゴリで絞らない。** 中心の図が出すのは「この語の近所」なので、
+  // 絞ると別のカテゴリに居る相手が落ちて近所が欠ける
+  return `?ref=${encodeURIComponent(entry.ref)}`;
+}
+
+/**
+ * タブの中身を描く。図は**そのとき初めて読み込む**（用語ページを開くたびに
+ * 相関図のモジュールまで取りに行かない）。
+ */
+async function paintTabBody(entry, host, bodies) {
+  if (bodies[entryTab]) {
+    host.replaceChildren(...bodies[entryTab]);
+    return;
+  }
+  host.replaceChildren(el("p", { class: "status", text: "図を描いています" }));
+  try {
+    const graph = await import("./graph.js");
+    const box = el("div", { class: "entry-graph" });
+    // **辞書全体の見方への出口。** ここに 7 つのタブを並べない —— 6 つの図のうち
+    // 「その語のもの」と言えるのは中心の図と地図だけで、段の図・行列・年表は
+    // **辞書全体の見方**。並べると「この語の図」と言いながら辞書全体が出る。
+    // 代わりに**その語を名指ししたまま**辞書の図へ渡す（渡った先で年表にすれば、
+    // `spotlight()` がその語の行を光らせる）。**図より前に置く** —— うしろだと、
+    // 背の高い図をスクロールし切らないと見えない
+    host.replaceChildren(
+      el("p", { class: "rel-actions entry-graph-out" }, [
+        el("a", {
+          class: "btn",
+          "data-ref": "toDictFigures",
+          href: `/graph?ref=${encodeURIComponent(entry.ref)}`,
+          title: "この語を選んだまま、辞書の図（段の図・行列・年表・地図…）へ渡ります",
+          text: "辞書の図で見る →",
+        }),
+      ]),
+      box,
+    );
+    // **辞書ぜんぶの見方のタブは出さない**（この列と二重になる）
+    await graph.mount(box, { search: tabSearch(entry, entryTab), embed: true, tabs: false });
+  } catch (err) {
+    host.replaceChildren(el("p", { class: "status error", text: `図を出せません: ${err.message}` }));
+  }
+}
+
 function render(entry) {
   current = entry;
   const head = el("div", { class: "entry-head" }, [
@@ -522,7 +617,7 @@ function render(entry) {
   // 押しボタンで分断されて読みにくい
   head.append(imagePanel(entry));
 
-  const parts = [head];
+  const parts = [];
 
   // 同じ表記が別カテゴリにもあるなら案内する。
   // **「別カテゴリの同名」は正常なので、まとめろとは言わない。** 同じものが
@@ -549,7 +644,6 @@ function render(entry) {
   }
 
   parts.push(appearancesSection(entry));
-  parts.push(relationsSection(entry));
 
   const movePanel = el("div", { class: "move-panel", hidden: true });
   // 「初出へ」: ビューアでそのファイルを開き、最初の出現までスクロールする
@@ -563,23 +657,46 @@ function render(entry) {
     });
   }
 
-  parts.push(el("div", { class: "toolbar entry-actions" }, [
-    el("button", { type: "button", text: "編集", onclick: () => edit(entry) }),
+  // **外に出すのは戻せる操作だけ。** 「まとめる」と「削除」は片方のエントリが
+  // 消える操作なのに、横一列に並べると編集と同じ重さに見えていた
+  // （→ CLAUDE.md「消える操作は ⋯ の中で、区切り線の下に置く」）。
+  // 「編集」だけ外なのは、このページでいちばん使う操作だから。
+  // **この行はタブの外に置く** —— 語についての操作なので、図を出している間だけ
+  // 編集できない、にはしない
+  const actions = el("div", { class: "toolbar entry-actions" }, [
     el("button", {
       type: "button",
-      text: "カテゴリを移動",
-      onclick: () => toggleMovePanel(entry, movePanel),
+      class: "primary",
+      "data-ref": "edit",
+      text: "編集",
+      onclick: () => edit(entry),
     }),
-    el("button", {
-      type: "button",
-      text: "まとめる",
-      title: "割れてしまった同じものを 1 つにする",
-      onclick: () => mergeWith(entry),
+    menuButton({
+      ref: "entryMenu",
+      title: "この用語のそのほかの操作",
+      items: [
+        {
+          label: "カテゴリを移動…",
+          onSelect: () => toggleMovePanel(entry, movePanel),
+        },
+        { separator: true },
+        {
+          label: "まとめる…",
+          title: "割れてしまった同じものを 1 つにする（片方が消えます）",
+          danger: true,
+          onSelect: () => mergeWith(entry),
+        },
+        {
+          label: "削除…",
+          danger: true,
+          ref: "remove",
+          onSelect: () => remove(entry),
+        },
+      ],
     }),
-    el("button", { type: "button", class: "danger", text: "削除", onclick: () => remove(entry) }),
+    el("span", { class: "spacer" }),
     el("a", { class: "btn", href: "/glossary", text: "一覧へ戻る" }),
-  ]));
-  parts.push(movePanel);
+  ]);
 
   const meta = el("p", { class: "entry-meta" });
   const bits = [
@@ -593,9 +710,38 @@ function render(entry) {
     if (i) meta.append(el("span", { class: "sep", text: "·" }));
     meta.append(node);
   });
-  parts.push(meta);
 
-  root.replaceChildren(...parts);
+  // **見出しは動かさない。** タブで変わるのは下の中身だけで、どの語を見ているかは
+  // 上に出たまま（語を固定して見方だけ変える、というのがタブにした理由そのもの）
+  const tabBody = el("div", { class: "entry-tab-body" });
+  const tabs = el("div", { class: "view-tabs", role: "tablist", "aria-label": "この語の見方" });
+  const available = entryTabs(entry);
+  // 地図タブは `map:` があるときだけなので、**消えたタブに居座らせない**
+  if (!available.some((t) => t.id === entryTab)) entryTab = "entry";
+  tabs.replaceChildren(...available.map((t) => el("button", {
+    type: "button",
+    role: "tab",
+    "data-tab": t.id,
+    "aria-selected": t.id === entryTab ? "true" : "false",
+    tabindex: t.id === entryTab ? "0" : "-1",
+    title: t.hint,
+    text: t.label,
+    onclick: () => {
+      if (entryTab === t.id) return;
+      entryTab = t.id;
+      render(entry);
+    },
+  })));
+  installTabKeys(tabs);
+
+  // **語についての操作はタブの外。** 編集・移動・まとめる・削除・保存先は
+  // 「どの見方をしているか」と関係ないので、図を出している間だけ触れない、
+  // にはしない（カテゴリ移動のパネルも操作の隣に出す）
+  root.replaceChildren(head, tabs, tabBody, actions, movePanel, meta);
+  paintTabBody(entry, tabBody, {
+    entry: parts,
+    relations: [relationsSection(entry)],
+  });
   document.title = `${entry.term} — GlossPop`;
 }
 
@@ -728,6 +874,9 @@ export async function mount(host, { path = "" } = {}) {
     (path || location.pathname).replace(/^\/glossary\/?/, "").replace(/\/$/, "")
   );
   current = null;
+  // **語が変わったら記事のタブへ戻す。** 別の語を開いたのに図が出ていると、
+  // どの語の図なのか画面から決まらない（覆いは何度でも開き直される）
+  entryTab = "entry";
   root.replaceChildren(el("p", { class: "empty", text: "読み込み中…" }));
 
   installGlossPopup();

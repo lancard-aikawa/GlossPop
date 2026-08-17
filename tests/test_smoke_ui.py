@@ -165,18 +165,95 @@ def open_other_source(page):
     """「その他の開き方」を開く。
 
     1 つだけのファイルと貼り付けは**ダイアログの中**にある（読み続けるための
-    入口＝フォルダ / URL とは別扱い）。開かずに `#paste` を触ると、隠れている
-    要素への操作としてタイムアウトする。
+    入口＝フォルダ / URL とは別扱い）。さらにその入口は**「読むもの」の ⋯ の中**
+    —— たまに使うものを毎回使うものと同じ行に常時並べると、いちばん使うパスの欄を
+    そのぶん狭める。開かずに `#paste` を触ると、隠れている要素への操作として
+    タイムアウトする。
     """
-    page.click("#otherSource")
+    click_menu_item(page, "sourceMenu", "その他の開き方")
     page.locator("dialog.sheet[open] #paste").wait_for(timeout=SETTLE_MS)
 
 
 def open_content_search(page):
-    """横断検索を開く。**既定では畳んである**（毎回は使わない）。"""
-    if not page.locator("#searchFold[open]").count():
-        page.click("#searchFold > summary")
+    """横断検索の入口。**上の「読むもの」バーにある**（畳んでいない）。
+
+    結果は左パネルにファイル一覧と入れ替えて出る —— どちらも「開く候補の一覧」
+    なので、同じ場所に出したほうが本文との往復が短い。
+    """
     page.locator("#contentQ").wait_for(state="visible", timeout=SETTLE_MS)
+
+
+def open_relations_tab(page):
+    """用語ページの「関係」タブを開く。
+
+    **関係の一覧と「この語の図」は同じものの別の見方**（並びと絵）なので、
+    辞書タブの下にぶら下げるのをやめてタブにした。既定は辞書タブ。
+    """
+    page.locator("[data-tab=relations]").wait_for(timeout=SETTLE_MS)
+    if not page.locator("[data-tab=relations][aria-selected=true]").count():
+        page.click("[data-tab=relations]")
+    page.locator(".rel-form-fold > summary").wait_for(state="visible", timeout=SETTLE_MS)
+
+
+def open_relation_form(page):
+    """用語ページの「＋ 関係を足す」を開く。**既定では畳んである**（入力 7 個）。
+
+    開閉は覚えるので、既に開いていれば押さない（押すと閉じる）。
+    """
+    open_relations_tab(page)
+    if not page.locator(".rel-form-fold[open]").count():
+        page.click(".rel-form-fold > summary")
+    page.locator("input[aria-label='関係の相手']").wait_for(state="visible", timeout=SETTLE_MS)
+
+
+def pick_time_rows(page, value: str):
+    """時系列で並べるものを選ぶ。**既定は語（年表）**なので、関係の並びを見る
+    テストは明示的に切り替える（既定を変えたときに黙って別のものを見ない）。
+    """
+    page.select_option("#timeRows", value)
+    page.wait_for_timeout(200)
+
+
+def pick_mode(page, mode: str, root: str = ""):
+    """相関図の見せ方を選ぶ。**`<select>` ではなくタブ**（→ CLAUDE.md の置き場所の表）。
+
+    掴むのは `data-mode`（文言ではない）。**タブは disabled にしない**約束なので、
+    出せない見せ方でも押せる —— 落ちたかどうかは注意書きで確かめること。
+
+    **地図だけはタブ列に居ない**（絵 1 枚ぶんの見方なので、辞書ぜんぶの見方の列とは
+    範囲が違う。→ `dict-tabs.js` の `OFF_TAB_MODES`）。⋯ から開くが、開いている
+    あいだは列の末尾に出る（`aria-selected` の待ち方は他と同じ）。
+    """
+    if mode == "map":
+        click_menu_item(page, "graphMenu", "地図")
+    else:
+        page.click(f"{root} [data-mode='{mode}']".strip())
+    page.wait_for_function(
+        "m => document.querySelector(`[data-mode='${m}']`)"
+        "?.getAttribute('aria-selected') === 'true'",
+        arg=mode,
+        timeout=SETTLE_MS,
+    )
+
+
+def current_mode(page) -> str:
+    """いま選ばれている見せ方（タブの `aria-selected`）。"""
+    return page.locator("[data-mode][aria-selected='true']").get_attribute("data-mode")
+
+
+def open_menu(page, ref: str):
+    """⋯ メニューを開く。**たまに使う操作と消える操作はこの中**（`base.js`）。
+
+    開かずに中の項目を触ると、隠れている要素への操作としてタイムアウトする。
+    """
+    page.click(f"[data-ref='{ref}']")
+    page.locator(f"[data-ref='{ref}'] + .menu-pop:not([hidden])").wait_for(timeout=SETTLE_MS)
+
+
+def click_menu_item(page, ref: str, label: str):
+    """⋯ を開いて中の項目を押す（開く → 押す をまとめただけ）。"""
+    open_menu(page, ref)
+    page.click(f"[data-ref='{ref}'] + .menu-pop .menu-item:has-text('{label}')")
 
 
 def wait_for_glossary(page):
@@ -313,7 +390,7 @@ def test_an_existing_entry_can_be_rewritten_by_ai(page, server, seeded):
 def test_a_relation_can_be_added_and_shows_on_both_sides(page, server, seeded):
     """関係は片側にだけ書き、相手のページには逆引きで出る。"""
     page.goto(f"{server}/glossary/登場人物/ジョバンニ")
-    page.locator("input[aria-label='関係の相手']").wait_for(timeout=15000)
+    open_relation_form(page)
     page.fill("input[aria-label='関係の相手']", "カムパネルラ")
     page.fill("input[aria-label='関係']", "親友")
     page.fill("input[aria-label='逆からの関係']", "親友")
@@ -326,8 +403,11 @@ def test_a_relation_can_be_added_and_shows_on_both_sides(page, server, seeded):
 
     # 書いていない側にも見えること
     page.goto(f"{server}/glossary/登場人物/カムパネルラ")
+    open_relations_tab(page)
     page.locator("text=この語を指している側").wait_for(timeout=10000)
     assert "ジョバンニ" in page.locator(".rel-list").last.inner_text()
+    # **本数はタブに出す**（畳んだ先に何かあるのかは、開くまで分からない）
+    assert "1" in page.locator("[data-tab=relations]").inner_text()
 
 
 def test_one_term_can_ask_for_its_own_relations(page, server, seeded):
@@ -338,7 +418,7 @@ def test_one_term_can_ask_for_its_own_relations(page, server, seeded):
     AI は呼ばない（ここで見るのは、ボタンが正しい相手でダイアログを開くこと）。
     """
     page.goto(f"{server}/glossary/登場人物/ジョバンニ")
-    page.locator("button:has-text('この語の関係を下書き')").wait_for(timeout=15000)
+    open_relations_tab(page)
     page.click("button:has-text('この語の関係を下書き')")
 
     lead = page.locator("dialog.sheet[open] [data-ref=lead]")
@@ -485,7 +565,7 @@ def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
 
-    page.select_option("#mode", "fabric")
+    pick_mode(page, "fabric")
     page.locator("svg.rel-fabric").wait_for(timeout=10000)
     page.wait_for_timeout(200)
     # 用語は横線、関係は縦線。関係の本数だけ列がある
@@ -506,10 +586,10 @@ def test_the_graph_has_a_crossing_free_mode(page, server, seeded):
     # 選んだ見せ方は覚えている（覆いは何度でも開き直される）
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-fabric").wait_for(timeout=10000)
-    assert page.locator("#mode").input_value() == "fabric"
+    assert current_mode(page) == "fabric"
 
     # 戻せること。戻したら段の図（サーバへは行き直さない）
-    page.select_option("#mode", "layered")
+    pick_mode(page, "layered")
     page.locator("svg.rel-graph:not(.rel-fabric)").wait_for(timeout=10000)
 
 
@@ -565,9 +645,15 @@ def test_the_graph_has_a_map_mode(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    # **地図はタブ列に居ない。** 辞書ぜんぶの見方の列とは範囲が違う（あちらは辞書、
+    # こちらは絵 1 枚）。入口は ⋯ と用語ページの 🗺 と `?mode=map`
+    assert page.locator("[data-mode=map]").count() == 0
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.wait_for_timeout(200)
+    # **開いているあいだは列に出る。** 出さないと、選ばれたタブが 1 つも無い列に
+    # なって「どこに居るのか」も「どう戻るのか」も画面に出ない
+    assert current_mode(page) == "map"
 
     # 形を書いた 2 語だけが出る（ザネリは出ない）
     assert page.locator("svg.rel-map .rel-map-pin").count() == 2
@@ -619,7 +705,7 @@ def test_the_map_draws_points_lines_and_areas(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.wait_for_timeout(200)
 
@@ -667,7 +753,7 @@ def test_overlapping_shapes_get_their_own_colour(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.wait_for_timeout(200)
 
@@ -707,7 +793,7 @@ def test_a_shape_cannot_be_moved_off_the_picture(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.check("#mapLayers [data-ref=mapEdit] input")
     page.locator("svg.rel-map .rel-map-handle").first.wait_for(timeout=10000)
@@ -753,7 +839,7 @@ def test_the_keyboard_can_move_a_vertex_more_than_once(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.check("#mapLayers [data-ref=mapEdit] input")
     page.locator("svg.rel-map .rel-map-handle").first.wait_for(timeout=10000)
@@ -798,7 +884,7 @@ def test_the_map_can_hide_shapes_with_checkboxes(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     assert page.locator("svg.rel-map .rel-map-pin").count() == 2
 
@@ -843,7 +929,7 @@ def test_the_map_can_turn_the_names_off(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     assert page.locator("svg.rel-map .rel-map-plate").count() == 1
 
@@ -872,7 +958,7 @@ def _place_line(term: str, points: list[list[float]]) -> str:
 def _open_map(page, server):
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
 
 
@@ -960,11 +1046,14 @@ def test_the_kind_can_be_changed_and_undone(page, server, seeded):
 
 
 def test_the_entry_page_opens_the_map_at_that_word(page, server, seeded):
-    """用語ページ →「🗺 地図で見る」→ 地図が開き、**その語が光る**。
+    """用語ページの「🗺 地図」タブ → **そのページの中に**地図が出て、その語が光る。
 
     座標は用語のファイルに書くのに、**地図はそこから開けなかった**（置く動線も
-    相関図の覆いの中にしかなかった）。`?mode=map` で見せ方まで名指しするので、
-    **覚えている見せ方が段の図の人にも効く** —— 押しのけたことは注意書きに出す。
+    図の覆いの中にしかなかった）。いまはタブなので**語を固定したまま**見方だけが
+    変わる —— 見出しは動かず、「辞書」タブで戻れる（以前は飛んだ先から戻る道が
+    ブラウザの「戻る」しか無かった）。
+
+    **辞書ぜんぶの見方のタブはこの中に出さない**（この列と二重になる）。
     """
     _put_test_map()
     a = store.find_by_surface("ジョバンニ")[0]
@@ -974,17 +1063,26 @@ def test_the_entry_page_opens_the_map_at_that_word(page, server, seeded):
     ), ref=a.ref)
 
     page.goto(f"{server}/glossary/登場人物/ジョバンニ")
-    link = page.locator("[data-ref=mapLink]")
-    link.wait_for(timeout=15000)
-    link.click()
+    tab = page.locator("[data-tab=map]")
+    tab.wait_for(timeout=15000)
+    tab.click()
 
     page.locator("svg.rel-map").wait_for(timeout=15000)
+    # **見出しは動かない**（語を固定したまま見方だけ変える、がタブにした理由）
+    assert "ジョバンニ" in page.locator(".entry-head h1").inner_text()
+    # **辞書ぜんぶの見方のタブは出さない**（この語の見方の列と二重になる）
+    assert page.locator("#modeTabs").is_hidden()
     # **その語に目印が付く**（広い絵の隅にあると、開いても自分の語を見失う）
     lit = page.locator("svg.rel-map .rel-node.lit")
     lit.wait_for(timeout=10000)
     assert lit.get_attribute("data-ref") == a.ref
-    # 覚えている見せ方を押しのけたことは黙らない
-    assert "リンクの指定で地図" in (page.text_content("#notes") or "")
+    # 押しのけの断りは出さない（ここでは地図が出ているのが当たり前で、戻す先のタブも無い）
+    assert "リンクの指定で" not in (page.text_content("#notes") or "")
+
+    # 「辞書」タブで記事に戻れる（関係が 1 本も無い語でも通る道を見る）
+    page.click("[data-tab=entry]")
+    page.locator(".entry-actions").wait_for(timeout=SETTLE_MS)
+    assert page.locator("svg.rel-map").count() == 0
 
 
 def test_the_map_folds_names_that_would_overlap(page, server, seeded):
@@ -1003,7 +1101,7 @@ def test_the_map_folds_names_that_would_overlap(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
 
     # 板は 2 枚とも DOM にある（消していない）が、片方は畳まれている
@@ -1033,7 +1131,7 @@ def test_a_map_image_can_be_uploaded_and_deleted(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     # 絵が無いので段の図に落ちる。**それでもボタンは出ている**
     page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
     assert not page.locator("#mapEdit").is_hidden()
@@ -1085,7 +1183,7 @@ def test_a_shape_can_be_dragged_and_placed_on_the_map(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     # 閲覧中は掴めない（うっかり動かさない）
     assert page.locator("svg.rel-map .rel-map-handle").count() == 0
@@ -1131,7 +1229,7 @@ def test_the_map_can_show_term_images_instead_of_dots(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     # まだ画像が 1 枚も無いので、切り替えそのものを出さない
     assert page.locator("#mapLayers [data-ref=mapFaces]").count() == 0
@@ -1140,6 +1238,10 @@ def test_the_map_can_show_term_images_instead_of_dots(page, server, seeded):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(TINY_PNG)
     page.reload()
+    # **読み直すと地図には戻らない。** 地図は見せ方として覚えないので（その絵を
+    # 名指しして開くもの）、開き直す —— どの絵かのほうは覚えている
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.locator("#mapLayers [data-ref=mapFaces]").wait_for(timeout=10000)
     # 既定は丸のまま（勝手に絵にしない）
@@ -1188,7 +1290,7 @@ def test_the_map_can_be_rewound_to_a_point_in_time(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.wait_for_timeout(200)
 
@@ -1245,7 +1347,7 @@ def test_the_map_keeps_relations_without_a_time(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.locator("#mapTimeBar [data-ref=mapTime]").fill("0")
     page.wait_for_timeout(400)
@@ -1281,7 +1383,7 @@ def test_a_line_can_be_placed_by_clicking_in_turn(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.check("#mapLayers [data-ref=mapEdit] input")
     page.select_option("#mapLayers [data-ref=mapPlaceKind]", "line")
@@ -1333,7 +1435,7 @@ def test_placing_can_be_given_up(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-map").wait_for(timeout=10000)
     page.check("#mapLayers [data-ref=mapEdit] input")
     page.select_option("#mapLayers [data-ref=mapPlaceKind]", "area")
@@ -1359,10 +1461,10 @@ def test_the_map_mode_says_so_when_nothing_has_coordinates(page, server, seeded)
     """
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "map")
+    pick_mode(page, "map")
     page.locator("svg.rel-graph:not(.rel-map)").wait_for(timeout=10000)
     assert "地図に置ける語" in (page.text_content("#notes") or "")
-    assert page.locator("#mode").input_value() == "map"
+    assert current_mode(page) == "map"
 
 
 def test_the_graph_explains_what_you_point_at_in_a_fixed_box(page, server, seeded):
@@ -1397,7 +1499,7 @@ def test_the_graph_explains_what_you_point_at_in_a_fixed_box(page, server, seede
         " return document.getElementById('detail').textContent; }"
     )
     for mode in ["layered", "fabric", "matrix"]:
-        page.select_option("#mode", mode)
+        pick_mode(page, mode)
         page.wait_for_timeout(200)
         said = page.evaluate(over, "svg .rel-edge-group")
         assert "ジョバンニ" in said and "親友" in said and "相互" in said, f"{mode}: {said}"
@@ -1406,13 +1508,13 @@ def test_the_graph_explains_what_you_point_at_in_a_fixed_box(page, server, seede
         assert abs(detail.bounding_box()["height"] - empty_height) < 1, mode
 
     # **キーボードの焦点でも出る**（ブラウザの吹き出しはここが出ない）
-    page.select_option("#mode", "layered")
+    pick_mode(page, "layered")
     page.wait_for_timeout(200)
     page.locator("svg .rel-edge-group").first.focus()
     page.wait_for_timeout(150)
     assert "親友" in (detail.text_content() or "")
     # 焦点が外れたら案内文に戻る
-    page.locator("#mode").focus()
+    page.locator("#category").focus()
     page.wait_for_timeout(150)
     assert detail.text_content() == hint
 
@@ -1443,7 +1545,7 @@ def test_the_matrix_mode_shows_which_pairs_have_no_relation(page, server, seeded
     )
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "matrix")
+    pick_mode(page, "matrix")
     page.locator("svg.rel-matrix").wait_for(timeout=10000)
     page.wait_for_timeout(200)
 
@@ -1516,7 +1618,7 @@ def test_the_ego_mode_shows_two_steps_around_one_word(page, server, seeded):
     _neighbourhood()
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "ego")
+    pick_mode(page, "ego")
     page.locator("svg.rel-ego").wait_for(timeout=10000)
     page.wait_for_timeout(200)
 
@@ -1543,8 +1645,49 @@ def test_the_ego_mode_shows_two_steps_around_one_word(page, server, seeded):
     page.keyboard.press("Escape")
 
 
+def test_the_ego_mode_can_change_how_many_steps_it_shows(page, server, seeded):
+    """**何つ先までかは選べる**（既定は 2 つ先）。
+
+    1 つ先は「この語に直接書かれている関係だけ」、深いほうは「もう一歩広く」で、
+    どちらも既定では出せない。**深さを変えても約束は同じ** —— 出していない語は
+    数えて凡例に出し、深くすれば数が減る（黙って欠けた図にしない）。
+    """
+    _neighbourhood()
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    pick_mode(page, "ego")
+    page.locator("svg.rel-ego").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # 1 つ先だけ —— ザネリ（1 つ先）は出るが、その先の「遠い人」は出ない
+    page.select_option("#egoDepth", "1")
+    page.wait_for_function(
+        "() => !(document.querySelector('svg.rel-ego')?.textContent || '').includes('遠い人')",
+        timeout=10000,
+    )
+    drawn = page.locator("svg.rel-ego").text_content() or ""
+    assert "ザネリ" in drawn
+    # 出していないぶんは数える（遠い人・果ての人の 2 語）
+    assert "ほか 2 語" in (page.text_content("#legend") or "")
+
+    # 3 つ先まで —— 近所が広がり、出していない語は無くなる
+    page.select_option("#egoDepth", "3")
+    page.wait_for_function(
+        "() => (document.querySelector('svg.rel-ego')?.textContent || '').includes('果ての人')",
+        timeout=10000,
+    )
+    legend = page.text_content("#legend") or ""
+    assert "3 つ先まで" in legend, legend
+    assert "ほか" not in legend, legend
+
+    # **覚える**（覆いは何度でも開き直されるので、毎回選び直させない）
+    page.goto(f"{server}/graph?category=登場人物")
+    page.locator("svg.rel-ego").wait_for(timeout=15000)
+    assert page.input_value("#egoDepth") == "3"
+
+
 def test_the_ego_mode_takes_its_center_from_the_url(page, server, seeded):
-    """用語ページの「相関図で見る」は `?ref=` を付けてくる（その語が真ん中に来る）。"""
+    """`?ref=` で名指しされたら、その語が真ん中に来る（用語ページの「この語の図」）。"""
     _neighbourhood()
     zanelli = store.find_by_surface("ザネリ")[0]
     page.goto(f"{server}/graph?ref={zanelli.ref}")
@@ -1580,9 +1723,11 @@ def test_the_timeline_orders_relations_by_where_they_become_readable(page, serve
 
     page.goto(f"{server}/graph?doc=章.md")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "timeline")
+    pick_mode(page, "timeline")
+    # **既定は語（年表）なので先に切り替える。** 待つ先のクラスも変わる
+    # （語 = `rel-chronicle` / 関係 = `rel-timeline`）
+    pick_time_rows(page, "edge")            # ここで見るのは**関係**の並び
     page.locator("svg.rel-timeline").wait_for(timeout=10000)
-    page.wait_for_timeout(200)
 
     # 帯の見出しは上から順。両方が出そろう位置なので、ザネリ行きは後の帯へ
     assert page.evaluate(
@@ -1624,7 +1769,7 @@ def test_the_timeline_can_put_terms_on_the_axis(page, server, seeded):
 
     page.goto(f"{server}/graph")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "timeline")
+    pick_mode(page, "timeline")
     page.select_option("#timeAxis", "when")
     page.select_option("#timeRows", "node")
     page.locator("svg.rel-chronicle").wait_for(timeout=10000)
@@ -1665,6 +1810,87 @@ def test_the_timeline_can_put_terms_on_the_axis(page, server, seeded):
     assert page.locator("#timeRows").input_value() == "node"
 
 
+def test_the_chronicle_keeps_the_same_time_in_one_band(page, server, seeded):
+    """**同じ時刻のものは同着**（並べ替えが効いていないのではない）。
+
+    `samples/戦国時代` の「本能寺の変」と「伊賀越え」がまさにこれで、**どちらも
+    天正十年六月二日**（サンプルの本文がそれを実演として書いている）。同じ帯に
+    まとめ、その中は五十音順にしてある —— **決めた並びは画面に書く**。書かないと、
+    同着が「並べ替えが効いていない」と読まれる。
+
+    前後を出したいのは**時刻を細かく書く**側の仕事で、「〇〇の後」の項目は作らない
+    （`when` と二重になる。因果は関係の一言に書く）。
+
+    **既定が語（年表）**であることも、ここで一緒に見ている。
+    """
+    store.save(EntryDraft(term="本能寺の変", category="事件", summary="事件。",
+                          definition="事件。", when="1582-06-21 天正十年六月二日"))
+    store.save(EntryDraft(term="伊賀越え", category="事件", summary="逃避行。",
+                          definition="逃避行。", when="1582-06-21 天正十年六月二日"))
+
+    page.goto(f"{server}/graph")
+    page.locator("svg.rel-graph").wait_for(timeout=15000)
+    pick_mode(page, "timeline")
+    page.select_option("#timeAxis", "when")
+    # **既定は語（年表）** —— 選ばずに年表が出る
+    assert page.locator("#timeRows").input_value() == "node"
+    page.locator("svg.rel-chronicle").wait_for(timeout=10000)
+    page.wait_for_timeout(200)
+
+    # 帯は 1 つ（同じ時刻・同じ見出しなので割れない）
+    heads = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-chronicle .tl-head text')]"
+        ".map((t) => t.textContent)"
+    )
+    assert len(heads) == 1, heads
+    # 中は五十音順（い < ほ）。**入力順ではない**
+    rows = page.evaluate(
+        "() => [...document.querySelectorAll('svg.rel-chronicle .tl-nodes .rel-node text')]"
+        ".map((t) => t.textContent)"
+    )
+    assert rows == ["伊賀越え", "本能寺の変"], rows
+    # **決めた並びは画面に書く**（関係の並びの「主を先に」と同じ約束）
+    assert "五十音順" in page.locator("#notes").inner_text()
+
+
+def test_the_entry_page_hands_the_word_to_the_dictionary_figures(page, server, seeded):
+    """用語ページの図タブ →「辞書の図で見る →」→ **その語を名指ししたまま**辞書の図へ。
+
+    用語ページの図タブは**その語のもの**（中心の図と地図）だけにしてある ——
+    段の図・行列・年表は**辞書全体の見方**なので、同じ列に並べると「この語の図」と
+    言いながら辞書全体が出る。代わりにここから渡し、**渡った先で年表にすれば
+    その語の行が光る**（`spotlight()`。長い年表の中で自分の語を見失わない）。
+
+    **年表では周りを暗くしない** —— 前後が見えないと「その語がいつか」が読めない。
+    """
+    honnoji = store.save(EntryDraft(
+        term="本能寺の変", category="事件", summary="事件。", definition="事件。",
+        when="1582-06-21 天正十年六月二日",
+    ))
+    store.save(EntryDraft(term="山崎の戦い", category="事件", summary="合戦。",
+                          definition="合戦。", when="1582-07-02 天正十年六月十三日"))
+
+    page.goto(f"{server}/glossary/事件/本能寺の変")
+    page.click("[data-tab=ego]")
+    out = page.locator("[data-ref=toDictFigures]")
+    out.wait_for(timeout=SETTLE_MS)
+    out.click()
+
+    # 渡った先には**辞書の見方のタブ**がある（用語ページの中では隠してある列）
+    page.locator("#modeTabs [data-mode='timeline']").wait_for(timeout=SETTLE_MS)
+    pick_mode(page, "timeline")
+    page.select_option("#timeAxis", "when")
+    page.locator("svg.rel-chronicle").wait_for(timeout=SETTLE_MS)
+    page.wait_for_timeout(300)
+
+    # **その語の行が光る**
+    lit = page.locator("svg.rel-chronicle .rel-node.lit")
+    lit.wait_for(timeout=10000)
+    assert lit.get_attribute("data-ref") == honnoji.ref
+    # **周りは暗くしない**（地図と違い、前後が見えないと意味が無い）
+    assert "focusing" not in (page.get_attribute("svg.rel-chronicle", "class") or "")
+
+
 def test_the_timeline_needs_one_of_its_two_axes(page, server, seeded):
     """時系列は**軸が 2 つ**（読む順 / 作中の時刻）。どちらも無ければ出せない。
 
@@ -1682,7 +1908,7 @@ def test_the_timeline_needs_one_of_its_two_axes(page, server, seeded):
     notes = page.locator("#notes").inner_text()
     assert "読む順" in notes and "作中の時刻" in notes and "when" in notes
     # 覚えている選択は書き換えない（次に文書を開けば、また時系列で出す）
-    assert page.locator("#mode").input_value() == "timeline"
+    assert current_mode(page) == "timeline"
 
 
 def test_the_timeline_can_order_by_the_time_in_the_story(page, server, seeded):
@@ -1712,7 +1938,8 @@ def test_the_timeline_can_order_by_the_time_in_the_story(page, server, seeded):
 
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "timeline")
+    pick_mode(page, "timeline")
+    pick_time_rows(page, "edge")            # ここで見るのは**関係**の並び
     page.locator("svg.rel-timeline").wait_for(timeout=10000)
     page.select_option("#timeAxis", "when")
     page.wait_for_timeout(300)
@@ -1754,7 +1981,7 @@ def test_the_crossing_free_mode_sets_its_words_vertically(page, server, seeded):
     )
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
-    page.select_option("#mode", "fabric")
+    pick_mode(page, "fabric")
     page.locator("svg.rel-fabric .rel-edge-label").wait_for(timeout=10000)
 
     stacked = page.evaluate(
@@ -2002,8 +2229,32 @@ def test_the_viewer_comes_back_to_what_you_were_reading(page, server, seeded):
     assert page.locator("#docHead").is_hidden()
 
 
+def test_the_topbar_can_reach_the_figures_directly(page, server, seeded):
+    """**図への入口を topbar に残す。**
+
+    一覧と図は同じ場所（タブで並ぶ）だが、**タブからしか行けない形にしたら
+    入口を見失われた** —— 実際に「リンクが表示できない」と報告が来て戻した。
+    同じ場所であることは、着いた先にタブ列があることで示せば足りる。
+
+    HTML は 6 つあり**写しなので全部に要る**（1 つ落とすと、そのページからだけ
+    図へ行けない）。ここでは代表して 3 つと、行った先を見る。
+    """
+    for path in ["/", "/glossary", "/doctor"]:
+        page.goto(f"{server}{path}")
+        link = page.locator('.topnav a[href="/graph"]')
+        link.wait_for(timeout=SETTLE_MS)
+        assert link.inner_text().strip() == "図", path
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
+    page.click('.topnav a[href="/graph"]')
+    # 着いた先には**タブ列がある**（一覧へ 1 手で戻れる ＝ 同じ場所だと分かる）
+    page.locator(".overlay svg.rel-graph").wait_for(timeout=SETTLE_MS)
+    assert page.locator(".overlay #modeTabs [data-mode='list']").count() == 1
+
+
 def test_everything_opens_over_the_viewer_without_leaving_it(page, server, seeded):
-    """辞書・用語・相関図・点検は**ビューアの上に重ねる**。
+    """辞書・用語・図・点検は**ビューアの上に重ねる**。
 
     ページとして開き直すと、戻るたびに本文を取り直して描き直すことになる
     （実測 149 ms / 39,000 字。長編ではその数倍。→ docs/design-notes.md）。
@@ -2014,16 +2265,21 @@ def test_everything_opens_over_the_viewer_without_leaving_it(page, server, seede
     page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
     page.evaluate("() => { window.__alive = true; }")
 
-    for nav, ready in [
-        ('.topnav a:has-text("辞書")', ".overlay .card"),
-        # 索引は辞書のツールバーから（辞書の側から本文を見る入口）
-        ('.overlay a:has-text("索引")', ".overlay [data-ref=list] .rel-row"),
-        ('.topnav a:has-text("相関図")', ".overlay svg.rel-graph"),
-        ('.overlay a:has-text("点検")', ".overlay .entry-head h1"),
+    # **索引と点検は ⋯ の中**（たまに使うもの。→ CLAUDE.md の置き場所の表）。
+    # 重なっていることを見るテストなので、開き方が変わっても行き先は変わらない
+    for name, go, ready in [
+        ("辞書", lambda: page.click('.topnav a:has-text("辞書")'), ".overlay .card"),
+        ("索引", lambda: click_menu_item(page, "listMenu", "索引"),
+         ".overlay [data-ref=list] .rel-row"),
+        # 索引にはタブ列が無いので、いったん辞書へ戻ってから図のタブを押す
+        ("辞書へ戻る", lambda: page.click('.topnav a:has-text("辞書")'), ".overlay .card"),
+        # 一覧と図は同じ場所の別の見方なので、タブでも行ける
+        ("段の図", lambda: page.click(".overlay [data-mode='layered']"), ".overlay svg.rel-graph"),
+        ("点検", lambda: click_menu_item(page, "graphMenu", "点検"), ".overlay .entry-head h1"),
     ]:
-        page.click(nav)
+        go()
         page.locator(ready).first.wait_for(timeout=SETTLE_MS)
-        assert page.evaluate("() => window.__alive") is True, f"{nav} でページを離れている"
+        assert page.evaluate("() => window.__alive") is True, f"{name} でページを離れている"
 
     # 用語ページも重なる（吹き出しの「辞書ページを開く →」から）
     page.click("[data-ref=close]")
@@ -2115,7 +2371,8 @@ def test_two_entries_can_be_merged_from_the_entry_page(page, server, isolated_di
 
     page.goto(f"{server}/glossary/登場人物/主人")
     page.locator(".entry-actions").wait_for(timeout=SETTLE_MS)
-    page.click("button:has-text('まとめる')")
+    # **消える操作は ⋯ の中**（区切り線の下）。外に出ているのは「編集」だけ
+    click_menu_item(page, "entryMenu", "まとめる")
     # **候補は自動で挙げない。** 同じ表記のものだけ先に出し、あとは自分で探す
     # （「同じ人物かもしれない」を機械で判定すると、正常なカテゴリ違いの同名を
     #   大量に挙げて誰も読まなくなる）
@@ -2353,7 +2610,7 @@ def test_the_booklet_can_be_exported(page, server, seeded):
     ダウンロードが本当に落ちてくることまで見る。
     """
     open_glossary(page, server)
-    page.click("#booklet")
+    click_menu_item(page, "listMenu", "冊子")
     page.locator("#bookletDialog[open]").wait_for(timeout=10000)
 
     with page.expect_download(timeout=15000) as caught:
@@ -2459,10 +2716,17 @@ def test_content_search_opens_the_file_at_the_hit(page, server, isolated_dirs):
     page.locator("#searchResults .filelist button").first.wait_for(timeout=15000)
     assert "1 件" in page.locator("#searchResults").inner_text()
     assert "L.3" in page.locator("#searchResults").inner_text()
+    # **一覧と入れ替わる**（狭いパネルに並べると、結果を見ながら本文を開けない）
+    assert page.locator("#files").is_hidden()
 
     page.click("#searchResults .filelist button")
     page.locator("#doc .gloss-flash").wait_for(timeout=15000)
     assert "カムパネルラ" in page.locator("#doc .gloss-flash").inner_text()
+
+    # **入れ替えた以上、戻る道が要る**（検索欄は上のバーにあり、ここからは遠い）
+    page.click("#searchBack")
+    page.locator("#files button").first.wait_for(timeout=SETTLE_MS)
+    assert page.locator("#searchPanel").is_hidden()
 
 
 def test_content_search_says_when_nothing_matched(page, server, isolated_dirs):
@@ -2516,7 +2780,10 @@ def test_plain_text_has_no_table_of_contents(page, server, isolated_dirs):
 def test_the_glossary_filters_by_tag(page, server, isolated_dirs):
     """タグの絞り込みと、用語ページの `#タグ` からの遷移。
 
-    タグにマスターは無いので、選択肢は `/api/tags` の数え上げから作る。
+    タグにマスターは無いので、候補は `/api/tags` の数え上げから作る。
+    **`<select>` ではなく入力欄 + `<datalist>`** —— 実データで 34 語の辞書に
+    タグが 69 個（うち 58 個は 1 語だけ）あり、選択肢としては読めなかった。
+    `#` を付けて打つ人がいるので、そこも落として同じ結果になること。
     """
     store.save(EntryDraft(term="冪等", category="プログラミング",
                           summary="要約。", definition="本文。", tags=["設計原則"]))
@@ -2526,7 +2793,13 @@ def test_the_glossary_filters_by_tag(page, server, isolated_dirs):
     open_glossary(page, server)
     assert page.locator(".card").count() == 2
 
-    page.select_option("#tagFilter", "設計原則")
+    # 候補は件数つきで並ぶ（どれが効くのか分かるように）
+    page.locator("#tagOptions option[value='設計原則']").wait_for(
+        state="attached", timeout=SETTLE_MS
+    )
+    assert page.get_attribute("#tagOptions option[value='設計原則']", "label") == "1 語"
+
+    page.fill("#tagFilter", "#設計原則")
     page.wait_for_function("document.querySelectorAll('.card').length === 1", timeout=10000)
     assert "冪等" in page.locator("#list").inner_text()
 
@@ -2610,7 +2883,7 @@ def test_the_category_manager_separates_the_two_dictionaries(page, server, isola
     # そのまま描くだけで、あとから描き直さない。読み込みの前に開くと
     # 「カテゴリがまだありません」のまま固まり、15 秒待って落ちる
     open_glossary(page, server)
-    page.click("#manageCats")
+    click_menu_item(page, "listMenu", "カテゴリ管理")
     page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=SETTLE_MS)
     rows = page.locator("dialog.sheet[open] .cat-row-name").all_text_contents()
     # 同じ名前が 2 つ並ぶので、印が無いと区別が付かない
@@ -2654,7 +2927,7 @@ def test_the_category_manager_catches_up_with_a_slow_load(page, server, isolated
 
     try:
         page.goto(f"{server}/glossary")
-        page.click("#manageCats")                 # わざと読み込みを待たずに開く
+        click_menu_item(page, "listMenu", "カテゴリ管理")                 # わざと読み込みを待たずに開く
         page.locator("dialog.sheet[open]").wait_for(timeout=SETTLE_MS)
         assert "カテゴリがまだありません" in page.locator("dialog.sheet[open] .body").inner_text()
         gate.set()                                # ここで初めて応答を通す
@@ -2681,7 +2954,7 @@ def test_the_category_order_can_be_changed(page, server, isolated_dirs, tmp_path
     assert [c.name for c in categories.load("local")] == ["級友", "主要人物"]
 
     open_glossary(page, server)
-    page.click("#manageCats")
+    click_menu_item(page, "listMenu", "カテゴリ管理")
     page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=SETTLE_MS)
     page.click("dialog.sheet[open] button[aria-label='主要人物 を 1 つ上へ']")
 
@@ -3404,7 +3677,7 @@ def test_no_button_label_ever_wraps(page, server, seeded):
         _assert_no_wrapped_labels(page, f"一覧 ({width}px)")
 
         # カテゴリ管理は、ボタンが縮まないと名前の側が 1 文字ずつ縦に割れる
-        page.click("#manageCats")
+        click_menu_item(page, "listMenu", "カテゴリ管理")
         page.locator("dialog.sheet[open] .cat-row").first.wait_for(timeout=SETTLE_MS)
         _assert_no_wrapped_labels(page, f"カテゴリ管理 ({width}px)")
         page.keyboard.press("Escape")
@@ -3430,7 +3703,7 @@ def test_the_source_tabs_are_exclusive(page, server, seeded):
 
     `config.set_reading_url()` が立っていれば URL 側の辞書、そうでなければ
     フォルダの辞書、という不変条件をそのまま画面にしている。両方が同時に
-    見えていると、**下の AI 設定がどちらの辞書の話なのか読めない**。
+    見えていると、**いま効いている辞書がどちらなのか画面から読めない**。
     """
     page.goto(f"{server}/")
     page.locator("#files button").first.wait_for(timeout=SETTLE_MS)
@@ -3454,12 +3727,44 @@ def test_the_source_tabs_are_exclusive(page, server, seeded):
     assert page.locator("#sourcePanelFolder").is_visible()
 
 
-def test_the_face_can_be_replaced_from_the_sidebar(page, server, seeded):
-    """サイドバーの AI 設定から語り手の顔を差し替えて、吹き出しに出るまで。
+def test_the_source_bar_folds_and_stays_folded(page, server, seeded):
+    """**読むものの行は畳める。** 読む面積は縦がすべてなので、要らないときは畳む。
 
-    **設定ダイアログと同じ部品**（`ai-style.js`）なので、ここが動いていれば
-    両方が動いている。画面から書ける口を作った以上、**中身が画像でないものを
-    弾くところ**まで見ないと、`/api/persona` が配る先に何でも置ける。
+    **畳んでも空の帯にはしない** —— いま読んでいるものと、戻す道（⌄）は必ず残す。
+    どちらも消すと、この行が何のためにあるのかも、どうやって出すのかも画面から
+    分からなくなる。畳んだ状態は覚える（開くたびに畳み直させない）。
+    """
+    page.goto(f"{server}/")
+    page.locator("#files button").first.wait_for(timeout=SETTLE_MS)
+    tall = page.locator("#sourceBar").bounding_box()["height"]
+
+    page.click("#foldSource")
+    page.locator("#sourcePanelFolder").wait_for(state="hidden", timeout=SETTLE_MS)
+    short = page.locator("#sourceBar").bounding_box()["height"]
+    assert short < tall, f"畳んでも縦が縮んでいない ({tall} → {short})"
+    # いま読んでいるものと戻す道は残る
+    assert page.locator("#foldedLabel").is_visible()
+    assert page.locator("#foldSource").is_visible()
+
+    # 覚える（開き直しても畳んだまま）
+    page.goto(f"{server}/")
+    page.locator("#foldedLabel").wait_for(state="visible", timeout=SETTLE_MS)
+    assert page.locator("#sourcePanelFolder").is_hidden()
+
+    # 戻せる
+    page.click("#foldSource")
+    page.locator("#sourcePanelFolder").wait_for(state="visible", timeout=SETTLE_MS)
+    assert page.locator("#foldedLabel").is_hidden()
+
+
+def test_the_face_can_be_replaced_from_the_settings(page, server, seeded):
+    """⚙ の AI 設定から語り手の顔を差し替えて、保存されるまで。
+
+    **口は 1 か所**（`ai-style.js`）。ビューアのサイドバーにも同じ部品を出して
+    いたが、左は**ファイル一覧だけ**にしたので ⚙ に集約した（優先順の案内も
+    全体と 📁 が並んでいるこちら側にある）。画面から書ける口を作った以上、
+    **中身が画像でないものを弾くところ**まで見ないと、`/api/persona` が配る先に
+    何でも置ける。
     """
     png = bytes.fromhex(
         "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
@@ -3473,33 +3778,36 @@ def test_the_face_can_be_replaced_from_the_sidebar(page, server, seeded):
 
     page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
     page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
-    # サイドバーは 📁 だけを出す（全体の指定は ⚙ にある）
-    row = page.locator("#sideAi .persona-row").first
-    row.wait_for(timeout=SETTLE_MS)
-    assert "📁" in row.inner_text()
-    # **狭いのでパスは出さない**（全文は ⚙ 側。折り返した長いパスが枠の大半を食う）
-    assert str(config.content_dir()) not in page.locator("#sideAi").inner_text()
-    assert page.locator("#sideAi [data-sref=where]").is_hidden()
-    # 「何を読むか」と「どう書かせるか」は線で切る（見出しの色は薄い）
-    assert page.locator(".side .side-rule").count() == 1
+    # **ビューアの左にはもう無い**（左はファイル一覧だけ）
+    assert page.locator("#sideAi").count() == 0
 
-    def choose(path):
+    page.click("#settings")
+    page.click("dialog.sheet[open] [data-tab=ai]")
+    host = page.locator("dialog.sheet[open] [data-ref=styleHost]")
+    host.locator(".persona-row").first.wait_for(timeout=SETTLE_MS)
+    # ⚙ 側は**全体と 📁 の両方**を並べる（どちらが優先されるかが読めるように）
+    assert host.locator(".persona-row").count() == 2
+
+    def choose(scope):
         # ボタン → ファイル選択、という本物の経路で通す（隠した input へ直接
         # 入れると、どのスコープに入れるのかを決めている行が素通りする）
-        with page.expect_file_chooser() as chooser:
-            page.locator("#sideAi .persona-row button").first.click()
-        chooser.value.set_files(str(path))
+        def pick(path):
+            with page.expect_file_chooser() as chooser:
+                host.locator(".persona-row", has_text=scope).locator("button").first.click()
+            chooser.value.set_files(str(path))
+        return pick
 
-    # 画像でないものは弾かれ、顔は付かない。**結果は顔の側の行に出る**
-    # （文体の保存ボタンの隣に出すと、そちらを押した結果に見える）
-    face_status = page.locator("#sideAi [data-sref=faceStatus]")
-    choose(bad)
-    page.locator("#sideAi [data-sref=faceStatus].error").wait_for(timeout=SETTLE_MS)
+    # **📁（このフォルダ）に入れる。** 画像でないものは弾かれ、顔は付かない ——
+    # 結果は顔の側の行に出る（文体の保存ボタンの隣だと、そちらを押した結果に見える）
+    put = choose("📁")
+    face_status = host.locator("[data-sref=faceStatus]")
+    put(bad)
+    host.locator("[data-sref=faceStatus].error").wait_for(timeout=SETTLE_MS)
     assert "画像として読めません" in face_status.inner_text()
-    assert page.locator("#sideAi img.persona-face").count() == 0
+    assert host.locator("img.persona-face").count() == 0
 
-    choose(good)
-    page.locator("#sideAi img.persona-face").wait_for(timeout=SETTLE_MS)
+    put(good)
+    host.locator("img.persona-face").wait_for(timeout=SETTLE_MS)
     assert (config.content_dir() / ".glosspop" / "persona.png").is_file()
 
 
@@ -3586,6 +3894,9 @@ def test_the_graph_can_be_saved_as_an_image(page, server, seeded):
     **画面の SVG をそのまま出すと崩れる** —— 見た目は CSS のクラスと変数で
     決まっていて、外に出た SVG からはどちらも引けない。計算済みの値を焼き込んで
     いることを、**保存した中身**で確かめる（拡張子だけ見ても分からない）。
+
+    口は ⋯ の中で、**形式はメニューの項目そのもの**（ボタンの隣に形式の select を
+    並べると、折り返しで別の行に割れて何の形式なのか読めない）。
     """
     a = store.find_by_surface("ジョバンニ")[0]
     b = store.find_by_surface("カムパネルラ")[0]
@@ -3597,9 +3908,8 @@ def test_the_graph_can_be_saved_as_an_image(page, server, seeded):
     page.goto(f"{server}/graph?category=登場人物")
     page.locator("svg.rel-graph").wait_for(timeout=15000)
 
-    page.select_option("#saveKind", "svg")
     with page.expect_download(timeout=20000) as caught:
-        page.click("#saveImage")
+        click_menu_item(page, "graphMenu", "SVG で保存")
     download = caught.value
     assert download.suggested_filename.endswith(".svg")
     assert "登場人物" in download.suggested_filename
@@ -3615,9 +3925,8 @@ def test_the_graph_can_be_saved_as_an_image(page, server, seeded):
     assert "級友" in body
 
     # PNG も出せる（貼る用）
-    page.select_option("#saveKind", "png")
     with page.expect_download(timeout=20000) as caught:
-        page.click("#saveImage")
+        click_menu_item(page, "graphMenu", "PNG で保存")
     png = caught.value
     assert png.suggested_filename.endswith(".png")
     assert pathlib.Path(png.path()).read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
@@ -3637,9 +3946,8 @@ def test_saving_a_map_inlines_the_picture(page, server, seeded):
     ), ref=a.ref)
 
     _open_map(page, server)
-    page.select_option("#saveKind", "svg")
     with page.expect_download(timeout=20000) as caught:
-        page.click("#saveImage")
+        click_menu_item(page, "graphMenu", "SVG で保存")
     body = pathlib.Path(caught.value.path()).read_text(encoding="utf-8")
 
     assert "/api/map" not in body            # 外を指したままにしない

@@ -11,14 +11,18 @@
 // **入れ物は外から渡される**（`mount()`）。`/graph` を直接開いたときは
 // そのページの器に、ビューアの上に重ねるときは覆いの器に、同じものを描く。
 import {
-  api, describeNode, describeRelation, el, estTextWidth, paintEntryCount,
+  api, describeNode, describeRelation, el, estTextWidth, menuButton, paintEntryCount,
   RANK_OPTIONS, relationWords, setStatus, svgEl,
 } from "./base.js";
+import {
+  ALL_MODES, installTabKeys, MODE_KEY, MODE_WORDS, MODES,
+  paintDictTabs, rememberedMode, rememberMode,
+} from "./dict-tabs.js";
 import { levelsOf, seedOrder, splitLonely } from "./graph-model.js";
 import { buildFabric } from "./fabric.js";
 import { buildMatrix } from "./matrix.js";
 import { buildTimeline } from "./timeline.js";
-import { buildEgo } from "./ego.js";
+import { buildEgo, DEFAULT_DEPTH, DEPTHS, normalizeDepth } from "./ego.js";
 import { buildMap, fitToKind, KIND_WORDS } from "./map.js";
 import { saveGraph } from "./graph-export.js";
 import { readingNow } from "./reading.js";
@@ -27,44 +31,28 @@ import { encodePath } from "./editor.js";
 //: 画面の中身。**ここが唯一の出どころ**（HTML 側に写しを置かない。2 つに割ると、
 //: 片方だけ直したときに「ページでは出るのに重ねると出ない」になる）
 const TEMPLATE = `
-<div class="toolbar graph-toolbar">
-  <!-- **何を出している図なのかを必ず書く。** 書かないと、辞書全体の図を
-       「開いている文書の図」だと思われる（その取り違えが元で下書きを
-       ここから外した。→ docs/design-notes.md） -->
+<!-- **何を出している図なのかを必ず書く。** 書かないと、辞書全体の図を
+     「開いている文書の図」だと思われる（その取り違えが元で下書きを
+     ここから外した。→ docs/design-notes.md） -->
+<div class="graph-head">
   <span class="hint" id="scopeNote"></span>
   <a class="btn" id="scopeAll" href="/graph" hidden>辞書全体を出す</a>
-  <!-- **見せ方は足すもので、置き換えではない。** 同じ辞書を別の読み方で出すだけ
-       なので、段の図の約束（上下は段で表す・伏せた本数を返す）は両方で守る -->
-  <select id="mode" class="auto-width" aria-label="見せ方">
-    <option value="layered">段の図</option>
-    <option value="fabric">交差しない図</option>
-    <option value="matrix">行列</option>
-    <!-- 1 語を中心にした図。**規模に依らない**唯一の見せ方（→ ego.js） -->
-    <option value="ego">中心の図（1 語）</option>
-    <!-- 時系列は**軸が 2 つ**ある。読む順（その文書のどこで読めるようになるか。
-         文書を開いているときだけ）と、作中の時刻（語か関係に when を書いたとき）。
-         どちらも無ければ出せないので、そのときは段の図に落として注意書きを出す
-         （→ timeline.js） -->
-    <option value="timeline">時系列（読む順・作中の時刻）</option>
-    <!-- 地図。**座標を書いた語があるときだけ**出せる（分類ではなく、書いてある
-         ものだけが出る。→ map.js） -->
-    <option value="map">地図（座標のある語）</option>
-  </select>
-  <!-- 並べる軸（時系列のときだけ）。**どちらで並べているかは必ず画面に出す** ——
-       読む順（読者がいつ読めるか）と作中の時刻は別の時間で、一致しない -->
-  <select id="timeAxis" class="auto-width" aria-label="並べる軸" hidden></select>
-  <!-- 並べるもの（時系列のときだけ）。**関係と語は答える問いが違う** ——
-       関係は「誰と誰がいつ繋がるか」、語は「何がいつ起きたか」。置き換えではない -->
-  <select id="timeRows" class="auto-width" aria-label="並べるもの" hidden>
-    <option value="edge" title="1 行 1 関係。誰と誰がいつ繋がるか">関係を並べる</option>
-    <option value="node" title="1 行 1 語。何がいつ起きたか（相手は行のうしろに小さく出る）">語を並べる（年表）</option>
-  </select>
-  <!-- どの絵を出すか。**辞書に数枚ある**ので選べないと「ほかに 〇〇 があります」と
-       書いておきながら行けない。地図のとき、絵が 2 枚以上あるときだけ出す -->
-  <select id="mapPick" class="auto-width" aria-label="地図" hidden></select>
-  <!-- **落ちているときも出す。** 絵が 1 枚も無いと段の図に落ちるので、ここを
-       隠すと「最初の 1 枚を入れる」道が無くなる（鶏と卵になる） -->
-  <button type="button" class="btn" id="mapEdit" hidden title="地図の絵を入れる / 消す">🖼 絵</button>
+  <span class="spacer"></span>
+  <span class="status" id="status"></span>
+</div>
+<!-- **一覧も同じ列に並ぶ。** 辞書と図は「同じものの別の見方」なので、topbar で
+     場所を分けていたのをやめた（総称も要らなくなった —— 地図は「どこ」、年表は
+     「いつ」で、まとめて「相関図」と呼ぶには無理があった）。中身は
+     dict-tabs.js が作る（正はあちら。**ここに写しを置かないこと**）。
+     **ここにバッククォートを書かないこと** —— テンプレート文字列の中なので、
+     そこで文字列が切れて続きが式として読まれる（実際にここで踏んだ）。
+     **タブを disabled にしないこと** —— 出せるかは描いてみないと分からないし、
+     押せないタブには理由を書く場所が無い（→ CLAUDE.md の置き場所の表） -->
+<div class="view-tabs" role="tablist" id="modeTabs" aria-label="辞書の見方"></div>
+<div class="toolbar graph-toolbar">
+  <!-- ここから **どのタブでも効くもの**。行の先頭に固めておくこと ——
+       タブ専用のものと混ぜると、タブを変えるたびに並びがずれて
+       「いま何ができるか」が読めなくなる -->
   <select id="category" class="auto-width" aria-label="カテゴリ"></select>
   <label class="check">
     <input type="checkbox" id="spoilers">
@@ -78,21 +66,36 @@ const TEMPLATE = `
     <input type="checkbox" id="readSoFar">
     <span>ここまで読んだぶんだけ</span>
   </label>
-  <!-- **ここに「関係を下書き」を戻さないこと。** この図は辞書全体を出すのに、
-       下書きは開いているフォルダの本文を読む。並べると「図に出ている語について
-       探す」と読まれるが、実際に読むのはビューアで開いているものとも図とも
-       一致しない範囲だった（→ docs/design-notes.md） -->
-  <a class="btn" href="/doctor" title="辞書全体の壊れを点検する">🩺 点検</a>
-  <!-- 図を外へ出す口。**6 つの見せ方すべてで同じ**（どれも SVG を 1 枚返す）。
-       **PNG は貼るため、SVG は拡大と編集のため**なので、どちらか一方にしない。
-       保存するのは**いまの拡大率ではなく図の全体**（切れた図を保存しない） -->
-  <button type="button" class="btn" id="saveImage" title="この図を画像として保存する">⬇ 画像</button>
-  <select id="saveKind" class="auto-width" aria-label="画像の形式">
-    <option value="png">PNG（貼る用）</option>
-    <option value="svg">SVG（拡大できる）</option>
+  <!-- ここから **選んでいるタブ専用**。仕切りは出しているものがあるときだけ出す -->
+  <span class="bar-sep" id="tabToolsSep" hidden></span>
+  <!-- 並べる軸（時系列のときだけ）。**どちらで並べているかは必ず画面に出す** ——
+       読む順（読者がいつ読めるか）と作中の時刻は別の時間で、一致しない -->
+  <select id="timeAxis" class="auto-width" aria-label="並べる軸" hidden></select>
+  <!-- 並べるもの（時系列のときだけ）。**関係と語は答える問いが違う** ——
+       関係は「誰と誰がいつ繋がるか」、語は「何がいつ起きたか」。置き換えではない -->
+  <select id="timeRows" class="auto-width" aria-label="並べるもの" hidden>
+    <option value="node" title="1 行 1 語。何がいつ起きたか（相手は行のうしろに小さく出る）">語を並べる（年表）</option>
+    <option value="edge" title="1 行 1 関係。誰と誰がいつ繋がるか">関係を並べる</option>
   </select>
+  <!-- 何つ先まで（中心の図のときだけ）。**既定は 2 つ先**だが、「直接の関係だけ」も
+       「もう一歩広く」も要る。深くすると規模に依らないという取り柄は薄れるので、
+       出していない語の数は今までどおり凡例に出す -->
+  <select id="egoDepth" class="auto-width" aria-label="何つ先まで" hidden></select>
+  <!-- どの絵を出すか。**辞書に数枚ある**ので選べないと「ほかに 〇〇 があります」と
+       書いておきながら行けない。地図のとき、絵が 2 枚以上あるときだけ出す -->
+  <select id="mapPick" class="auto-width" aria-label="地図" hidden></select>
+  <!-- **落ちているときも出す。** 絵が 1 枚も無いと段の図に落ちるので、ここを
+       隠すと「最初の 1 枚を入れる」道が無くなる（鶏と卵になる） -->
+  <button type="button" class="btn" id="mapEdit" hidden title="地図の絵を入れる / 消す">🖼 絵</button>
   <span class="spacer"></span>
-  <span class="status" id="status"></span>
+  <!-- ⋯ の中身は mount() が menuButton() で作る（画像として保存 / 点検）。
+       **ここへ「⬇ 画像」と形式の select を戻さないこと** —— 折り返したときに
+       別々の行へ割れて、何の形式なのか読めなくなっていた（→ docs/ui-inventory.md）。
+       **ここに「関係を下書き」も戻さない。** この図は辞書全体を出すのに、下書きは
+       開いているフォルダの本文を読む。並べると「図に出ている語について探す」と
+       読まれるが、実際に読むのは図ともビューアとも一致しない範囲だった
+       （→ docs/design-notes.md） -->
+  <span id="graphMenu"></span>
 </div>
 <!-- 時点のスライダ（地図で、関係に作中の時刻が書いてあるときだけ）。
      **一覧とは別の入れ物にする** —— 一覧は描き直すたびに作り直すので、同じ所に
@@ -201,6 +204,7 @@ const TEMPLATE = `
 
 let canvas, notes, legend, statusNode, countNode, categorySelect, spoilerCheck, zoomBar;
 let mapPick, mapLayers, mapEdit, mapDialog, timeAxisPick, timeRowsPick, mapTimeBar;
+let egoDepthPick;
 //: いま出している時点の顔ぶれ（絵 + 時刻の並び）。**同じなら作り直さない** ——
 //: 掴んでいる最中にスライダが消えるとドラッグが切れる
 let mapTimeKey = "";
@@ -210,21 +214,19 @@ let readSoFarCheck, readSoFarBox;
 //: 「ここまで読んだぶんだけ」で伏せたことの断り書き（注意書きに出す）
 let readingNote = "";
 let detailNode;
-let modeSelect;
+//: 辞書の見方のタブ（一覧 ＋ 5 つの図。正は `dict-tabs.js`）と、
+//: そのタブ専用の操作を仕切る線
+let modeTabs, tabToolsSep;
+//: タブを出しているか。**用語ページの中では出さない**（あちらが自分の列を持つ）。
+//: 出していないときは「上のタブで戻せます」の断りも出さない —— 戻す先が無い
+let showTabs = true;
 
 //: 見せ方。layered = 段の図（既定） / fabric = 交差しない図 / matrix = 行列 /
 //: ego = 1 語を中心にした図 / timeline = 時系列（文書を開いているときだけ）/
-//: map = 地図（座標を書いた語があるときだけ）。
+//: map = 地図（**タブ列には無い**。⋯ か用語ページの 🗺 か `?mode=map` から）。
 //: **覚えておく** —— 覆いは何度でも開き直されるので、毎回選び直させない
-const MODE_KEY = "glosspop.graphMode";
-const MODES = ["layered", "fabric", "matrix", "ego", "timeline", "map"];
-
-//: 注意書きに出す短い名前。**`<option>` の文言をそのまま使わない** —— あちらは
-//: 選ぶための説明（「地図（座標のある語）」）で、文の中に入れると読めなくなる
-const MODE_WORDS = {
-  layered: "段の図", fabric: "交差しない図", matrix: "行列",
-  ego: "中心の図", timeline: "時系列", map: "地図",
-};
+//: （地図だけは覚えない。→ `dict-tabs.js` の `OFF_TAB_MODES`）。
+//: **正は `dict-tabs.js`**（一覧のタブと同じ列に並ぶので、あちらが持っている）
 let mode = "layered";
 
 //: 時系列の**並べる軸**。read = 読者がその文書のどこで読めるようになるか
@@ -242,8 +244,16 @@ let timeAxis = "read";
 //: 書き換えない**。押しのけたことは注意書きに出す ——「地図が無いので段の図」と同じ）
 let axisFellBack = "";
 //: 時系列で並べるもの（覚える）。**軸とは別の選択** —— 軸は「どの時間か」、
-//: こちらは「何を 1 行にするか」で、掛け合わせて 4 通りになる
-let timeRows = "edge";
+//: こちらは「何を 1 行にするか」で、掛け合わせて 4 通りになる。
+//: **既定は語（年表）。** 同じ事件が関係の本数だけ行に現れないぶん見通しがよく、
+//: 「何がいつ起きたか」という時系列にいちばん近い問いに先に答えられる
+//: （関係の並びは置き換えられていない —— タブの下の選択で切り替わる）
+let timeRows = "node";
+
+//: 中心の図で**何つ先まで**出すか。**覚える**（軸や見せ方と同じ約束で、覆いは
+//: 何度でも開き直される）。**読めない値は既定 (2) に落とす**のは `ego.js` の仕事
+const EGO_DEPTH_KEY = "glosspop.egoDepth";
+let egoDepth = DEFAULT_DEPTH;
 
 //: 2 つの ref をつないで組の鍵にするための区切り。カテゴリ名も slug も
 //: "<" ">" を弾いているので、ref の中身と衝突しない
@@ -1214,6 +1224,7 @@ function draw(graph) {
       onEdge: openEdgeEditor,
       center: egoCenter,
       onCenter: moveCenter,
+      depth: egoDepth,
       axis: drawnAxis,
       rows: timeRows,
       mapName,
@@ -1265,7 +1276,12 @@ function draw(graph) {
   contentBox = drawn.box;
   zoomBar.hidden = false;
   fitView();
+  // **名指しされた語に目印を付ける。** 地図だけでなく年表でも要る —— 用語ページの
+  // 「辞書の図で見る →」から渡ってくるので、**どこに自分の語があるか**が分からないと
+  // 渡った意味が無い（広い絵の隅、長い年表の途中、どちらも同じ困り方）。
+  // 段の図など置き場所を計算する図では、**乗せたときと同じ道具**が別に効くので足さない
   if (mode === "map") spotlight(namedRef);
+  else if (mode === "timeline") spotlight(namedRef, { dim: false });
   return {
     lonely: drawn.lonely,
     linked: nodes.length - drawn.lonely,
@@ -1273,6 +1289,8 @@ function draw(graph) {
     // 見せ方が「出していないもの」を数えていれば、そのまま凡例へ通す
     // （**ここで落とすと黙って欠けた図になる**。実際に一度落とした）
     note: drawn.note || "",
+    // 中心の図が実際に出した深さ（読めない値は既定に落ちているので、凡例はこれを見る）
+    depth: drawn.depth || 0,
     // 地図が「この絵に置ける語」を返していれば、そのままチェックの一覧へ通す
     // （**ここで落とすと一覧が空になり、外したものを戻せなくなる**。実際に落とした）
     items: drawn.items || [],
@@ -1547,26 +1565,19 @@ function selection() {
  * 保存するのは**図の全体**（`contentBox`）で、いまの拡大率ではない ——
  * 拡大は見るための操作であって図の範囲ではないので、切れた図を保存しない。
  */
-function installSaveImage(host) {
-  const button = host.querySelector("#saveImage");
-  const kind = host.querySelector("#saveKind");
-  button.addEventListener("click", async () => {
-    if (!svgRoot || !contentBox) {
-      setStatus(statusNode, "保存できる図がありません", "error");
-      return;
-    }
-    button.disabled = true;
-    setStatus(statusNode, "画像にしています", "busy");
-    try {
-      await saveGraph(svgRoot, contentBox, { kind: kind.value, name: imageName() });
-      setStatus(statusNode, "保存しました");
-    } catch (err) {
-      // **黙って諦めない。** 図は出ているのに保存だけできないことがある
-      setStatus(statusNode, err.message, "error");
-    } finally {
-      button.disabled = false;
-    }
-  });
+async function saveImage(kind) {
+  if (!svgRoot || !contentBox) {
+    setStatus(statusNode, "保存できる図がありません", "error");
+    return;
+  }
+  setStatus(statusNode, "画像にしています", "busy");
+  try {
+    await saveGraph(svgRoot, contentBox, { kind, name: imageName() });
+    setStatus(statusNode, "保存しました");
+  } catch (err) {
+    // **黙って諦めない。** 図は出ているのに保存だけできないことがある
+    setStatus(statusNode, err.message, "error");
+  }
 }
 
 /** 保存する名前。**何の図なのかを名前に残す**（あとで見分けられるように）。 */
@@ -1585,11 +1596,14 @@ function imageName() {
  * 使うのは**乗せたときと同じ道具**（`.focusing` と `.lit`）なので、畳んだ名前も
  * 一緒に出る。**次に何かへ乗せれば普通に消える**（貼り付いたままにしない）。
  */
-function spotlight(ref) {
+function spotlight(ref, { dim = true } = {}) {
   if (!ref || !svgRoot) return;
   const node = svgRoot.querySelector(`.rel-node[data-ref="${CSS.escape(ref)}"]`);
   if (!node) return;                  // その絵に置かれていない語（注意書きが出る）
-  svgRoot.classList.add("focusing");
+  // **年表では暗くしない。** 地図は「広い絵のどこにあるか」を探す話なので周りを
+  // 落として構わないが、年表で他の行を 0.12 にすると**前後関係そのものが読めなくなる**
+  // （その語がいつなのかは、前後が見えて初めて分かる）。目印を付けて見せるだけにする
+  if (dim) svgRoot.classList.add("focusing");
   node.classList.add("lit");
   bringIntoView(node);
 }
@@ -1632,20 +1646,30 @@ function paintNotes(graph) {
       + "残りはその行のうしろに小さく並べています。"
       + "カテゴリで絞ると、行に出る語をそのカテゴリだけにできます。"
     );
+    // **同じ時刻の中が何順かも書く**（関係の並びと同じ約束）。書かないと、
+    // 同じ日付を書いた 2 件が並んだときに「並べ替えが効いていない」と読まれる
+    // ——「本能寺の変」と「伊賀越え」に同じ日を書けば同着になるのが正しい
+    lines.push(
+      "同じ時刻のものは同じ帯にまとめ、その中は五十音順です"
+      + "（前後を決めたいときは、時刻をより細かく書いてください）。"
+    );
   }
-  if (centeredByUrl && mode === "ego") {
+  // **タブを出していないときは、押しのけの断りを出さない。** 用語ページの中では
+  // その語の図が出ているのが当たり前で、戻す先のタブもここには無い
+  // （「覚えているほうは変えていません」だけが浮く）
+  if (centeredByUrl && mode === "ego" && showTabs) {
     // 覚えている見せ方を押しのけたことは書く（次にふつうに開けば元に戻る）
     lines.push(
       "語が名指しされているので、中心の図で開いています"
-      + "（見せ方は上で戻せます。覚えているほうは変えていません）。"
+      + "（上のタブで戻せます。覚えているほうは変えていません）。"
     );
   }
   if (readingNote) lines.push(readingNote);
-  if (modeFromUrl && mode === modeFromUrl) {
+  if (modeFromUrl && mode === modeFromUrl && showTabs) {
     // URL が見せ方まで名指ししてきたとき。**同じ約束**（黙って押しのけない）
     lines.push(
       `開いたリンクの指定で${MODE_WORDS[mode] || "この見せ方"}にしています`
-      + "（見せ方は上で戻せます。覚えているほうは変えていません）。"
+      + "（上のタブで戻せます。覚えているほうは変えていません）。"
     );
   }
   if (modeFellBack) {
@@ -1709,22 +1733,21 @@ function installDetail() {
   canvas.addEventListener("focusout", () => showDetail(""));
 }
 
+/** 覚えている深さ。**読めない値は既定 (2) に落とす**（`ego.js` が決める）。 */
+function rememberedDepth() {
+  try {
+    return normalizeDepth(localStorage.getItem(EGO_DEPTH_KEY));
+  } catch {
+    return DEFAULT_DEPTH;
+  }
+}
+
 /** 覚えている絵。**読めなくても困らない** —— いちばん多く点が乗るものに落ちる。 */
 function rememberedMap() {
   try {
     return localStorage.getItem(MAP_KEY) || "";
   } catch {
     return "";
-  }
-}
-
-/** 覚えている見せ方。読めない値なら段の図へ落ちる（起動できなくならないこと）。 */
-function rememberedMode() {
-  try {
-    const saved = localStorage.getItem(MODE_KEY);
-    return MODES.includes(saved) ? saved : "layered";
-  } catch {
-    return "layered";
   }
 }
 
@@ -1791,15 +1814,51 @@ let modeFromUrl = "";
 let namedRef = "";
 
 /**
- * いまの選択を `<select>` に映す。
+ * タブ専用の操作との仕切り。**出しているものがあるときだけ出す。**
+ *
+ * 出しっぱなしにすると、段の図のように専用の操作が 1 つも無いタブで行の末尾に
+ * 意味のない線が残る（「何かが隠れている」と読まれる）。
+ */
+function syncTabTools() {
+  const shown = [timeAxisPick, timeRowsPick, egoDepthPick, mapPick, mapEdit]
+    .some((n) => n && !n.hidden);
+  tabToolsSep.hidden = !shown;
+}
+
+/**
+ * 見せ方を選び直す（タブを押した / ⋯ から地図を開いた）。
+ *
+ * **タブに無いもの（地図）もここを通す** —— 描き直し・断り書きの片付け・
+ * 覚えるかどうかを 1 か所に集めておく（覚えない判断は `rememberMode()` の側）。
+ */
+function pickMode(value) {
+  if (!ALL_MODES.includes(value) || value === mode) return;
+  mode = value;
+  // 自分で選び直したなら、落とした / 押しのけたときの断り書きはもう要らない
+  modeFellBack = false;
+  mapFellBack = false;
+  centeredByUrl = false;
+  modeFromUrl = "";
+  rememberMode(mode);
+  syncModeOptions();
+  // 見せ方を変えるだけならサーバへ行き直さない（同じデータを描き替えるだけ）
+  if (lastGraph) paintGraph(lastGraph);
+}
+
+/**
+ * いまの選択をタブに映す。**一覧も同じ列に並ぶ**ので、正は `dict-tabs.js`。
  *
  * **ここでは落とさない。** 時系列が出せるかは軸で決まり、作中の時刻が
  * 書かれているかは**データを見ないと分からない** —— 実際に出せるかは `draw()`
  * が見て、駄目なら注意書きを出して段の図にする（地図とまったく同じ扱い）。
  * **覚えている選択は書き換えない**（一度出せなかっただけで設定が消えるのは驚く）。
+ *
+ * **タブを disabled にしないこと。** 押せない形にすると、なぜ押せないのかを
+ * 書く場所が無くなる（いまは押せて、注意書きで「文書を開くか時刻を書く」と言える）。
  */
 function syncModeOptions() {
-  modeSelect.value = mode;
+  // **絞り込みは一覧へ渡す。** 「文学の図」から一覧へ戻ったら「文学の一覧」が出る
+  paintDictTabs(modeTabs, { current: mode, onPick: pickMode, scope: selection() });
 }
 
 /**
@@ -1856,6 +1915,28 @@ function paintAxisOptions(graph) {
   );
   // 実際に描いた軸を映す（落ちたときは落ちた先が出る。覚えているほうは別）
   timeAxisPick.value = drawnAxis || timeAxis;
+}
+
+/**
+ * 何つ先までの選択肢（中心の図のときだけ出す）。
+ *
+ * **選択肢を disabled にしない。** 深いほうを選んで近所がそこまで無くても、
+ * 出していない語の数は今までどおり凡例に出る（タブを disabled にしないのと
+ * 同じ約束で、押せない選択肢には理由を書く場所が無い）。
+ */
+function paintDepthOptions() {
+  egoDepthPick.hidden = mode !== "ego";
+  if (egoDepthPick.hidden) return;
+  egoDepthPick.replaceChildren(
+    ...DEPTHS.map((n) => el("option", {
+      value: String(n),
+      text: `${n} つ先まで`,
+      title: n === 1
+        ? "この語に直接書かれている関係だけ"
+        : `中心から ${n} 本たどった先まで（遠いほど辞書全体に近づきます）`,
+    })),
+  );
+  egoDepthPick.value = String(egoDepth);
 }
 
 //: 直前に描いたグラフ。見せ方を変えるだけならサーバへ行き直さない
@@ -2117,9 +2198,9 @@ function rememberedNoLabels() {
 function rememberedRows() {
   try {
     const saved = localStorage.getItem(TIME_ROWS_KEY);
-    return TIME_ROWS.includes(saved) ? saved : "edge";
+    return TIME_ROWS.includes(saved) ? saved : "node";
   } catch {
-    return "edge";
+    return "node";
   }
 }
 
@@ -2557,9 +2638,15 @@ function paintGraph(graph) {
   graph = limited.graph;
   const drawn = draw(graph);
   paintAxisOptions(graph);
+  paintDepthOptions();
   paintMapOptions(graph);
   paintMapTime(drawn);
   paintMapLayers(drawn);
+  // **タブも描き直す。** 一覧へ戻るリンクにいまの絞り込みを載せるため —— `mount()`
+  // の 1 回だけだと、カテゴリの選択肢がまだ読めていないので素の `/glossary` になる
+  // （「文学の図」から一覧へ戻ったのに全部出る、という食い違いになっていた）
+  syncModeOptions();
+  syncTabTools();
   paintNotes(graph);
   setStatus(statusNode, `${graph.nodes.length} 語 / ${graph.edges.length} 本の関係`);
   const common =
@@ -2583,9 +2670,12 @@ function paintGraph(graph) {
       + "太い線はカテゴリの切れ目。上下の関係は行の並びで表しています（上にあるものが上位）。",
     // 規模に依らないのがこの見せ方の役目。何語の辞書から切り出した近所なのかは
     // `drawn.note` が出す（この図だけを見て「関係はこれで全部」と読ませない）
+    // **何つ先までかはタブの下で選べる**ので、環の説明も選んだ深さで言う
+    // （「外側が 2 つ先」と決め打つと、3 つ先を選んだ人には嘘になる）
     ego:
-      "真ん中の語から 2 つ先までを環に並べています。"
-      + "内側の環が 1 つ先、外側が 2 つ先。まわりの語を押すとそこが中心に移り、"
+      `真ん中の語から ${drawn.depth || egoDepth} つ先までを環に並べています`
+      + "（内側の環ほど近い相手です。何つ先までかはタブの下で選べます）。"
+      + "まわりの語を押すとそこが中心に移り、"
       + "真ん中の語を押すと辞書ページが開きます。"
       + "上下の関係は置き場所で表しています（上にあるものが上位、対等は左右）。",
     // 「いつ」が見えるのがこの見せ方の役目。位置は毎回その場で計算していて
@@ -2663,13 +2753,20 @@ async function refresh() {
  * **入れ物と URL は外から渡す** —— `location` を直接読むと、重ねたときに
  * 「いま覆いが出しているもの」と食い違う。
  */
-export async function mount(host, { search = "", embed = false } = {}) {
+export async function mount(host, { search = "", embed = false, tabs = true } = {}) {
   host.innerHTML = TEMPLATE;
   canvas = host.querySelector("#canvas");
   zoomBar = host.querySelector("#zoom");
-  modeSelect = host.querySelector("#mode");
+  modeTabs = host.querySelector("#modeTabs");
+  tabToolsSep = host.querySelector("#tabToolsSep");
+  // **用語ページの中では出さない。** あちらは「その語の見方」のタブ列を自分で
+  // 持っているので、辞書ぜんぶの見方をもう 1 列出すとタブが二重になる
+  showTabs = tabs;
+  modeTabs.hidden = !tabs;
+  installTabKeys(modeTabs);
   timeAxisPick = host.querySelector("#timeAxis");
   timeRowsPick = host.querySelector("#timeRows");
+  egoDepthPick = host.querySelector("#egoDepth");
   mapPick = host.querySelector("#mapPick");
   mapLayers = host.querySelector("#mapLayers");
   mapTimeBar = host.querySelector("#mapTimeBar");
@@ -2689,7 +2786,30 @@ export async function mount(host, { search = "", embed = false } = {}) {
     // 絞るだけならサーバへ行き直さない（同じデータを描き替えるだけ）
     if (lastGraph) paintGraph(lastGraph);
   });
-  installSaveImage(host);
+  // **書き出しは ⋯ の中で、形式もその中で選ばせる**（→ CLAUDE.md の置き場所の表）。
+  // 「⬇ 画像」と形式の select を横に並べていたときは、折り返しで別々の行に割れて
+  // 何の形式なのか読めなかった。**PNG は貼るため、SVG は拡大と編集のため**なので、
+  // どちらか一方にしないこと。保存するのは**いまの拡大率ではなく図の全体**
+  // **地図はここから開く**（タブ列には無い —— あちらは「辞書ぜんぶの見方」の列で、
+  // 地図は絵 1 枚ぶんの見方。→ `dict-tabs.js` の `OFF_TAB_MODES`）。
+  // **タブから外しても入口は残すこと** —— 絵が 1 枚も無い辞書では用語ページの 🗺 も
+  // 出ないので、ここを消すと**最初の 1 枚を入れる道が無くなる**（鶏と卵。
+  // 絵が無ければ段の図に落ちるが、そのときも 🖼 絵 は出る）
+  host.querySelector("#graphMenu").replaceWith(menuButton({
+    ref: "graphMenu",
+    title: "そのほかの操作",
+    items: [
+      {
+        label: "🗺 地図",
+        title: "座標を書いた語を絵の上に置く（絵 1 枚ぶんの見方）",
+        onSelect: () => pickMode("map"),
+      },
+      { separator: true },
+      { label: "⬇ PNG で保存", title: "貼る用", onSelect: () => saveImage("png") },
+      { label: "⬇ SVG で保存", title: "拡大できる・あとから編集できる", onSelect: () => saveImage("svg") },
+      { label: "🩺 点検", href: "/doctor", title: "辞書全体の壊れを点検する" },
+    ],
+  }));
   edgeDialog = host.querySelector("#edgeDialog");
   countNode = document.getElementById("count");   // topbar は覆いの外
   params = new URLSearchParams(search);
@@ -2720,12 +2840,14 @@ export async function mount(host, { search = "", embed = false } = {}) {
   // **URL が見せ方を名指ししていればそれが最優先。** 用語ページの「🗺 地図で見る」は
   // 語と見せ方の両方を指しているので、`?ref=` の「中心の図で開く」に負けさせない
   const wanted = params.get("mode") || "";
-  modeFromUrl = MODES.includes(wanted) && wanted !== mode ? wanted : "";
+  // **タブに無い見せ方（地図）でも断りは出す。** 覚えているほうを押しのけたことと
+  // 戻り道は、どちらの見せ方でも同じだけ要る（列には開いている間だけ出ている）
+  modeFromUrl = ALL_MODES.includes(wanted) && wanted !== mode ? wanted : "";
   // **語を名指しで開かれたら中心の図で出す。** そうしないと、覚えている見せ方が
   // 段の図の人には「この語を中心に」を押しても何も起きない。**覚えているほうは
   // 書き換えない**（この 1 回だけの上書き）ので、次にふつうに開けば元に戻る
-  centeredByUrl = Boolean(egoCenter) && mode !== "ego" && !MODES.includes(wanted);
-  if (MODES.includes(wanted)) mode = wanted;
+  centeredByUrl = Boolean(egoCenter) && mode !== "ego" && !ALL_MODES.includes(wanted);
+  if (ALL_MODES.includes(wanted)) mode = wanted;
   else if (egoCenter) mode = "ego";
   syncModeOptions();
   // 絵も URL から指せる（用語ページはその語が置かれている絵を知っている）。
@@ -2733,7 +2855,7 @@ export async function mount(host, { search = "", embed = false } = {}) {
   timeAxis = rememberedAxis();
   timeRows = rememberedRows();
   timeRowsPick.addEventListener("change", () => {
-    timeRows = TIME_ROWS.includes(timeRowsPick.value) ? timeRowsPick.value : "edge";
+    timeRows = TIME_ROWS.includes(timeRowsPick.value) ? timeRowsPick.value : "node";
     try {
       localStorage.setItem(TIME_ROWS_KEY, timeRows);
     } catch {
@@ -2754,6 +2876,19 @@ export async function mount(host, { search = "", embed = false } = {}) {
     // 軸を変えるだけならサーバへ行き直さない（同じデータを並べ替えるだけ）
     if (lastGraph) paintGraph(lastGraph);
   });
+  // 何つ先まで（中心の図）。**URL からも指せる** —— 用語ページから「直接の関係だけ」を
+  // 見せたいときに、覚えているほうを書き換えずに 1 回だけ上書きできる
+  egoDepth = params.has("depth") ? normalizeDepth(params.get("depth")) : rememberedDepth();
+  egoDepthPick.addEventListener("change", () => {
+    egoDepth = normalizeDepth(egoDepthPick.value);
+    try {
+      localStorage.setItem(EGO_DEPTH_KEY, String(egoDepth));
+    } catch {
+      /* 使えない環境でも、その画面では効く */
+    }
+    // 深さを変えるだけならサーバへ行き直さない（同じデータの描き替え）
+    if (lastGraph) paintGraph(lastGraph);
+  });
   mapName = params.get("map") || rememberedMap();
   mapHidden = rememberedHidden();
   mapNoLabels = rememberedNoLabels();
@@ -2768,21 +2903,8 @@ export async function mount(host, { search = "", embed = false } = {}) {
     // 絵を変えるだけならサーバへ行き直さない（同じデータを描き替えるだけ）
     if (lastGraph) paintGraph(lastGraph);
   });
-  modeSelect.addEventListener("change", () => {
-    mode = MODES.includes(modeSelect.value) ? modeSelect.value : "layered";
-    // 自分で選び直したなら、落とした / 押しのけたときの断り書きはもう要らない
-    modeFellBack = false;
-    mapFellBack = false;
-    centeredByUrl = false;
-    modeFromUrl = "";
-    try {
-      localStorage.setItem(MODE_KEY, mode);
-    } catch {
-      /* 使えない環境でも選べること自体は動く */
-    }
-    // 見せ方を変えるだけならサーバへ行き直さない（同じデータを描き替えるだけ）
-    if (lastGraph) paintGraph(lastGraph);
-  });
+  // タブは左右キーでも辿れるようにする（`role="tablist"` の作法）。
+  // **押した先で描き直すのは `pickMode()` 1 か所**（矢印とクリックで道を分けない）
   categorySelect.addEventListener("change", refresh);
   spoilerCheck.addEventListener("change", refresh);
   installViewControls();

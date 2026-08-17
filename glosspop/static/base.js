@@ -335,6 +335,132 @@ export function setStatus(node, message, kind = "") {
   node.className = `status${kind ? " " + kind : ""}`;
 }
 
+// ----------------------------------------------------------- ⋯ メニュー
+//
+// **たまに使う操作と、消える操作の置き場所。** 画面ごとに書かないこと ——
+// Esc で閉じる・外を押すと閉じる・矢印キーで辿る・覆いを開き直したときに片付ける、
+// のどれかが必ず抜ける（覆いは何度でも `mount()` を呼ぶ）。
+//
+// **消える操作は区切り線の下**（`{ separator: true }`）。外に残すのは戻せる操作だけ
+// で、混ぜると削除が編集と同じ重さに見える。
+
+//: 開いているメニューは 1 つだけ。2 つ目を開いたら前のものを閉じる
+let openMenu = null;
+
+/**
+ * ⋯ メニューを作って返す（ボタンとポップアップを包んだ 1 要素）。
+ *
+ * `items` の要素は次のいずれか:
+ *   - `{ label, onSelect, title?, danger?, disabled? }` — ボタン
+ *   - `{ label, href, title? }` — リンク（別ページへ行くもの）
+ *   - `{ separator: true }` — 区切り線（**この下に消える操作を置く**）
+ */
+export function menuButton({
+  label = "⋯",
+  title = "その他の操作",
+  ref = "",
+  items = [],
+} = {}) {
+  const pop = el("div", { class: "menu-pop", role: "menu", hidden: true });
+  const button = el("button", {
+    type: "button",
+    class: "ghost icon menu-open",
+    "aria-haspopup": "menu",
+    "aria-expanded": "false",
+    "aria-label": title,
+    title,
+    text: label,
+    "data-ref": ref || null,
+  });
+  const wrap = el("div", { class: "menu-wrap" }, [button, pop]);
+
+  const entries = [];
+  for (const item of items) {
+    if (!item) continue;
+    if (item.separator) {
+      pop.append(el("div", { class: "menu-sep", role: "separator" }));
+      continue;
+    }
+    const common = {
+      class: `menu-item${item.danger ? " danger" : ""}`,
+      role: "menuitem",
+      tabindex: "-1",
+      title: item.title || null,
+      text: item.label,
+      "data-ref": item.ref || null,
+    };
+    const node = item.href
+      ? el("a", { ...common, href: item.href })
+      : el("button", {
+          ...common,
+          type: "button",
+          disabled: item.disabled || null,
+          onclick: () => {
+            close({ focus: true });
+            item.onSelect?.();
+          },
+        });
+    if (item.href) node.addEventListener("click", () => close());
+    pop.append(node);
+    if (!item.disabled) entries.push(node);
+  }
+
+  function onDocPointer(ev) {
+    // 覆いを開き直すと入れ物ごと捨てられる。開いたまま消えた場合はここで片付ける
+    if (!wrap.isConnected) return close();
+    if (!wrap.contains(ev.target)) close();
+  }
+
+  function onDocKey(ev) {
+    if (ev.key === "Escape") {
+      ev.stopPropagation();
+      close({ focus: true });
+    } else if (ev.key === "Tab") {
+      close();
+    }
+  }
+
+  function step(delta) {
+    if (!entries.length) return;
+    const at = entries.indexOf(document.activeElement);
+    const next = at < 0 ? (delta > 0 ? 0 : entries.length - 1) : at + delta;
+    entries[(next + entries.length) % entries.length].focus();
+  }
+
+  function open() {
+    if (openMenu && openMenu !== close) openMenu();
+    openMenu = close;
+    pop.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    // **捕獲フェーズで拾う** —— 中のボタンが click を止めても閉じられるように
+    document.addEventListener("pointerdown", onDocPointer, true);
+    document.addEventListener("keydown", onDocKey, true);
+    entries[0]?.focus();
+  }
+
+  function close({ focus = false } = {}) {
+    if (pop.hidden) return;
+    pop.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    document.removeEventListener("pointerdown", onDocPointer, true);
+    document.removeEventListener("keydown", onDocKey, true);
+    if (openMenu === close) openMenu = null;
+    if (focus && button.isConnected) button.focus();
+  }
+
+  button.addEventListener("click", () => (pop.hidden ? open() : close({ focus: true })));
+  wrap.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (pop.hidden) open();
+      else step(ev.key === "ArrowDown" ? 1 : -1);
+    }
+  });
+
+  wrap.closeMenu = close;
+  return wrap;
+}
+
 export async function paintEntryCount(node) {
   if (!node) return;
   try {

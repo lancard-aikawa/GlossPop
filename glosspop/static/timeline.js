@@ -768,7 +768,11 @@ function buildTermRows(graph, { onEdge, axis: wanted = "read" } = {}) {
   // 語の箱と、その行に付く従
   rowNodes.forEach((node, i) => {
     const rowY = yOf[i];
-    const cell = svg("g", { class: "rel-node", "data-detail": describeNode(node) }, [
+    // **`data-ref` を落とさないこと。** 用語ページから「辞書の図で見る →」で
+    // 渡ってきたとき、その語の行を光らせる目印にしている（地図と同じ `spotlight()`）
+    const cell = svg("g", {
+      class: "rel-node", "data-ref": node.ref, "data-detail": describeNode(node),
+    }, [
       svg("a", { href: node.url }, [
         svg("rect", { x: x0, y: rowY - TERM_H / 2, width: termW, height: TERM_H, rx: 8 }),
         svg("text", {
