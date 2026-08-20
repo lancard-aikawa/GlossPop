@@ -3,7 +3,8 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 使い方・データ形式・自動リンクの規則は [MANUAL.md](MANUAL.md)、動かし方とビルドは
-[DEVELOP.md](DEVELOP.md) にある（[README.md](README.md) は入口だけ）。ここには
+[DEVELOP.md](DEVELOP.md)、解説動画の作りかたは [docs/video/README.md](docs/video/README.md)
+にある（[README.md](README.md) は入口だけ）。ここには
 **それらを読んでも分からないこと**（設計の前提、壊しやすい不変条件、開発時の落とし穴）
 だけを書く。
 
@@ -1999,3 +2000,4 @@ Playwright を動かして確かめる。
 | 使い方の説明を増やした | `MANUAL.md`（**README には移さない** —— README は入口だけに保つ。目次も一緒に直す） |
 | ビルド・リリースの手順 | `DEVELOP.md` |
 | バージョン | `pyproject.toml` と `glosspop/__init__.py` と `uv.lock` の**3 つとも**（前 2 つがタグと不一致だと release ワークフローが落ちる。lock は落ちないぶん気付けない）。MANUAL の版番号の例も見る（あそこに出るのは**次の版**）。**`CHANGELOG.md` にその版の節を書く** —— 無いとワークフローが落ちる |
+| 画面の構造（`data-ref` / クラス名 / 一覧の作り） | `docs/video/*/plan.json` のセレクタ（**解説動画の台本**。落ちても静かに撮れてしまう —— `gmp record <plan.json>` を通すと分かる）、`.claude/skills/ghostplay/SKILL.md` のセレクタ表 |

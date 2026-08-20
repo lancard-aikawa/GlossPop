@@ -1,0 +1,265 @@
+{
+  "version": 1,
+  "meta": {
+    "title": "GlossPop — 登録する語は「短いほど危ない」",
+    "lang": "ja",
+    "project": "GlossPop"
+  },
+  "app": {
+    "url": "http://127.0.0.1:8765/",
+    "ready": "#files button",
+    "start": "python docs/video/gloss-scope/serve.py",
+    "cwd": "../../..",
+    "start_timeout": 90
+  },
+  "video": {
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "leader": 3.0,
+    "trailer": 1.5
+  },
+  "voice": {
+    "engine": "voicevox",
+    "speaker": "ずんだもん",
+    "style": "ノーマル",
+    "url": "http://127.0.0.1:50021",
+    "speed": 1.05,
+    "pitch": 0.0,
+    "intonation": 1.0,
+    "volume": 1.0,
+    "pre": 0.1,
+    "post": 0.1,
+    "credit": "VOICEVOX:ずんだもん",
+    "dict": {
+      "語": {
+        "pronunciation": "ゴ",
+        "accent": 1
+      }
+    }
+  },
+  "scenes": [
+    {
+      "id": "intro",
+      "title": "GlossPop とは",
+      "beats": [
+        {
+          "say": "GlossPop は、文章を読みながら、知らない言葉をその場で辞書に登録できるビューアです。",
+          "hold": 3.0,
+          "actions": [
+            {
+              "type": "click",
+              "selector": "#files button"
+            },
+            {
+              "type": "wait_for",
+              "selector": "article h1"
+            }
+          ],
+          "audio": "voice/000_intro.wav"
+        },
+        {
+          "say": "登録した語は、以後この本文の中で自動的にリンクになります。今日は、その登録でつまずきやすい点をひとつ。",
+          "hold": 3.0,
+          "audio": "voice/001_intro.wav"
+        }
+      ]
+    },
+    {
+      "id": "fail",
+      "title": "よくある失敗 — 短い語を登録する",
+      "beats": [
+        {
+          "say": "さっそく登録してみます。本文から「リンク」という言葉を選びます。",
+          "hold": 2.2,
+          "actions": [
+            {
+              "type": "select_text",
+              "selector": "article",
+              "text": "リンク",
+              "occurrence": 0
+            }
+          ],
+          "audio": "voice/002_fail.wav"
+        },
+        {
+          "say": "選ぶと、すぐ下に「プラス 辞書に登録」が出ます。これを押します。",
+          "hold": 2.0,
+          "actions": [
+            {
+              "type": "click",
+              "selector": ".sel-add"
+            },
+            {
+              "type": "wait_for",
+              "selector": "dialog[open] [data-ref=\"term\"]"
+            }
+          ],
+          "audio": "voice/003_fail.wav"
+        },
+        {
+          "say": "用語はもう入っています。カテゴリと、吹き出しに出る要約を書きます。",
+          "hold": 1.6,
+          "actions": [
+            {
+              "type": "type",
+              "selector": "dialog[open] [data-ref=\"newCategory\"]",
+              "text": "UI",
+              "delay": 90
+            },
+            {
+              "type": "type",
+              "selector": "dialog[open] [data-ref=\"summary\"]",
+              "text": "本文の語を辞書ページへ繋ぐ仕掛け。",
+              "delay": 45
+            }
+          ],
+          "audio": "voice/004_fail.wav"
+        },
+        {
+          "say": "保存します。",
+          "hold": 2.0,
+          "actions": [
+            {
+              "type": "click",
+              "selector": "dialog[open] [data-ref=\"save\"]"
+            },
+            {
+              "type": "wait_for",
+              "selector": "a.gloss-link"
+            }
+          ],
+          "audio": "voice/005_fail.wav"
+        },
+        {
+          "say": "保存した瞬間、本文じゅうがリンクになりました。下のほうまで、ぜんぶで八か所です。",
+          "hold": 4.2,
+          "actions": [
+            {
+              "type": "highlight",
+              "selector": "a.gloss-link >> nth=7",
+              "duration": 2.6
+            }
+          ],
+          "audio": "voice/006_fail.wav"
+        }
+      ]
+    },
+    {
+      "id": "why",
+      "title": "なぜこうなるか",
+      "beats": [
+        {
+          "say": "原因は、日本語に語の区切りが無いことです。",
+          "hold": 2.6,
+          "audio": "voice/007_why.wav"
+        },
+        {
+          "say": "GlossPop は部分文字列で照合します。だから「自動リンク」も、",
+          "hold": 2.4,
+          "actions": [
+            {
+              "type": "highlight",
+              "selector": "a.gloss-link >> nth=4",
+              "duration": 1.8
+            }
+          ],
+          "audio": "voice/008_why.wav"
+        },
+        {
+          "say": "「リンクになります」も、全部「リンク」に当たってしまう。",
+          "hold": 2.6,
+          "actions": [
+            {
+              "type": "highlight",
+              "selector": "a.gloss-link >> nth=5",
+              "duration": 1.8
+            }
+          ],
+          "audio": "voice/009_why.wav"
+        },
+        {
+          "say": "短くて一般的な語ほど、こうなります。意味として正しくても、辞書の見出しには向きません。",
+          "hold": 3.8,
+          "audio": "voice/010_why.wav"
+        }
+      ]
+    },
+    {
+      "id": "good-game",
+      "title": "正解 — 語を長くする",
+      "beats": [
+        {
+          "say": "直しましょう。もう一度その語を選ぶと、今度は編集画面が開きます。",
+          "hold": 2.4,
+          "actions": [
+            {
+              "type": "select_text",
+              "selector": "article",
+              "text": "リンク",
+              "occurrence": 0
+            },
+            {
+              "type": "click",
+              "selector": ".sel-add"
+            },
+            {
+              "type": "wait_for",
+              "selector": "dialog[open] [data-ref=\"term\"]"
+            }
+          ],
+          "audio": "voice/011_good-game.wav"
+        },
+        {
+          "say": "用語名を「自動リンク」に直します。",
+          "hold": 1.8,
+          "actions": [
+            {
+              "type": "eval",
+              "expr": "document.querySelector('dialog[open] [data-ref=\"term\"]').value = ''"
+            },
+            {
+              "type": "type",
+              "selector": "dialog[open] [data-ref=\"term\"]",
+              "text": "自動リンク",
+              "delay": 110
+            }
+          ],
+          "audio": "voice/012_good-game.wav"
+        },
+        {
+          "say": "保存。",
+          "hold": 2.2,
+          "actions": [
+            {
+              "type": "click",
+              "selector": "dialog[open] [data-ref=\"save\"]"
+            },
+            {
+              "type": "wait_for",
+              "selector": "a.gloss-link"
+            }
+          ],
+          "audio": "voice/013_good-game.wav"
+        },
+        {
+          "say": "リンクは一か所だけになりました。狙ったところにだけ、辞書が付いています。",
+          "hold": 3.6,
+          "actions": [
+            {
+              "type": "highlight",
+              "selector": "a.gloss-link",
+              "duration": 3.0
+            }
+          ],
+          "audio": "voice/014_good-game.wav"
+        },
+        {
+          "say": "見るべきは語の意味ではなく、その文字列が本文のどこに当たるかです。迷ったら、長いほうを登録してください。",
+          "hold": 4.4,
+          "audio": "voice/015_good-game.wav"
+        }
+      ]
+    }
+  ]
+}
