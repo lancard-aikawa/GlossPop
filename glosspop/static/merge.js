@@ -148,6 +148,7 @@ async function showPlan(keep, dropCard) {
 
   parts.push(section("引き継ぐもの", el("ul", { class: "merge-union" }, [
     li("別名", plan.union.aliases),
+    li("当てない表記", plan.union.excludes),
     li("タグ", plan.union.tags),
     li("使用例", plan.union.examples.map((s) => s.slice(0, 40))),
   ].filter(Boolean))));

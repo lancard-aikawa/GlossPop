@@ -223,7 +223,7 @@ function currentCategory() {
  * **項目を足したらここにも足すこと。**
  */
 const KEPT_FIELDS = [
-  "first_file", "first_locator",
+  "first_file", "first_locator", "excludes",
   "relations", "map", "pin", "line", "area",
 ];
 let kept = {};

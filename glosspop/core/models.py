@@ -205,6 +205,22 @@ class EntryBase(BaseModel):
     term: str
     reading: str = ""
     aliases: list[str] = Field(default_factory=list)
+    #: **この表記では当てない**（"読み込み" "読み直す"）。`aliases` の裏返し。
+    #:
+    #: 日本語に語境界が無いので、動詞の連用形から来た用語（"読み" "控え"
+    #: "間引き"）は**複合語や活用の中に当たる** ——「読み込む」の中の「読み」に
+    #: リンクが付く。用語名を選び直しても解けない（"読み" はこの辞書の正しい
+    #: 用語名で、たまたま生産的な語幹でもある、というだけ）。
+    #:
+    #: **規則では解けないので語ごとに持つ。** 「送り仮名で終わる語の直後が
+    #: 漢字なら当てない」を実測したら、`samples/坊っちゃん` の *うらなり先生*
+    #: (7 件) と *野だ公* (3 件) という**正しいリンクを 11 本壊した**。
+    #: 続くかどうかは語の性質であって、書き方から導けない。
+    #:
+    #: 実体は `linker` が**木に長い枝として混ぜる**だけ。「同じ位置では長い
+    #: 表記が勝つ」に相乗りするので、新しい照合規則は増えていない。
+    #: **他のエントリの表記と衝突したらそちらが勝つ**（用語が除外に負けない）。
+    excludes: list[str] = Field(default_factory=list)
     category: str = UNCATEGORIZED
     subcategory: str = ""
     summary: str = ""
@@ -329,7 +345,7 @@ class EntryBase(BaseModel):
         data.pop("related", None)
         return data
 
-    @field_validator("aliases", "examples", "tags", mode="before")
+    @field_validator("aliases", "excludes", "examples", "tags", mode="before")
     @classmethod
     def _normalize_lists(cls, v: object) -> list[str]:
         if v is None:
@@ -443,6 +459,20 @@ class Entry(EntryBase):
     def surfaces(self) -> list[str]:
         """本文中でリンク対象にする表記のリスト。"""
         return _clean_list([self.term, *self.aliases])
+
+    @property
+    def exclusions(self) -> list[str]:
+        """**当てない**表記のリスト。`surfaces` の裏返し（→ `excludes`）。
+
+        自分の表記を含まないものは意味を持たない（どこにも当たらない枝が
+        増えるだけ）ので落とす。**黙って落とさず**、点検が拾えるように
+        判定はここ 1 か所に置く。
+        """
+        own = self.surfaces
+        return [
+            v for v in _clean_list(self.excludes)
+            if any(s in v and s != v for s in own)
+        ]
 
     @property
     def path_label(self) -> str:

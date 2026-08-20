@@ -45,8 +45,12 @@ CONFLICT_FIELDS = (
     "when",
 )
 
-#: 統合しても機械で畳める項目（和集合を採る）
-UNION_FIELDS = ("aliases", "examples", "tags")
+#: 統合しても機械で畳める項目（和集合を採る）。
+#:
+#: **`excludes` も和集合。** 落とすと、消える側が持っていた「当てない表記」が
+#: 消えて、まとめた瞬間だけ複合語にリンクが復活する（`when` を足したときに
+#: `_default_relations()` で踏んだのと同じ形）。
+UNION_FIELDS = ("aliases", "excludes", "examples", "tags")
 
 
 class MergeError(Exception):
@@ -114,6 +118,7 @@ def plan(keep_ref: str, drop_ref: str) -> dict:
             # 用語名は「残す側を残し、消える側は別名に回す」で決まっているので
             # 選ばせない。選択制にすると、本文のリンクが片方だけ切れる形を作れる
             "aliases": _merged_aliases(keep, drop),
+            "excludes": _union(keep.excludes, drop.excludes),
             "examples": _union(keep.examples, drop.examples),
             "tags": _union(keep.tags, drop.tags),
         },
@@ -128,6 +133,7 @@ def _entry_view(entry: Entry) -> dict:
         "term": entry.term,
         "reading": entry.reading,
         "aliases": entry.aliases,
+        "excludes": entry.excludes,
         "summary": entry.summary,
         "definition": entry.definition,
         "examples": entry.examples,
@@ -262,6 +268,7 @@ def apply(
         **keep.model_dump(),
         **merged,
         "aliases": _merged_aliases(keep, drop),
+        "excludes": _union(keep.excludes, drop.excludes),
         "examples": _union(keep.examples, drop.examples),
         "tags": _union(keep.tags, drop.tags),
         "relations": chosen,

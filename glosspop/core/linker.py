@@ -298,6 +298,31 @@ class Linker:
                         self._groups.setdefault(variant.lower(), group)
                         variants.append(variant)
                     group.add(entry)
+
+        # 「当てない表記」(`excludes`) を**エントリの付かない群**として混ぜる。
+        #
+        # 木は「同じ位置では長い表記が勝つ」ので、`読み込み` を枝として持たせれば
+        # その位置では `読み` ではなくこちらが選ばれ、群にエントリが無いので
+        # `annotate()` も `_hits()` も**そのまま素通しする**（どちらも既に
+        # 「エントリの無い群は飛ばす」を通っている）。新しい照合規則は増えない。
+        #
+        # **表記の登録を全部終えてから回す。** 先に混ぜると、除外と同じ文字列を
+        # 用語や別名に持つエントリが現れたときに**その語がリンクにならない**
+        # （用語が除外に負ける）。あとから回せば `self._groups` に既にある鍵は
+        # 飛ばすので、実在する表記のほうが必ず勝つ。
+        for entry in entries:
+            for surface in entry.exclusions:
+                for variant in _variants(surface):
+                    if not variant:
+                        continue
+                    key = variant.casefold()
+                    if key in self._groups:
+                        continue
+                    blank = _Group(surface)
+                    self._groups[key] = blank
+                    self._groups.setdefault(variant.lower(), blank)
+                    variants.append(variant)
+
         # 最長一致優先: 同じ開始位置では長い表記が勝つ。
         # 木にまとめる側はその順序を枝の並びで持つ (`_branch`)
         variants.sort(key=len, reverse=True)
@@ -314,8 +339,18 @@ class Linker:
         語を「出てくる」と言う**ようになるので、同じ正規表現から出す。
         """
         if self._re is None or not text:
-            return iter(())
-        return self._re.finditer(text)
+            return
+        for m in self._re.finditer(text):
+            # 「当てない表記」で当たったぶんはここで落とす。**`annotate()` が
+            # リンクにしない位置を、こちらが「出てくる」と言ってはいけない**
+            # （`?ref=` の出現探し `app._entry_finder` はこの口を直に使う）。
+            group = self._group_for(m.group(0))
+            if group is not None and group.entries:
+                yield m
+
+    def _group_for(self, matched: str) -> "_Group | None":
+        """当たった文字列から群を引く。**引き方はここ 1 か所。**"""
+        return self._groups.get(matched.casefold()) or self._groups.get(matched.lower())
 
     def _hits(self, text: str):
         """``(文字位置, エントリ)`` を**出てくる順**に流す。
@@ -325,8 +360,7 @@ class Linker:
         書くと、リンクにならない語を「出てくる」と言うようになる。
         """
         for m in self.finditer(text):
-            matched = m.group(0)
-            group = self._groups.get(matched.casefold()) or self._groups.get(matched.lower())
+            group = self._group_for(m.group(0))
             if group is None:
                 continue
             for entry in group.entries:
@@ -414,8 +448,7 @@ class Linker:
                 cursor += length
 
             for m in self._re.finditer(flat):
-                matched = m.group(0)
-                group = self._groups.get(matched.casefold()) or self._groups.get(matched.lower())
+                group = self._group_for(m.group(0))
                 if group is None:
                     continue
                 entries = group.remaining(skip)

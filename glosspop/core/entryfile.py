@@ -31,6 +31,7 @@ FM_KEYS = (
     "term",
     "reading",
     "aliases",
+    "excludes",
     "subcategory",
     "summary",
     "examples",
