@@ -4010,3 +4010,35 @@ def test_the_read_so_far_box_is_hidden_on_the_plain_graph_page(page, server, see
     page.goto(f"{server}/graph")
     page.locator("svg.rel-graph, #canvas .empty").first.wait_for(timeout=15000)
     assert page.locator("#readSoFarBox").is_hidden()
+
+
+def test_the_dictionary_can_be_published_as_a_page_with_a_card(
+    page, server, seeded, tmp_path, monkeypatch
+):
+    """⋯ → 公開する で、ページとメタ画像が書き出せる。
+
+    **PNG を作れるのはブラウザだけ**（サーバに画像ライブラリが無い）なので、
+    ここが通らないと公開そのものが成立しない —— HTML も API も正しいのに
+    画像が出ない、という壊れ方は画面を開くまで分からない。
+    """
+    out = tmp_path / "pages"
+    monkeypatch.setenv("GLOSSPOP_PUBLISH_DIR", str(out))
+    monkeypatch.setenv("GLOSSPOP_PUBLISH_BASE_URL", "https://example.github.io/repo/")
+
+    page.goto(server)
+    page.wait_for_selector("[data-ref='sourceMenu']", timeout=SETTLE_MS)
+    click_menu_item(page, "sourceMenu", "公開する")
+
+    # 押す前にカードを見せる（見せた絵がそのまま PNG になる）
+    page.wait_for_selector("svg.gloss-card .chip, svg.gloss-card text", timeout=SETTLE_MS)
+    assert "書きます" in page.inner_text("[data-ref='plan']")
+
+    page.click("[data-ref='go']")
+    page.wait_for_selector("[data-ref='result']:not([hidden])", timeout=SETTLE_MS)
+
+    folder = out / config.content_dir().name
+    card_file = folder / "card.png"
+    assert card_file.exists() and card_file.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    written = (folder / "index.html").read_text(encoding="utf-8")
+    assert 'twitter:card" content="summary_large_image"' in written
+    assert "og:image" in written and "card.png?v=" in written

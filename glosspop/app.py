@@ -32,7 +32,7 @@ from . import (
     updates,
     watchdog,
 )
-from .core import render, relations, documents, timeline, doctor, imagefmt, booklet
+from .core import render, relations, documents, timeline, doctor, imagefmt, booklet, card
 from .core.linker import Linker, entry_url
 from .core.models import (
     GLOBAL_SCOPE,
@@ -2056,12 +2056,27 @@ def _publish_name(name: str = "") -> str:
 
 @app.get("/api/publish")
 def get_publish(name: str = "") -> dict:
-    """公開の状態と下見。**押す前に、どこへ何が書かれるかを出す。**"""
+    """公開の状態と下見。**押す前に、どこへ何が書かれるかを出す。**
+
+    カードの中身も一緒に返す —— **絵にするのはブラウザ**（SVG → PNG の道は
+    `graph-export.js` にしかない）なので、描く材料をここで渡しておく。
+    別の口にすると、下見とカードで違う辞書を見ることになりうる。
+    """
     root = config.publish_dir()
+    made = card.build(store.load_all(), name=_publish_name(name))
     state = {
         "root": str(root or ""),
         "base_url": config.publish_base_url(),
         "name": _publish_name(name),
+        "card": {
+            "name": made.name,
+            "title": made.title,
+            "note": made.note,
+            "kind": made.kind,
+            "terms": list(made.terms),
+            "total": made.total,
+            "links": made.links,
+        },
         # 環境変数が勝つので、その場合は設定を書いても効かない（⚙ と同じ約束）
         "env_locked": bool(
             os.environ.get("GLOSSPOP_PUBLISH_DIR")

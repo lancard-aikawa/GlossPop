@@ -18,6 +18,7 @@ import { installOverlay, open } from "./overlay.js";
 import { openRelationsDialog } from "./relations-draft.js";
 import { installSelectionAdd } from "./select-add.js";
 import { available as speechAvailable, createReader } from "./speech.js";
+import { openPublishDialog } from "./publish.js";
 
 const $ = (id) => document.getElementById(id);
 const doc = $("doc");
@@ -385,6 +386,14 @@ $("sourceMenu").replaceWith(menuButton({
       ref: "otherSource",
       title: "1 つだけのファイル、貼り付けたテキスト",
       onSelect: () => otherDialog.showModal(),
+    },
+    {
+      // **たまに使う操作なので行に足さない**（バーは 1 行に収める、の約束）。
+      // 押す前にカードと書き出し先を見せるので、形式だけの選択ではなくダイアログ
+      label: "🌐 公開する…",
+      ref: "publish",
+      title: "辞書を 1 枚のページとメタ画像にして書き出す",
+      onSelect: () => openPublishDialog(),
     },
   ],
 }));

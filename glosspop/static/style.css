@@ -1931,3 +1931,9 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
    背の高い図をスクロールし切らないと見えない）。右寄せにして、図そのものと
    読み違えないようにする */
 .entry-graph-out { justify-content: flex-end; margin: 8px 0 0; }
+
+/* 公開の下見に出すカード。**貼ったときに出る絵をそのまま見せる**ので、
+   幅だけ入れ物に合わせて縮める（比は 1200x630 のまま svg が保つ）。 */
+.publish-card { margin: 12px 0; border: 1px solid var(--line); border-radius: 10px;
+  overflow: hidden; background: var(--bg-soft, transparent); }
+.publish-card svg { display: block; width: 100%; height: auto; }

@@ -42,6 +42,8 @@ function build() {
                 aria-controls="gp-tab-general" id="gp-tab-general-btn">一般</button>
         <button type="button" role="tab" data-tab="ai" aria-selected="false"
                 aria-controls="gp-tab-ai" id="gp-tab-ai-btn">AI<span class="tab-mark" data-ref="aiMark" hidden>●</span></button>
+        <button type="button" role="tab" data-tab="publish" aria-selected="false"
+                aria-controls="gp-tab-publish" id="gp-tab-publish-btn">公開</button>
       </div>
       <div class="body" data-panel="general" id="gp-tab-general"
            role="tabpanel" aria-labelledby="gp-tab-general-btn">
@@ -256,6 +258,43 @@ function build() {
           <div data-ref="styleHost"></div>
         </section>
       </div>
+      <div class="body" data-panel="publish" id="gp-tab-publish"
+           role="tabpanel" aria-labelledby="gp-tab-publish-btn" hidden>
+        <section class="entry-section">
+          <h2>公開（GitHub Pages など）</h2>
+          <p class="hint">
+            辞書を<strong>1 枚のページ</strong>にして、指定したフォルダへ書き出します。
+            X などに貼ったときに出る<strong>メタ画像</strong>も一緒に作ります。
+            ここでの変更は<strong>その場で効きます</strong>（再起動は要りません）。
+            <strong>commit と push はしません</strong> —— 書くだけです。
+          </p>
+          <p class="notice" data-ref="pubLocked" hidden></p>
+          <div class="setting-row setting-row-plain">
+            <label class="field-inline" for="gp-pub-dir">書き出し先のフォルダ</label>
+            <input id="gp-pub-dir" type="text" data-ref="pubDir"
+                   placeholder="例: C:\\Repos\\mysite\\htmlize">
+          </div>
+          <div class="setting-row setting-row-plain">
+            <label class="field-inline" for="gp-pub-base">公開先の URL</label>
+            <input id="gp-pub-base" type="text" data-ref="pubBase"
+                   placeholder="https://ユーザ名.github.io/リポジトリ/">
+          </div>
+          <p class="hint">
+            <strong>URL を書かないと、貼ったときにカードの画像が出ません。</strong>
+            メタ画像の URL は絶対でないと無視されるためで、
+            <strong>ページ自体は正しく出る</strong>ぶん気づきにくいところです。
+          </p>
+          <div class="setting-row setting-row-plain">
+            <button type="button" data-ref="pubSave">公開の設定を保存</button>
+            <span class="status" data-ref="pubStatus"></span>
+          </div>
+        </section>
+        <section class="entry-section">
+          <h2>いま書き出される場所</h2>
+          <!-- **押す前にどこへ何が書かれるかを出す。** 取り込みの下見と同じ扱い -->
+          <p class="hint" data-ref="pubPlan">まだ決まっていません。</p>
+        </section>
+      </div>
       <footer>
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
@@ -383,6 +422,37 @@ function showTab(name) {
     panel.hidden = panel.dataset.panel !== name;
   }
   refs.save.hidden = name !== "general";
+}
+
+/**
+ * 公開の設定を描く。
+ *
+ * **下見をそのまま出す**（どこへ書かれるか・上書きになるか・カードが出ない理由）。
+ * 「入れ替わります」の一言だけで押させない、という取り込みと同じ扱い。
+ */
+function paintPublish(info) {
+  refs.pubDir.value = info.root || "";
+  refs.pubBase.value = info.base_url || "";
+  refs.pubLocked.hidden = !info.env_locked;
+  if (info.env_locked) {
+    refs.pubLocked.textContent =
+      "環境変数 GLOSSPOP_PUBLISH_DIR / GLOSSPOP_PUBLISH_BASE_URL が設定されているので、" +
+      "ここでの設定より優先されます。";
+  }
+  for (const node of [refs.pubDir, refs.pubBase, refs.pubSave]) node.disabled = info.env_locked;
+
+  const plan = info.plan;
+  if (!plan) {
+    refs.pubPlan.textContent =
+      "書き出し先のフォルダが決まっていないので、まだ公開できません。";
+    return;
+  }
+  const changed = plan.files.filter((f) => f.overwrite).map((f) => f.name);
+  const lines = [`${plan.dir} に ${plan.files.map((f) => f.name).join(" と ")} を書きます。`];
+  if (changed.length) lines.push(`${changed.join(" と ")} は上書きになります。`);
+  if (plan.url) lines.push(`公開後の URL: ${plan.url}`);
+  lines.push(...(plan.warnings || []));
+  refs.pubPlan.textContent = lines.join(" ");
 }
 
 /** 環境変数で固定されている項目は触らせない（書いても効かないため）。 */
@@ -862,6 +932,23 @@ export async function openSettingsDialog() {
   // ビューアを開いたまま設定を開けるので、`base.js` 側が見ている画面に伝える
   const onFirstOnly = () => setFirstOnly(refs.firstOnly.checked);
 
+  /** 公開の設定を保存する。**その場で効く**ので、保存したら下見を描き直す。 */
+  const onPubSave = async () => {
+    setStatus(refs.pubStatus, "保存中", "busy");
+    refs.pubSave.disabled = true;
+    try {
+      const res = await api("/api/publish/settings", {
+        method: "PUT",
+        body: { dir: refs.pubDir.value.trim(), base_url: refs.pubBase.value.trim() },
+      });
+      paintPublish(res);
+      setStatus(refs.pubStatus, "保存しました");
+    } catch (err) {
+      setStatus(refs.pubStatus, err.message, "error");
+    }
+    refs.pubSave.disabled = false;
+  };
+
   const onAISaveClick = () => onAISave();
   const onAIKeyClear = () => onAISave({ gemini_api_key: "" });
   const onAIModelFetch = () => loadAIModels(refs.aiProvider.value);
@@ -936,6 +1023,7 @@ export async function openSettingsDialog() {
   refs.tabs.addEventListener("click", onTab);
   refs.tabs.addEventListener("keydown", onTabKey);
   refs.aiSave.addEventListener("click", onAISaveClick);
+  refs.pubSave.addEventListener("click", onPubSave);
   refs.aiProvider.addEventListener("change", onAIProvider);
   refs.aiKeyClear.addEventListener("click", onAIKeyClear);
   refs.aiModelFetch.addEventListener("click", onAIModelFetch);
@@ -969,6 +1057,11 @@ export async function openSettingsDialog() {
       return loadAIModels(res.provider);
     })
     .catch((err) => setStatus(refs.aiStatus, err.message, "error"));
+
+  // 公開の設定も別に読む（同じ理由）。**下見まで一緒に返ってくる**
+  api("/api/publish")
+    .then(paintPublish)
+    .catch((err) => setStatus(refs.pubStatus, err.message, "error"));
 
   try {
     info = await api("/api/settings");
@@ -1007,6 +1100,7 @@ export async function openSettingsDialog() {
         refs.importFile.removeEventListener("change", onImportFile);
         refs.download.removeEventListener("click", onDownload);
         refs.updateCheck.removeEventListener("change", onUpdateToggle);
+        refs.pubSave.removeEventListener("click", onPubSave);
         refs.path.removeEventListener("input", onMode);
         refs.pick.removeEventListener("click", onPick);
         refs.save.removeEventListener("click", onSave);
