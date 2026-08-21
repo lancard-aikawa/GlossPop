@@ -322,6 +322,33 @@ def resolved_relations(entry: Entry, entries: list[Entry]) -> list[dict]:
     return out
 
 
+def link_counts(entries: list[Entry], *, spoilers: bool = False) -> dict[str, int]:
+    """ref ごとの**繋がっている本数**。1 本を両端に 1 ずつ数える。
+
+    **数える口をここ 1 つにしてある。** 見出し (`headline`) とカードの並び
+    (`card`) が同じ数を別々に出すと、「12 本と書いてある語がいちばん前に
+    出てこない」という、画面を見ても分からない食い違いになる。
+
+    数えるのは**解決できた関係だけ** —— 行き先の無い参照は点検の担当で、
+    ここで二重に出さない（`build_graph()` が `broken` へ回すのと同じ扱い）。
+
+    ``spoilers=False``（既定）では**判明位置つきの関係を数えない**。
+    `build_graph()` と既定を揃えてある —— カードや見出しは相関図より人目に
+    付くところへ出るので、**伏せる約束がここだけ緩むと意味が無い**。
+    """
+    counts: dict[str, int] = {e.ref: 0 for e in entries}
+    for entry in entries:
+        for rel in entry.relations:
+            if rel.reveal and not spoilers:
+                continue
+            found = resolve(rel.to, entries, origin=entry).entry
+            if found is None:
+                continue
+            counts[entry.ref] = counts.get(entry.ref, 0) + 1
+            counts[found.ref] = counts.get(found.ref, 0) + 1
+    return counts
+
+
 def backlinks(entry: Entry, entries: list[Entry]) -> list[dict]:
     """このエントリを指している側の関係。
 

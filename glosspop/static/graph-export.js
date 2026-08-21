@@ -150,13 +150,22 @@ function save(blob, name) {
  * できなかったときは黙って諦めず、呼ぶ側が理由を出せるように例外を投げる。
  */
 export async function saveGraph(svgRoot, box, { kind = "png", name = "相関図" } = {}) {
+  const blob = await figureBytes(svgRoot, box, { kind });
+  save(blob, `${name}.${kind === "svg" ? "svg" : "png"}`);
+}
+
+/**
+ * 図を**保存せずにバイト列で返す**（公開する経路が使う）。
+ *
+ * 手元に落とすのと**同じ道を通す** —— 見た目の焼き込みも地図の絵の畳み込みも
+ * ここ 1 か所にあるので、**公開した絵と手元に落とした絵が食い違わない**。
+ * 別に組み立てる形にすると、片方だけ素の黒い線になる（そして気付けない）。
+ */
+export async function figureBytes(svgRoot, box, { kind = "png" } = {}) {
   if (!svgRoot || !box) throw new Error("保存できる図がありません");
   const background = getComputedStyle(svgRoot.parentElement || document.body).backgroundColor;
   const opaque = background && background !== "rgba(0, 0, 0, 0)" ? background : "";
   const svgText = await buildSvg(svgRoot, box, opaque);
-  if (kind === "svg") {
-    save(new Blob([svgText], { type: "image/svg+xml;charset=utf-8" }), `${name}.svg`);
-    return;
-  }
-  save(await toPng(svgText, box), `${name}.png`);
+  if (kind === "svg") return new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+  return toPng(svgText, box);
 }

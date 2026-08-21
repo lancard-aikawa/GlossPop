@@ -55,7 +55,7 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen |
 `models` `htmlclean` `render` `linker` `relations` `documents` `timeline` `doctor`
 `entryfile`（エントリのファイル形式）`archivefmt`（zip の形と安全規則）
 `imagefmt`（画像の拡張子と見分け方と大きさ）`whenfmt`（作中の時刻の読み方）
-`booklet`（読ませる 1 枚の組み立て）の 13 個は
+`booklet`（読ませる 1 枚の組み立て）`headline`（辞書から見出しを機械で作る）`card`（渡す 1 枚に載せる中身）の 15 個は
 `glosspop/core/` にある。**入力から出力を作るだけ**で、辞書の置き場所 (`store`)・
 開いているフォルダ・設定ファイル (`config`) を一切知らない。
 
