@@ -336,6 +336,8 @@ class PublishRequest(BaseModel):
     name: str = ""
     #: `POST /api/publish/card` が返した印。URL の `?v=` に入る
     card_stamp: str = ""
+    #: 開いているフォルダの本文も書き出すか（辞書リンクと吹き出しが効く形で）
+    documents: bool = True
 
 
 class ImportRequest(BaseModel):
@@ -2049,9 +2051,68 @@ def export_booklet(fmt: str = "md", index: bool = False) -> Response:
 # ので受け取らない）、ページは JSON で受ける。
 
 
+#: 公開する本文の上限。**一覧 (`MAX_CONTENT_FILES`) より小さい** —— こちらは
+#: 1 文書ごとに描画・照合・辞書の組み立てをするので、桁が違う重さになる。
+#: 打ち切ったことは必ず返す（黙って欠けたサイトを出さない）
+MAX_PUBLISH_DOCS = 200
+
+#: 本文に差し込まれた表記を拾う。**`Linker` が実際に付けたものだけ**を見る
+#: （素の部分一致で探し直すと、リンクにならない語を辞書に入れることになる）
+_GLOSS_SURFACE = re.compile(r'data-gloss="([^"]*)"')
+
+
 def _publish_name(name: str = "") -> str:
     """公開するときの名前。**省かれたら開いているフォルダの名前。**"""
     return (name or "").strip() or config.content_dir().name
+
+
+def _publish_doc_count() -> int:
+    """公開できる本文の数。**数えるだけ**（読まないので下見でも安い）。"""
+    base = config.content_dir()
+    if not base.exists():
+        return 0
+    count = 0
+    for _ in _iter_content_files(base):
+        count += 1
+        if count >= MAX_PUBLISH_DOCS:
+            break
+    return count
+
+
+def _publish_pages() -> tuple[list[dict], bool]:
+    """開いているフォルダの本文を、公開できる形にして集める。
+
+    **辞書はページごとに、その本文に出てくる語だけ**を入れる（辞書ぜんぶを
+    全ページに埋めると、語数ぶんだけ重複する）。引くのは `lookup()` と同じ道で、
+    照合も `Linker` そのもの —— **リンクにならない語を辞書に入れない**。
+    """
+    base = config.content_dir()
+    if not base.exists():
+        return [], False
+    linker = _linker()
+    pages: list[dict] = []
+    truncated = False
+    for path in _iter_content_files(base):
+        if len(pages) >= MAX_PUBLISH_DOCS:
+            truncated = True
+            break
+        try:
+            doc = documents.read_cached(path)
+        except documents.DocumentError:
+            continue                      # 読めない 1 つで全体を止めない
+        html, _ = linker.annotate(
+            render.render_source(doc.text, filename=path.name)
+        )
+        pages.append({
+            "path": path.relative_to(base).as_posix(),
+            "title": render.html_title(html) or path.stem,
+            "html": html,
+            "lookup": {
+                surface: lookup(surface)
+                for surface in sorted(set(_GLOSS_SURFACE.findall(html)))
+            },
+        })
+    return pages, truncated
 
 
 @app.get("/api/publish")
@@ -2083,6 +2144,8 @@ def get_publish(name: str = "") -> dict:
             or os.environ.get("GLOSSPOP_PUBLISH_BASE_URL")
         ),
         "ready": root is not None,
+        # **何本の本文が書かれるかも先に出す。** 走るだけで読まないので安い
+        "documents": _publish_doc_count(),
     }
     if root is None:
         return {**state, "plan": None}
@@ -2148,13 +2211,31 @@ async def post_publish_card(request: Request, name: str = "") -> dict:
 
 @app.post("/api/publish")
 def post_publish(req: PublishRequest) -> dict:
-    """ページを書く。**画像は別の口**（先に `/api/publish/card` へ送る）。"""
+    """ページを書く。**画像は別の口**（先に `/api/publish/card` へ送る）。
+
+    ``documents`` が真なら、開いているフォルダの本文も**辞書リンクごと**書き出す
+    （受け取った人は GlossPop を持っていなくてよい）。**貼り付けや URL から読んで
+    いるときは読み直せない**ので、そこは呼ぶ側が決める。
+    """
+    pages: list[dict] = []
+    truncated = False
+    if req.documents:
+        pages, truncated = _publish_pages()
     try:
-        return publish.write_site(
-            store.load_all(), name=_publish_name(req.name), card_stamp=req.card_stamp
+        made = publish.write_site(
+            store.load_all(),
+            name=_publish_name(req.name),
+            card_stamp=req.card_stamp,
+            pages=pages,
         )
     except publish.PublishError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if truncated:
+        made["warnings"] = [
+            *made.get("warnings", []),
+            f"本文が多いので {publish.MAX_PUBLISH_DOCS} 件で打ち切りました",
+        ]
+    return {**made, "truncated": truncated}
 
 
 @app.get("/api/content/{rel:path}")

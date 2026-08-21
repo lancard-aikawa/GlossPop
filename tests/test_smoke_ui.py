@@ -4042,3 +4042,16 @@ def test_the_dictionary_can_be_published_as_a_page_with_a_card(
     written = (folder / "index.html").read_text(encoding="utf-8")
     assert 'twitter:card" content="summary_large_image"' in written
     assert "og:image" in written and "card.png?v=" in written
+
+    # 本文のページも書かれ、索引から辿れる
+    reader = folder / "docs" / "銀河.html"
+    assert reader.exists() and 'href="docs/銀河.html"' in written
+    body = reader.read_text(encoding="utf-8")
+    assert 'class="gloss-link"' in body and 'href="/glossary' not in body
+
+    # **サーバを止めても読める**のがこの形の値打ち。file:// で開いて確かめる
+    page.goto(reader.as_uri())
+    page.wait_for_selector("a.gloss-link", timeout=SETTLE_MS)
+    page.locator("a.gloss-link").first.hover()
+    page.wait_for_selector(".gloss-pop:not([hidden])", timeout=SETTLE_MS)
+    assert "活版所" in page.inner_text(".gloss-pop")

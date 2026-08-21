@@ -6,6 +6,10 @@
 """
 from __future__ import annotations
 
+import html as htmllib
+import json
+import re
+
 import pytest
 
 from glosspop import config, publish
@@ -235,3 +239,106 @@ def test_エスケープは二重にかからない(based):
     publish.write_site(entries, name="辞書", card_stamp="abc123")
     page = (based / "辞書" / "index.html").read_text(encoding="utf-8")
     assert "&amp;amp;" not in page
+
+
+# --- 本文のページ（サーバ無しで吹き出しが効く 1 枚）-----------------------
+
+def a_page(**kw) -> dict:
+    """呼ぶ側（app）が作る形。ここでは最小のものを手で組む。"""
+    page = {
+        "path": "章.md",
+        "title": "第一章",
+        "html": '<p><a class="gloss-link" href="/glossary/事件/変" data-gloss="変">変</a></p>',
+        "lookup": {"変": {"term": "変", "found": True, "count": 1, "entries": [{
+            "term": "変",
+            "path": r"C:\Users\me\secret\変.md",
+            "url": "/glossary/事件/変",
+            "persona_url": "/api/persona?scope=global",
+            "definition_html": '<a class="gloss-link" href="/glossary/x">中</a>',
+            "summary_html": "",
+            "examples_html": [],
+            "relations_resolved": [
+                {"to": "甲", "label": "続く"},
+                {"to": "乙", "label": "実は", "reveal": "第6章"},
+            ],
+            "backlinks": [{"url": "/glossary/y"}],
+        }]}},
+    }
+    page.update(kw)
+    return page
+
+
+def test_本文のページと共有の部品を書く(out):
+    got = publish.write_site([entry("あ")], name="辞書", pages=[a_page()])
+    root = out / "辞書"
+    assert (root / "assets" / "reader.css").exists()
+    assert (root / "assets" / "reader.js").exists()
+    assert (root / "docs" / "章.html").exists()
+    # 索引から辿れること（**行き先の無いリンクを作らない**、の裏返し）
+    index = (root / "index.html").read_text(encoding="utf-8")
+    assert 'href="docs/章.html"' in index and "第一章" in index
+    assert got["documents"][0]["terms"] == 1
+
+
+def test_本文が無ければ辞書の1枚だけ(out):
+    """貼り付けや URL から読んでいるときは本文を読み直せない。"""
+    got = publish.write_site([entry("あ")], name="辞書")
+    assert got["documents"] == []
+    assert not (out / "辞書" / "docs").exists()
+    assert "<section class=\"docs\">" not in (out / "辞書" / "index.html").read_text(encoding="utf-8")
+
+
+def test_辞書ページへのhrefは外す(out):
+    """**押せるのに飛び先が無い、が最悪。** Ctrl クリックは別タブで開いてしまう。"""
+    publish.write_site([entry("あ")], name="辞書", pages=[a_page()])
+    page = (out / "辞書" / "docs" / "章.html").read_text(encoding="utf-8")
+    assert 'href="/glossary' not in page
+    assert 'tabindex="0"' in page
+
+
+def embedded(page_text: str) -> dict:
+    """ページに埋まっている辞書を読み出す。**属性 → HTML 解除 → JSON。**"""
+    found = re.search(r'data-dict="([^"]*)"', page_text)
+    assert found, "辞書が埋まっていません"
+    return json.loads(htmllib.unescape(found.group(1)))
+
+
+def test_こちらの環境が漏れる項目を落とす(out):
+    """手元のフルパスとサーバの URL は、渡した相手には出ないどころか漏れるだけ。"""
+    publish.write_site([entry("あ")], name="辞書", pages=[a_page()])
+    text = (out / "辞書" / "docs" / "章.html").read_text(encoding="utf-8")
+    got = embedded(text)["変"]["entries"][0]
+    for key in publish.STRIP_KEYS:
+        assert key not in got
+    assert got["backlinks"] == []
+    assert "secret" not in text
+
+
+def test_判明位置つきの関係は伏せる(out):
+    """相関図・カードと同じ約束。**伏せた本数は残す。**"""
+    publish.write_site([entry("あ")], name="辞書", pages=[a_page()])
+    got = embedded((out / "辞書" / "docs" / "章.html").read_text(encoding="utf-8"))
+    one = got["変"]["entries"][0]
+    assert [r["to"] for r in one["relations_resolved"]] == ["甲"]
+    assert one["hidden"] == 1
+
+
+def test_辞書の本文でスクリプトを閉じさせない(out):
+    """人が書くものなので `</script>` は起こりうる。**属性なら切れない。**"""
+    page = a_page()
+    page["lookup"]["変"]["entries"][0]["summary_html"] = "</script><script>alert(1)"
+    publish.write_site([entry("あ")], name="辞書", pages=[page])
+    written = (out / "辞書" / "docs" / "章.html").read_text(encoding="utf-8")
+    # タグとして効いていないこと。**読み出せば元に戻ること**
+    assert "</script><script>alert(1)" not in written
+    assert embedded(written)["変"]["entries"][0]["summary_html"] == (
+        "</script><script>alert(1)"
+    )
+
+
+def test_名前が重なったら番号で分ける(out):
+    """`a/b.md` と `a-b.md` はぶつかる。**黙って上書きしない。**"""
+    got = publish.write_site([entry("あ")], name="辞書", pages=[
+        a_page(path="a/b.md"), a_page(path="a-b.md"),
+    ])
+    assert [d["file"] for d in got["documents"]] == ["docs/a-b.html", "docs/a-b-2.html"]

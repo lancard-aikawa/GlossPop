@@ -55,7 +55,10 @@ function planText(info) {
   }
   const plan = info.plan;
   const changed = plan.files.filter((f) => f.overwrite).map((f) => f.name);
-  const lines = [`${plan.dir} に書きます。`];
+  const docs = info.documents
+    ? `辞書の 1 枚と、本文 ${info.documents} 件（辞書リンクと吹き出しが効く形）を`
+    : "辞書の 1 枚を";
+  const lines = [`${plan.dir} に ${docs}書きます。`];
   if (changed.length) lines.push(`${changed.join(" と ")} は上書きになります。`);
   if (plan.url) lines.push(`公開後の URL: ${plan.url}`);
   lines.push(...(plan.warnings || []));
