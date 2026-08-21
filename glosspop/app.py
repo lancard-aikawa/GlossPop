@@ -26,6 +26,7 @@ from . import (
     llm,
     merge,
     picker,
+    publish,
     sites,
     store,
     updates,
@@ -314,6 +315,27 @@ class SettingsRequest(BaseModel):
     data_root: str = ""
     #: いまの保存先の中身を新しい場所へ複製するか（元は消さない）
     copy_existing: bool = True
+
+
+class PublishSettingsRequest(BaseModel):
+    """公開先。**どちらも空文字なら「決めていない」に戻す。**
+
+    保存先 (`SettingsRequest`) と別の口にしてあるのは、あちらが**次の起動から**
+    効くのに対し、こちらは**その場で効く**から（`config.publish_dir()` は
+    読むたびに解決する）。同じ口に混ぜると「保存したのに効かない」が起きる。
+    """
+
+    dir: str = ""
+    #: 公開先の URL。**無いとカードの画像タグを書けない**（相対では出ない）
+    base_url: str = ""
+
+
+class PublishRequest(BaseModel):
+    """公開ページを書く。``name`` を省くと開いているフォルダの名前。"""
+
+    name: str = ""
+    #: `POST /api/publish/card` が返した印。URL の `?v=` に入る
+    card_stamp: str = ""
 
 
 class ImportRequest(BaseModel):
@@ -2014,6 +2036,110 @@ def export_booklet(fmt: str = "md", index: bool = False) -> Response:
             "Cache-Control": "no-store",
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# API: 公開（GitHub Pages 用の 1 枚）
+#
+# **書くだけ。commit も push もしない。** 更新が「隣に展開して、そちらを起動して
+# くださいと言うだけ」で通してきた線と揃える。
+#
+# 画像とページで**口を分けてある**。カードは PNG をブラウザで作るので生のバイト列で
+# 受け（顔 `POST /api/persona` と同じ形。ファイル名も Content-Type も名乗りでしかない
+# ので受け取らない）、ページは JSON で受ける。
+
+
+def _publish_name(name: str = "") -> str:
+    """公開するときの名前。**省かれたら開いているフォルダの名前。**"""
+    return (name or "").strip() or config.content_dir().name
+
+
+@app.get("/api/publish")
+def get_publish(name: str = "") -> dict:
+    """公開の状態と下見。**押す前に、どこへ何が書かれるかを出す。**"""
+    root = config.publish_dir()
+    state = {
+        "root": str(root or ""),
+        "base_url": config.publish_base_url(),
+        "name": _publish_name(name),
+        # 環境変数が勝つので、その場合は設定を書いても効かない（⚙ と同じ約束）
+        "env_locked": bool(
+            os.environ.get("GLOSSPOP_PUBLISH_DIR")
+            or os.environ.get("GLOSSPOP_PUBLISH_BASE_URL")
+        ),
+        "ready": root is not None,
+    }
+    if root is None:
+        return {**state, "plan": None}
+    try:
+        return {**state, "plan": publish.plan(state["name"])}
+    except publish.PublishError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.put("/api/publish/settings")
+def put_publish_settings(req: PublishSettingsRequest) -> dict:
+    """公開先を決める。**その場で効く**（保存先の変更と違って再起動が要らない）。"""
+    if os.environ.get("GLOSSPOP_PUBLISH_DIR"):
+        raise HTTPException(
+            409,
+            "環境変数 GLOSSPOP_PUBLISH_DIR が設定されているので、設定より優先されます。",
+        )
+    settings = config.load_settings()
+    raw = req.dir.strip()
+    if not raw:
+        settings.pop("publish_dir", None)
+    else:
+        try:
+            target = Path(raw).expanduser().resolve()
+        except OSError as exc:
+            raise HTTPException(400, f"使えないパスです: {raw}") from exc
+        if target.exists() and not target.is_dir():
+            raise HTTPException(400, f"フォルダではありません: {target}")
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(400, f"フォルダを作れません: {exc}") from exc
+        settings["publish_dir"] = str(target)
+
+    base = req.base_url.strip()
+    if base:
+        # **読むところと同じ関門を通す**（`config.clean_base_url()` の 1 か所）。
+        # ここだけ緩いと、書けたのに読むと空になって「設定したのに出ない」になる
+        if not config.clean_base_url(base):
+            raise HTTPException(
+                400,
+                "公開先の URL が使えない形です（http(s):// から、空白や引用符なしで）",
+            )
+        settings["publish_base_url"] = base
+    else:
+        settings.pop("publish_base_url", None)
+
+    config.save_settings(settings)
+    return get_publish()
+
+
+@app.post("/api/publish/card")
+async def post_publish_card(request: Request, name: str = "") -> dict:
+    """メタ画像を置く。**中身は生のバイト列**（PNG はブラウザが作る）。"""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > publish.CARD_MAX_BYTES:
+        raise HTTPException(413, "カードの画像が大きすぎます")
+    try:
+        return publish.write_card(_publish_name(name), await request.body())
+    except publish.PublishError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/publish")
+def post_publish(req: PublishRequest) -> dict:
+    """ページを書く。**画像は別の口**（先に `/api/publish/card` へ送る）。"""
+    try:
+        return publish.write_site(
+            store.load_all(), name=_publish_name(req.name), card_stamp=req.card_stamp
+        )
+    except publish.PublishError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/content/{rel:path}")

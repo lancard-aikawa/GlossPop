@@ -8,6 +8,7 @@ import shlex
 import shutil
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -95,6 +96,61 @@ DATA_ROOT = _data_root()
 
 #: 後方互換 (開発時は従来どおりリポジトリルート)
 PROJECT_ROOT = DATA_ROOT
+
+def publish_dir() -> Path | None:
+    """公開ページ（GitHub Pages 用）の書き出し先。**決めていなければ ``None``。**
+
+    優先順は **環境変数 > 設定ファイル**で、**既定を持たない** ——
+    勝手にどこかへ書くと、置いた覚えのないフォルダにファイルが増える
+    （「辞書の無いフォルダにマスターを作らない」と同じ約束）。
+
+    ``DATA_ROOT`` と違って**読むたびに解決する。** あちらが「次の起動から」
+    なのは `store` のキャッシュと食い違うからで、こちらには乗っているものが
+    無い。待たせると「設定したのに書けない」になるだけ。
+    """
+    raw = os.environ.get("GLOSSPOP_PUBLISH_DIR") or load_settings().get("publish_dir")
+    if not raw:
+        return None
+    try:
+        return Path(str(raw)).expanduser().resolve()
+    except OSError:
+        return None           # 壊れた設定で落ちない（load_settings と同じ扱い）
+
+
+def clean_base_url(value: str) -> str:
+    """使える公開先 URL だけを返す。**使えなければ空。**
+
+    **ここが唯一の関門。** この値は公開ページの ``og:*`` に**属性として**入るので、
+    引用符や空白を含んだものを通すと**配るページにタグを差し込める**。書き込みの口
+    (`PUT /api/publish/settings`) だけで見ると、環境変数と設定ファイルから入る経路が
+    素通りする —— だから**読むところで**見る。
+
+    非 ASCII を弾くのは、国際化ドメインは punycode で書けるうえ、生のまま
+    ``og:url`` に載せると配信されている URL と食い違うため（名前を
+    percent-encode しているのと同じ理由）。
+    """
+    text = (value or "").strip()
+    if not text or not text.isascii():
+        return ""
+    if any(ch.isspace() or ch in "\"'<>`" for ch in text):
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+    return text
+
+
+def publish_base_url() -> str:
+    """公開先の URL（``https://<user>.github.io/<repo>/``）。**無ければ空。**
+
+    **メタ画像の URL は絶対でないとカードが出ない。** ページはブラウザで見れば
+    正しく表示されるのに**カードだけ黙って出ない**ので、ここが空のまま書いた
+    ことは呼ぶ側が画面に出すこと（使えない値だったときも同じ扱い ——
+    「壊れた設定では既定に落ちる」）。
+    """
+    raw = os.environ.get("GLOSSPOP_PUBLISH_BASE_URL") or load_settings().get("publish_base_url")
+    return clean_base_url(str(raw) if raw else "")
+
 
 #: 辞書 Markdown の置き場所 (data/glossary/<カテゴリ>/<slug>.md)
 GLOSSARY_DIR = _env_path("GLOSSPOP_GLOSSARY_DIR", DATA_ROOT / "data" / "glossary")

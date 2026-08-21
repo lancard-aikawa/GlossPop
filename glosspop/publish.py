@@ -1,0 +1,304 @@
+"""公開ページを書き出す（GitHub Pages 用の 1 枚）。
+
+**`core` には置けない** —— 出力先を知る必要があるから。中身の組み立ては
+`core` に任せて（`card` が 1 枚に載せるもの、`booklet` が辞書の 1 枚、
+`render` が Markdown → HTML）、ここがやるのは**どこへ何という名前で書くか**だけ。
+
+守っていること 5 つ:
+
+- **既定の出力先を持たない。** 決めていなければ書かない（`config.publish_dir()`
+  が ``None`` を返す）。勝手にどこかへ書くと、置いた覚えのないフォルダに
+  ファイルが増える —— 「開いただけのフォルダを汚さない」と同じ約束
+- **書く前に何が変わるかを出す**（`plan()`）。上書きになるファイルを名前で返す。
+  取り込みの `plan()`・統合の下見・控えの `here` と同じ扱いで、
+  **「入れ替わります」の一言だけで押させない**
+- **名前は組み立てた結果を検査する。** 画面から来た文字列なので、出力先の中に
+  収まっていることを最後に必ず確かめる（`sites.py` と `archive._backup_path()`
+  と同じ規則）
+- **メタ画像の URL は絶対にする。** 相対だと**ページは正しく出るのにカードだけ
+  黙って出ない**（プロジェクトサイトは ``/<repo>/`` の下に出るため）。
+  基準 URL が無いまま書いたことは、返り値で必ず知らせる
+- **commit も push もしない。書くだけ。** 更新が「隣に展開して、そちらを起動して
+  くださいと言うだけ」で通してきた線と揃える
+"""
+
+from __future__ import annotations
+
+import hashlib
+import html
+import re
+from datetime import datetime
+from urllib.parse import quote
+from pathlib import Path
+
+from . import config
+from .core import booklet, imagefmt, render
+from .core import card as cardmod
+from .core.models import Entry
+
+#: 書き出すファイル。**アンダースコアで始めない** —— GitHub Pages の Jekyll が
+#: `_` で始まる名前を無視するので、静かに欠ける
+NAME_HTML = "index.html"
+NAME_CARD = "card.png"
+
+#: Jekyll を通さない印。**出力先の根**に置く（そこが公開の根とは限らないので
+#: 気休めではあるが、`{{ }}` を含む辞書本文が化けるのを防げることがある）
+NAME_NOJEKYLL = ".nojekyll"
+
+#: フォルダ名に使えない字。Windows の禁止字と、パスを離れるためのもの
+_BAD_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+#: 名前の上限。長すぎるパスは Windows で書けない
+NAME_MAX = 60
+
+#: カードの上限。**X が受け取れるのは 5MB まで**（実測: 25 語の 2 倍描画で 390KB
+#: なので十分に余裕がある）。超えるものは貼っても出ないので、書く前に断る
+CARD_MAX_BYTES = 5 * 1024 * 1024
+
+
+#: カードの印の形。**こちらが作ったもの以外は受け付けない**（sha256 の頭）
+_STAMP = re.compile(r"[0-9a-f]{1,32}")
+
+
+class PublishError(Exception):
+    """書き出せない理由。**呼ぶ側がそのまま画面に出せる文で投げる。**"""
+
+
+def safe_stamp(stamp: str) -> str:
+    """カードの印を確かめる。**空は空のまま、形が違えば断る。**
+
+    この値は ``og:image`` の URL に**属性として**入る。作っているのはこちら
+    (`write_card()` が返す sha256 の頭) だが、**受け取るのはリクエスト本文**なので
+    名乗りでしかない —— 形を決め打ちで照合するのがいちばん確か。
+    """
+    value = (stamp or "").strip()
+    if not value:
+        return ""
+    if not _STAMP.fullmatch(value):
+        raise PublishError("カードの印が正しくありません")
+    return value
+
+
+def safe_name(name: str) -> str:
+    """フォルダ名にできる形へ落とす。**空になるものは受け付けない。**
+
+    日本語はそのまま通す（URL では percent-encoded になるが配信はできる）。
+    落とすのは**パスを離れられる字**と、Windows で書けない字だけ。
+    """
+    cleaned = _BAD_NAME.sub("", (name or "").strip())
+    cleaned = cleaned.replace("..", "").strip(". ").strip()
+    cleaned = cleaned.lstrip("_").strip()   # Jekyll が無視する名前を作らない
+    cleaned = cleaned[:NAME_MAX].strip()
+    if not cleaned:
+        raise PublishError("公開するフォルダの名前が空です")
+    return cleaned
+
+
+def site_dir(name: str) -> Path:
+    """書き出し先。**組み立てた結果が出力先の中にあることを最後に確かめる。**"""
+    root = config.publish_dir()
+    if root is None:
+        raise PublishError(
+            "公開先のフォルダが決まっていません（⚙ の「公開」で決めてください）"
+        )
+    target = (root / safe_name(name)).resolve()
+    if root not in target.parents:
+        raise PublishError("公開先の外に出る名前です")
+    return target
+
+
+def _page_url(base: str, name: str, *, file: str = "") -> str:
+    """絶対 URL を組む。基準が無ければ空（**相対に落とさない**）。
+
+    **名前は percent-encode する。** フォルダ名に日本語を許しているので、生のまま
+    ``og:url`` に載せるとクローラが取り違えうるし、配信されている URL
+    （GitHub Pages は encode された形で返す）とも食い違う。
+    """
+    if not base:
+        return ""
+    tail = f"/{file}" if file else "/"
+    return f"{base.rstrip('/')}/{quote(safe_name(name))}{tail}"
+
+
+def plan(name: str) -> dict:
+    """書く前の下見。**上書きになるものを名前で返す。**"""
+    target = site_dir(name)
+    base = config.publish_base_url()
+    return {
+        "dir": str(target),
+        "root": str(config.publish_dir() or ""),
+        "base_url": base,
+        "url": _page_url(base, name),
+        "exists": target.exists(),
+        "files": [
+            {"name": one, "overwrite": (target / one).exists()}
+            for one in (NAME_HTML, NAME_CARD)
+        ],
+        # 基準 URL が無いとカードだけ出ない。**黙らない**
+        "warnings": [] if base else [
+            "公開先の URL が決まっていないので、X などのカードに画像が出ません"
+        ],
+    }
+
+
+_TEMPLATE = """<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<meta name="description" content="{note}">
+{og}
+<style>
+:root {{ --bg:#fbfbfa; --fg:#1c1c1a; --dim:#63635e; --line:#e3e1dc; --accent:#0f766e; }}
+@media (prefers-color-scheme: dark) {{
+  :root {{ --bg:#17181a; --fg:#e7e7e4; --dim:#a6a8a5; --line:#2c2f36; --accent:#5eead4; }}
+}}
+* {{ box-sizing: border-box; }}
+body {{ margin:0; padding:0 20px 72px; background:var(--bg); color:var(--fg);
+  font-family:"Yu Gothic UI","Hiragino Sans","Noto Sans JP",system-ui,sans-serif;
+  line-height:1.8; }}
+.wrap {{ max-width:820px; margin:0 auto; }}
+header {{ padding:48px 0 24px; border-bottom:1px solid var(--line); }}
+h1 {{ margin:0 0 8px; font-size:2rem; }}
+.note {{ margin:0; color:var(--dim); }}
+.card {{ display:block; width:100%; height:auto; border-radius:12px; margin:24px 0 0; }}
+.counts {{ margin:16px 0 0; color:var(--dim); font-size:.95rem; }}
+main h2 {{ margin:40px 0 4px; padding-top:12px; border-top:1px solid var(--line);
+  font-size:1.3rem; }}
+main h3 {{ margin:24px 0 2px; font-size:1.05rem; color:var(--accent); }}
+main p {{ margin:.2em 0; }}
+footer {{ margin:56px 0 0; padding-top:20px; border-top:1px solid var(--line);
+  color:var(--dim); font-size:.88rem; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>{title}</h1>
+  <p class="note">{note}</p>
+  <img class="card" src="{card}" alt="{title}" width="1200" height="630">
+  <p class="counts">{counts}</p>
+</header>
+<main>
+{body}
+</main>
+<footer><p>{generated} — GlossPop で書き出した用語辞書</p></footer>
+</div>
+</body>
+</html>
+"""
+
+
+def _attr(value: str) -> str:
+    """属性に入れる値。**組み立てる直前で必ず通す。**
+
+    ここは**人に配るページ**を作るところなので、入れる値は全部「名乗り」として
+    扱う（`POST /api/persona` が Content-Type を信じないのと同じ）。素で差し込むと、
+    引用符ひとつで**配ったページにタグを足せる**。
+    """
+    return html.escape(value or "", quote=True)
+
+
+def _og(title: str, note: str, name: str, base: str, stamp: str) -> str:
+    """カードのタグ。**基準 URL が無ければ画像のタグを書かない。**
+
+    相対 URL の ``og:image`` は無視されるので、書いても出ない。**書かない**ほうが
+    「出ないのはなぜか」を追いやすい（半端なタグは「効いているはず」に見える）。
+    """
+    lines = [
+        '<meta property="og:type" content="article">',
+        f'<meta property="og:title" content="{_attr(title)}">',
+        f'<meta property="og:description" content="{_attr(note)}">',
+    ]
+    page = _page_url(base, name)
+    if page:
+        lines.append(f'<meta property="og:url" content="{_attr(page)}">')
+    image = _page_url(base, name, file=NAME_CARD)
+    if image:
+        # **`?v=` で URL を変える。** X はカードを URL ごとに覚えていて、確実に
+        # 更新させる手段が無い（旧 Card Validator は廃止）。中身から作った印なので、
+        # 変わっていなければ URL も変わらない（無駄なキャッシュ切れを起こさない）
+        lines.append(
+            f'<meta property="og:image" content="{_attr(f"{image}?v={stamp}")}">'
+        )
+        lines.append('<meta name="twitter:card" content="summary_large_image">')
+    return "\n".join(lines)
+
+
+def build_page(
+    entries: list[Entry],
+    *,
+    name: str,
+    card_stamp: str = "",
+    generated: str = "",
+) -> str:
+    """公開ページ 1 枚ぶんの HTML。**中身の正は `core`。**"""
+    made = cardmod.build(entries, name=name)
+    day = generated or datetime.now().strftime("%Y-%m-%d")
+    # **エスケープは出す直前の 1 回だけ。** 先に escape したものを `_og()` へ渡すと
+    # そこでもう一度かかって `&amp;lt;` になる（二重にかけないこと自体が規則）
+    return _TEMPLATE.format(
+        title=_attr(made.title),
+        note=_attr(made.note),
+        og=_og(made.title, made.note, name, config.publish_base_url(),
+               safe_stamp(card_stamp) or "1"),
+        card=NAME_CARD,
+        counts=f"{made.total} 語 ・ {made.links} 本の関係",
+        body=render.md_to_html(booklet.build(entries, title=made.name, generated=day)),
+        generated=day,
+    )
+
+
+def write_card(name: str, data: bytes) -> dict:
+    """メタ画像を置く。**返すのは中身から作った印**（URL の `?v=` に使う）。
+
+    **中身を見分けてから書く**（`core.imagefmt.sniff()` の 1 か所）。送られてくる
+    Content-Type は名乗りでしかなく、ここは**そのまま配られる置き場所**なので、
+    顔 (`POST /api/persona`) と同じ扱いにする。**PNG だけ**通すのは、カードが
+    こちらの生成物だから（人が選んだ画像を置く口ではない）。
+    """
+    if len(data) > CARD_MAX_BYTES:
+        raise PublishError("カードの画像が大きすぎます")
+    if imagefmt.sniff(data) != ".png":
+        raise PublishError("カードの画像が PNG ではありません")
+    target = site_dir(name)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / NAME_CARD).write_bytes(data)
+    return {
+        "path": str(target / NAME_CARD),
+        "bytes": len(data),
+        "stamp": hashlib.sha256(data).hexdigest()[:8],
+    }
+
+
+def write_site(entries: list[Entry], *, name: str, card_stamp: str = "") -> dict:
+    """ページを書く。**画像は別の口**（`write_card`）。"""
+    card_stamp = safe_stamp(card_stamp)
+    target = site_dir(name)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / NAME_HTML).write_text(
+        build_page(entries, name=name, card_stamp=card_stamp),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    root = config.publish_dir()
+    marker = (root / NAME_NOJEKYLL) if root else None
+    if marker is not None and not marker.exists():
+        marker.write_text("", encoding="utf-8")
+
+    base = config.publish_base_url()
+    return {
+        "dir": str(target),
+        "html": str(target / NAME_HTML),
+        "url": _page_url(base, name),
+        "card_url": (
+            f"{_page_url(base, name, file=NAME_CARD)}?v={card_stamp}"
+            if base and card_stamp else ""
+        ),
+        "nojekyll": str(marker) if marker else "",
+        "warnings": [] if base else [
+            "公開先の URL が決まっていないので、カードの画像タグを書いていません"
+        ],
+    }
