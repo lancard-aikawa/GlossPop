@@ -211,12 +211,16 @@ export function drawCard(card, { host } = {}) {
     chipY += CHIP_H + CHIP_GAP;
   }
 
-  // --- 足もと
-  const counts = `${card.total} 語 ・ ${card.links} 本の関係`;
-  root.append(text(counts, {
-    x: PAD, y: CARD_H - PAD - FOOT_SIZE, "font-size": FOOT_SIZE, fill: INK.faint,
-  }));
-  root.append(text(card.name || "GlossPop", {
+  // --- 足もと。**左下は空けておく**
+  //
+  // **実測**: X は貼られたカードの**左下に見出しの札を重ねる**（画像の上に
+  // 白い角丸で「同じ日に、2 つの事件」と出る）。そこに何か置くと隠れるので、
+  // 数も名前も右へ寄せる。左半分は意図的に空白のまま
+  const foot = [
+    `${card.total} 語 ・ ${card.links} 本の関係`,
+    card.name || "GlossPop",
+  ].join("　");
+  root.append(text(foot, {
     x: CARD_W - PAD, y: CARD_H - PAD - FOOT_SIZE,
     "font-size": FOOT_SIZE, fill: INK.faint, "text-anchor": "end",
   }));
