@@ -136,10 +136,25 @@ def plan(name: str) -> dict:
             for one in (NAME_HTML, NAME_CARD)
         ],
         # 基準 URL が無いとカードだけ出ない。**黙らない**
-        "warnings": [] if base else [
-            "公開先の URL が決まっていないので、X などのカードに画像が出ません"
-        ],
+        "warnings": _warnings(name, base),
     }
+
+
+def _warnings(name: str, base: str) -> list[str]:
+    """**押す前に言っておくこと。** どちらも「黙って効かない」種類の話。"""
+    out: list[str] = []
+    if not base:
+        out.append("公開先の URL が決まっていないので、X などのカードに画像が出ません")
+    if not safe_name(name).isascii():
+        # **実測**: 生の日本語 URL を素で取りに行くと GitHub Pages は 404 を返す
+        # （ブラウザは送る前に percent-encode するので、打ち込むぶんには通る）。
+        # 貼った先がどちらの形で取りに来るかは**こちらで決められない**ので、
+        # 名前を英数字にできるならそのほうが確実
+        out.append(
+            "フォルダ名に日本語が入っています。貼った先が URL を encode せずに"
+            "取りに行くと 404 になり、カードが出ません（英数字の名前にすると確実です）"
+        )
+    return out
 
 
 _TEMPLATE = """<!doctype html>
@@ -210,8 +225,14 @@ def _og(title: str, note: str, name: str, base: str, stamp: str) -> str:
     """
     lines = [
         '<meta property="og:type" content="article">',
+        f'<meta property="og:site_name" content="{_attr(name)}">',
         f'<meta property="og:title" content="{_attr(title)}">',
         f'<meta property="og:description" content="{_attr(note)}">',
+        # **`twitter:*` も書く。** 仕様上は `og:*` に落ちることになっているが、
+        # X の見せ方は何度も変わっていて**こちらから確かめる手段が無い**。
+        # 書いておく代金はタグ 3 行で、落ちたときの代金は「カードが出ない」
+        f'<meta name="twitter:title" content="{_attr(title)}">',
+        f'<meta name="twitter:description" content="{_attr(note)}">',
     ]
     page = _page_url(base, name)
     if page:
@@ -221,9 +242,11 @@ def _og(title: str, note: str, name: str, base: str, stamp: str) -> str:
         # **`?v=` で URL を変える。** X はカードを URL ごとに覚えていて、確実に
         # 更新させる手段が無い（旧 Card Validator は廃止）。中身から作った印なので、
         # 変わっていなければ URL も変わらない（無駄なキャッシュ切れを起こさない）
-        lines.append(
-            f'<meta property="og:image" content="{_attr(f"{image}?v={stamp}")}">'
-        )
+        src = _attr(f"{image}?v={stamp}")
+        lines.append(f'<meta property="og:image" content="{src}">')
+        lines.append(f'<meta property="og:image:alt" content="{_attr(title)}">')
+        lines.append(f'<meta name="twitter:image" content="{src}">')
+        lines.append(f'<meta name="twitter:image:alt" content="{_attr(title)}">')
         lines.append('<meta name="twitter:card" content="summary_large_image">')
     return "\n".join(lines)
 
@@ -336,9 +359,7 @@ def write_site(
             if base and card_stamp else ""
         ),
         "nojekyll": str(marker) if marker else "",
-        "warnings": [] if base else [
-            "公開先の URL が決まっていないので、カードの画像タグを書いていません"
-        ],
+        "warnings": _warnings(name, base),
     }
 
 

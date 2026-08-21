@@ -342,3 +342,29 @@ def test_名前が重なったら番号で分ける(out):
         a_page(path="a/b.md"), a_page(path="a-b.md"),
     ])
     assert [d["file"] for d in got["documents"]] == ["docs/a-b.html", "docs/a-b-2.html"]
+
+
+def test_日本語のフォルダ名は断りを出す(based):
+    """**実測**: 生の日本語 URL を素で取りに行くと GitHub Pages は 404 を返す。
+
+    ブラウザは送る前に percent-encode するので**打ち込むぶんには通ってしまい**、
+    貼った先でだけカードが出ない。どちらの形で取りに来るかは決められないので、
+    黙らずに断りを出す。
+    """
+    warned = publish.plan("戦国時代")["warnings"]
+    assert warned and "日本語" in warned[0]
+    assert publish.plan("sengoku")["warnings"] == []
+    # 書いたあとの返り値も同じ口から出る（下見と食い違わせない）
+    got = publish.write_site([entry("あ")], name="戦国時代", card_stamp="abc123")
+    assert got["warnings"] == warned
+
+
+def test_twitterのタグも書く(based):
+    """仕様上は `og:*` に落ちるが、**こちらから確かめる手段が無い**。"""
+    publish.write_site([entry("あ")], name="sengoku", card_stamp="abc123")
+    page = (based / "sengoku" / "index.html").read_text(encoding="utf-8")
+    for tag in ("twitter:card", "twitter:title", "twitter:description",
+                "twitter:image", "og:image:alt", "og:site_name"):
+        assert tag in page
+    # og と twitter は同じ URL を指す（別々に組み立てない）
+    assert page.count("card.png?v=abc123") == 2

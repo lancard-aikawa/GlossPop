@@ -30,6 +30,10 @@ function build() {
           下の絵が、X などに貼ったときに出る<strong>メタ画像</strong>です。
           <strong>commit と push はしません</strong> —— 書くだけです。
         </p>
+        <div class="setting-row setting-row-plain">
+          <label class="field-inline" for="gp-pub-name">公開するフォルダ名</label>
+          <input id="gp-pub-name" type="text" data-ref="name">
+        </div>
         <div class="publish-card" data-ref="preview"></div>
         <p class="hint" data-ref="drawn"></p>
         <p class="notice" data-ref="plan"></p>
@@ -107,14 +111,14 @@ export async function openPublishDialog({ name = "" } = {}) {
       // **`api()` は JSON にしてしまう**ので、バイト列は fetch で直に送る
       // （顔の差し替え `POST /api/persona` と同じ形）
       const sent = await fetch(
-        `/api/publish/card?name=${encodeURIComponent(info.name)}`,
+        `/api/publish/card?name=${encodeURIComponent(refs.name.value.trim() || info.name)}`,
         { method: "POST", headers: { "Content-Type": "image/png" }, body: blob }
       );
       const made = await sent.json();
       if (!sent.ok) throw new Error(made.detail || `${sent.status} ${sent.statusText}`);
       const site = await api("/api/publish", {
         method: "POST",
-        body: { name: info.name, card_stamp: made.stamp },
+        body: { name: refs.name.value.trim() || info.name, card_stamp: made.stamp },
       });
       refs.result.hidden = false;
       refs.result.textContent = site.url
@@ -135,15 +139,26 @@ export async function openPublishDialog({ name = "" } = {}) {
   const onSubmit = (ev) => ev.preventDefault();
   refs.form.addEventListener("submit", onSubmit);
 
-  try {
-    info = await api("/api/publish");
-    drawn = drawPreview(info.card);
-    refs.plan.textContent = planText(info);
-    refs.go.disabled = !info.ready;
-    setStatus(refs.status, "");
-  } catch (err) {
-    setStatus(refs.status, err.message, "error");
-  }
+  /** 名前を変えたら下見もカードも取り直す（**カードの足もとに名前が出る**）。 */
+  const load = async (wanted = "") => {
+    setStatus(refs.status, "読み込み中", "busy");
+    try {
+      const query = wanted ? `?name=${encodeURIComponent(wanted)}` : "";
+      info = await api(`/api/publish${query}`);
+      refs.name.value = info.name;
+      drawn = drawPreview(info.card);
+      refs.plan.textContent = planText(info);
+      refs.go.disabled = !info.ready;
+      setStatus(refs.status, "");
+    } catch (err) {
+      refs.go.disabled = true;
+      setStatus(refs.status, err.message, "error");
+    }
+  };
+  const onName = () => load(refs.name.value.trim());
+  refs.name.addEventListener("change", onName);
+
+  await load(name);
 
   return new Promise((resolve) => {
     dialog.addEventListener(
@@ -153,6 +168,7 @@ export async function openPublishDialog({ name = "" } = {}) {
         refs.cancel.removeEventListener("click", finish);
         refs.close.removeEventListener("click", finish);
         refs.form.removeEventListener("submit", onSubmit);
+        refs.name.removeEventListener("change", onName);
         resolve();
       },
       { once: true }
