@@ -368,3 +368,25 @@ def test_twitterのタグも書く(based):
         assert tag in page
     # og と twitter は同じ URL を指す（別々に組み立てない）
     assert page.count("card.png?v=abc123") == 2
+
+
+def test_カードの大きさは実ファイルから読む(based):
+    """**書いていない値をタグに出さない。** 読む口は `core.imagefmt.size()` 1 か所。"""
+    # 1x1 の本物の PNG（幅 1・高さ 1 が読める最小のもの）
+    tiny = bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+        "1f15c4890000000a49444154789c6300010000050001"
+        "0d0a2db40000000049454e44ae426082"
+    )
+    publish.write_card("sengoku", tiny)
+    publish.write_site([entry("あ")], name="sengoku", card_stamp="abc123")
+    page = (based / "sengoku" / "index.html").read_text(encoding="utf-8")
+    assert 'og:image:width" content="1"' in page
+    assert 'og:image:height" content="1"' in page
+
+
+def test_カードが無ければ大きさを書かない(based):
+    """置かれる前に書いたときは黙る（**推測しない**）。"""
+    publish.write_site([entry("あ")], name="notyet", card_stamp="abc123")
+    page = (based / "notyet" / "index.html").read_text(encoding="utf-8")
+    assert "og:image" in page and "og:image:width" not in page

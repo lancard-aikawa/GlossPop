@@ -217,7 +217,22 @@ def _attr(value: str) -> str:
     return html.escape(value or "", quote=True)
 
 
-def _og(title: str, note: str, name: str, base: str, stamp: str) -> str:
+def _card_size(name: str) -> tuple[int, int] | None:
+    """置いてあるカードの大きさ。**実ファイルから読む**（決め打ちしない）。
+
+    読む口は `core.imagefmt.size()` **1 か所**（顔・地図・用語と同じ）。
+    まだ置かれていなければ ``None`` —— **書いていない値をタグに出さない**。
+    """
+    try:
+        data = (site_dir(name) / NAME_CARD).read_bytes()
+    except (OSError, PublishError):
+        return None
+    got = imagefmt.size(data)
+    return (int(got[0]), int(got[1])) if got else None
+
+
+def _og(title: str, note: str, name: str, base: str, stamp: str,
+        size: tuple[int, int] | None = None) -> str:
     """カードのタグ。**基準 URL が無ければ画像のタグを書かない。**
 
     相対 URL の ``og:image`` は無視されるので、書いても出ない。**書かない**ほうが
@@ -246,6 +261,12 @@ def _og(title: str, note: str, name: str, base: str, stamp: str) -> str:
         lines.append(f'<meta property="og:image" content="{src}">')
         lines.append(f'<meta property="og:image:alt" content="{_attr(title)}">')
         lines.append(f'<meta name="twitter:image" content="{src}">')
+        if size:
+            # **大きさを書く。** 無いと、画像を取って測るまで「小さいカード」の
+            # まま出す実装がある（実測でそう見えた）。決め打ちではなく実物から読む
+            lines.append(f'<meta property="og:image:type" content="image/png">')
+            lines.append(f'<meta property="og:image:width" content="{size[0]}">')
+            lines.append(f'<meta property="og:image:height" content="{size[1]}">')
         lines.append(f'<meta name="twitter:image:alt" content="{_attr(title)}">')
         lines.append('<meta name="twitter:card" content="summary_large_image">')
     return "\n".join(lines)
@@ -284,7 +305,7 @@ def build_page(
         title=_attr(made.title),
         note=_attr(made.note),
         og=_og(made.title, made.note, name, config.publish_base_url(),
-               safe_stamp(card_stamp) or "1"),
+               safe_stamp(card_stamp) or "1", _card_size(name)),
         card=NAME_CARD,
         counts=f"{made.total} 語 ・ {made.links} 本の関係",
         docs=_doc_list(documents or []),
