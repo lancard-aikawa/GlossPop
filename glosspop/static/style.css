@@ -716,6 +716,34 @@ dialog.sheet {
   max-height: calc(100vh - 48px);
   box-shadow: var(--shadow);
 }
+/* 本文とプレビューを横に並べるダイアログ。**広いのはこれだけ** ——
+   ほかのダイアログは 680px のままでよい（並べるものが無い） */
+dialog.sheet.roomy { width: min(1100px, calc(100vw - 32px)); }
+/* 「閉じる」は左端に離す。主要操作の隣に並ぶと、押し間違える */
+dialog.sheet footer .push { margin-right: auto; }
+
+.compose-split { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); }
+/* 2 列にできる幅のときだけ並べる。狭いときは縦に積む
+   (プレビューを削らない —— 見えないと直しようがない) */
+@media (min-width: 900px) {
+  .compose-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+.compose-split textarea { width: 100%; resize: vertical; }
+.compose-preview {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+  /* textarea と背丈を揃える。中身が長ければこの中でスクロールする
+     (ダイアログごと伸ばすと、下のボタンが遠くなる) */
+  height: 26em;
+  overflow: auto;
+}
+.compose-preview:empty::after {
+  content: "本文を書くとここに出ます";
+  color: var(--muted);
+}
+
 dialog.sheet::backdrop { background: rgba(0, 0, 0, .45); }
 dialog.sheet form { display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
 dialog.sheet header {

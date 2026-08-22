@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import unicodedata
 from functools import partial
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from anyio import to_thread
 
 from . import config, llm, store
 from .core import imagefmt, relations, whenfmt
-from .core.linker import entry_url
+from .core.linker import Linker, entry_url
 from .core.models import (
     GLOBAL_SCOPE,
     LOCAL_SCOPE,
@@ -27,6 +28,7 @@ from .core.models import (
     Entry,
     EntryDraft,
     Relation,
+    slugify,
 )
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
@@ -1691,3 +1693,489 @@ async def draft_readings(items: list[dict]) -> tuple[list[dict], list[dict]]:
         partial(_generate, timeout=timeout), prompt, abandon_on_cancel=True
     )
     return filter_readings(parse_candidates(raw), [item["term"] for item in items])
+
+
+# --------------------------------------------------------------------------- #
+# 執筆（本文と辞書を対で育てる）
+#
+# **抽出とは向きが逆。** `extract_terms()` が「すでにある文書に出てくる語」を挙げる
+# のに対し、こちらは**テーマから本文を書き**、その本文に**要るのに名前の付いていない
+# 語**を、**本文に登場させる一節ごと**提案する。
+#
+# **語だけを提案してはいけない。** `filter_candidates()` が本文に無い表記を落として
+# いるとおり、本文に出てこない語は登録してもリンクにならない。だから提案は必ず
+# **(語, その語を本文に出す一節)** の対で受け取り、**挿入したうえで実際にリンクに
+# なるかを機械で確かめる**（`filter_needed()`）。実測でも、この形で書いた辞書は
+# 新設した語が 4 つとも本文の加筆を伴っていた。
+#
+# **文体はここには効く。**「抽出には効かせない」は、返ってくるのが本文の表記
+# そのままだから混ぜても得るものが無い、という理由だった。こちらは**本文を書く**
+# ので `build_style_block()` を通す。
+#
+# **正しさの関所はここに置かない。** 公開の側 (`publish.py`) が commit も push も
+# せず、既定の出力先も持たず、下見を出す形で最後の一歩を人に残している。
+# 執筆の側にもう一つ関所を置くと二重になるうえ、置き場所として手前すぎる。
+# ここで確かめるのは**機械で確かめられること**だけにする。
+# --------------------------------------------------------------------------- #
+
+#: 選べるジャンル。**題材の見当を付けるだけ**で、これ以上の意味は持たせない
+#: （テーマが与えられていれば推測できるので、主な仕事はランダム指定のときに
+#: 「どこから選ぶか」を決めること）
+COMPOSE_GENRES: list[dict[str, str]] = [
+    {"label": "歴史", "hint": "出来事・人物・年代のある題材。諸説が並び立つものを含む"},
+    {"label": "思想・哲学", "hint": "概念とその関係が主になる題材。立場が分かれるもの"},
+    {"label": "科学・技術", "hint": "仕組みと用語が主になる題材。分野の予備知識が要るもの"},
+    {"label": "文学・芸術", "hint": "作品・作家・様式。読み方が分かれるもの"},
+    {"label": "社会・制度", "hint": "制度・法・組織の仕組みと、その運用で起きること"},
+    {"label": "自然・地理", "hint": "地形・生物・気象。場所と分類が主になる題材"},
+]
+
+#: 語数の段。**実際に成立している辞書の大きさから採ってある** ——
+#: 12 は `samples/坊っちゃん`（12 語 / 17 本）、25 は `samples/戦国時代`（25 語 / 40 本）、
+#: 40 は同じ手順で書いた 39 語 / 63 本。数字を発明しない。
+#:
+#: **既定を `extract_terms()` の既定 (12) と揃えてある** —— 入口が二つあって
+#: 違う大きさの辞書ができる理由が無いので。**足りなければもう一度回せる**が、
+#: 多すぎる側は待ち時間も見直す量も増えるうえ、**出力が長くなると品質が落ちる**
+#: （`extract-folder` を消したときの知見と同じ）。
+COMPOSE_SIZES: tuple[int, ...] = (12, 25, 40)
+DEFAULT_COMPOSE_SIZE = 12
+
+#: 語 1 つあたりの本文の分量の目安。**欄を増やさないために語数から導く**
+#: （実測: 39 語 / 5,849 字 ≒ 150 字）。人が指定する項目は
+#: ジャンル・テーマ・語数の 3 つまでにする。**文体はここに欄を作らない** ——
+#: `.glosspop/style.md` と ⚙ が唯一の口で、写しを作ると片方だけ古くなる。
+CHARS_PER_TERM = 150
+
+#: 本文をこれ以上長く書かせない。長い出力は品質が落ちるという既存の知見どおり
+COMPOSE_MAX_CHARS = 9000
+
+_FENCE = re.compile(r"^\s*```[a-zA-Z]*\s*\n(.*?)\n\s*```\s*$", re.S)
+
+
+def _strip_fence(text: str) -> str:
+    """全体がコードブロックで囲まれて返ってきたときだけ、囲みを外す。
+
+    「Markdown だけを出せ」と頼んでも囲んでくることがある。**中身に現れる
+    ``` は触らない**（本文に出てくる可能性があるので、全体が囲みのときだけ）。
+    """
+    m = _FENCE.match(text or "")
+    return m.group(1) if m else (text or "")
+
+
+#: 題から作るファイル名で使えない文字（Windows で禁止 + 制御文字 + パス区切り）
+_NAME_ILLEGAL = re.compile('[<>:"/\\\\|?*]+')
+_TITLE = re.compile(r"^#\s+(.+?)\s*$", re.M)
+
+#: ファイル名の長さの上限（拡張子を除く）
+NAME_MAX_LEN = 60
+
+
+def safe_filename(name: str) -> str:
+    """保存するときのファイル名を、どの OS でも作れる形に整える。
+
+    **`slugify()` は使わない** —— あちらは URL と ref のための名前なので小文字に
+    畳むが、文書のファイル名は**人が見て題と分かる**ほうがよい。落とすのは
+    実際に作れない文字だけにする。
+    """
+    name = unicodedata.normalize("NFC", name or "")
+    # 制御文字は「作れない文字」なので落とす（空白は残す）
+    name = "".join(ch for ch in name if ch.isprintable() or ch == " ")
+    name = _NAME_ILLEGAL.sub("", name)
+    name = re.sub(r"\s+", " ", name).strip(". ")
+    if name.upper().split(".")[0] in {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }:
+        name = f"_{name}"
+    return name[:NAME_MAX_LEN] or "無題"
+
+
+def suggest_filename(text: str) -> str:
+    """本文の題から、保存するときの既定のファイル名を作る（`.md` 付き）。"""
+    m = _TITLE.search(text or "")
+    return f"{safe_filename(m.group(1) if m else '')}.md"
+
+
+def compose_sizes() -> list[int]:
+    """UI に出す語数の段。"""
+    return list(COMPOSE_SIZES)
+
+
+def normalize_size(size: int | None) -> int:
+    """要求された語数を、用意してある段のいずれかに寄せる。
+
+    **読めない値は既定に落とす**（覚えている見せ方の検証と同じ約束）。
+    """
+    try:
+        want = int(size)
+    except (TypeError, ValueError):
+        return DEFAULT_COMPOSE_SIZE
+    return want if want in COMPOSE_SIZES else DEFAULT_COMPOSE_SIZE
+
+
+def compose_chars(size: int | None) -> int:
+    """語数から本文の分量の目安を出す。"""
+    return min(normalize_size(size) * CHARS_PER_TERM, COMPOSE_MAX_CHARS)
+
+
+def compose_timeout(size: int | None) -> int:
+    """本文を書かせるのに許す秒数。**語数から見積もる。**"""
+    return llm.estimate_timeout("compose", normalize_size(size))
+
+
+def needed_timeout(count: int) -> int:
+    """(語, 一節) の提案に許す秒数。語ごとに一節を書かせるぶん抽出より重い。"""
+    return llm.estimate_timeout("needed", count)
+
+
+def genre_labels() -> list[str]:
+    return [g["label"] for g in COMPOSE_GENRES]
+
+
+def build_compose_prompt(
+    *, genre: str = "", theme: str = "", size: int | None = None
+) -> str:
+    """テーマ（または仮定の論）から本文を 1 枚書かせるプロンプト。
+
+    **ジャンルもテーマも空なら AI に選ばせる**（完全ランダム指定）。どちらも
+    「何を書くか」の指定なので、空欄を埋めさせる形で 1 か所にまとめる。
+    """
+    size = normalize_size(size)
+    chars = compose_chars(size)
+    genre = (genre or "").strip()[:60]
+    theme = (theme or "").strip()[:400]
+
+    parts = ["あなたは読み物を書く書き手です。次の条件で、本文を 1 枚書いてください。", ""]
+    if genre:
+        parts += ["## ジャンル", genre, ""]
+    else:
+        parts += [
+            "## ジャンル",
+            "次のいずれかから**あなたが 1 つ選んで**ください。",
+            *[f"- **{g['label']}** — {g['hint']}" for g in COMPOSE_GENRES],
+            "",
+        ]
+    if theme:
+        parts += [
+            "## テーマ（または仮定の論）",
+            theme,
+            "",
+            "**仮定の形で書かれていれば、それを筋として通してください。**"
+            "ただし断定できないところは断定せず、異なる見方があるならそれも書くこと。",
+            "",
+        ]
+    else:
+        parts += [
+            "## テーマ",
+            "**あなたが 1 つ立ててください。** 一般的な概説ではなく、"
+            "**一つの筋（仮定・見立て）を通せる題材**を選ぶこと。",
+            "",
+        ]
+    parts += [
+        "## 分量と構成",
+        f"**{chars} 字前後**。`#` の題と `##` の節で組み立ててください。",
+        f"あとでこの本文から**{size} 語ほどを辞書に登録します**。"
+        "その語が本文の中で**実際にその表記で現れている**ように書いてください"
+        "（本文に出てこない語は、辞書に入れてもリンクになりません）。",
+        "",
+        "## 書き方",
+        "- **1 文 1 行**で書く（話題の変わり目に空行）",
+        "- 固有名・専門語は、初出のところで**それが何かが分かる形**で書く",
+        "- 断定できないことは断定しない。"
+        "説が分かれるものは、どの立場からの記述か分かるように書く",
+        "",
+        "## 出力形式",
+        "**本文の Markdown だけ**を出力してください。"
+        "前置き・後置き・コードブロックの囲み・解説は書かないこと。",
+    ]
+    style_block = build_style_block(style(), "本文", "固有名・専門語の表記")
+    if style_block:
+        parts += ["", style_block]
+    return "\n".join(parts)
+
+
+_NEEDED_SCHEMA_HINT = """[
+  {
+    "term": "辞書の見出しにする語",
+    "reading": "日本語の読み（かな）。分からなければ空",
+    "kind": "下の種別コードのいずれか",
+    "anchor": "本文にある見出しの文字列（# の記号を除いた部分）。末尾でよければ空",
+    "passage": "本文に足す一節。term をこの表記のまま必ず含めること",
+    "why": "なぜこの語が要るのか（一言）"
+  }
+]"""
+
+
+def build_needed_prompt(
+    text: str,
+    *,
+    exclude: list[str] | None = None,
+    limit: int = DEFAULT_COMPOSE_SIZE,
+    kinds: list[str] | None = None,
+) -> str:
+    """本文に**要るのに名前の付いていない語**を、一節ごと提案させるプロンプト。
+
+    `build_extract_prompt()` との違いは 1 つで、**本文に出てくる語を挙げるのでは
+    なく、本文が前提にしているのに名前が付いていない事柄を挙げる**こと。
+    そのぶん**本文に足す一節を必ず一緒に書かせる** —— 語だけでは登録できない。
+    """
+    kinds = normalize_kinds(kinds)
+    quota = allocate_quota(limit, kinds)
+
+    parts = [
+        "あなたは用語辞書の編集者です。次の本文を読み、"
+        "**この本文を読む人に要るのに、まだ名前が付いていない"
+        "（または説明されていない）語**を挙げてください。",
+        "",
+        "**すでに本文に出てくる語を並べるだけの作業ではありません。**"
+        "本文が暗に前提にしている概念、繰り返し言及されているのに名前で呼ばれて"
+        "いない事柄、説明なしに使われている専門語 —— そういうものを"
+        "**表に出す**のが目的です。",
+        "",
+        "## 挙げる種別と件数",
+    ]
+    for key in kinds:
+        spec = EXTRACT_KINDS[key]
+        parts.append(f"- `{key}` … **{spec['label']}**（最大 {quota[key]} 件）— {spec['hint']}")
+    parts += [
+        "",
+        "**種別ごとに独立して選んでください。** 集まらなくても他の枠へ振り替えないこと。",
+        "",
+        "**枠を埋めるために語を作らないこと。該当が無ければ、その種別は 0 件でよい。**"
+        "上限であって目標ではありません。",
+        "",
+        "## 挙げない語",
+        "- **一般的すぎる語**（「経営層」「業務部門」「担当者」「利用者」のような、"
+        "どの文書にも出てくる役割名や一般名詞）。**辞書の見出しにする値打ちがあるものだけ**"
+        "挙げてください —— 一般的な語を入れると、本文がリンクだらけになって読めなくなります",
+        "- 本文の中でその表記が繰り返し出てくるだけの語（それは別の機能で拾います）",
+        "- 指示語、数値、日付、URL",
+        "",
+        "## いちばん大事な決まり",
+        "語には必ず **`passage`（本文に足す一節）** を付けてください。",
+        "",
+        "- `passage` には **`term` をその表記のまま**含めること"
+        "（含まれていないものは機械的に落とします）",
+        "- 一節は **2〜4 文**。**本文と同じく 1 文 1 行**で書く",
+        "- **`anchor`** に、その一節を入れたい**本文中の見出し**を書く"
+        "（見出しの記号を除いた文字列。末尾でよければ空にする）",
+        "- 本文の主張を変えないこと。**足すのは説明であって、話の筋ではありません**",
+        "",
+        "### 一節は「本文の一部」です。本文についての注釈ではありません",
+        "**本文と同じ文体・同じ語尾で書いてください。**"
+        "本文が「である」調ならこちらも「である」調にすること"
+        "（です・ます調が混ざると、そこだけ別人が書いたものになります）。",
+        "",
+        "**本文を引用しないこと。**「本文では」「〜と述べている」のように"
+        "**本文に言及する書き方をしない**でください。"
+        "その節にもとから書かれていた文であるかのように、地の文として書きます。",
+        "",
+        "悪い例: 「◯◯とは……を指します。本文では『……』と述べ、……を問い直しています。」",
+        "良い例: 「ここでいう◯◯とは、……のことである。……」",
+        "",
+        "## 表記",
+        "`term` は**辞書の見出しとして自然な形**で書いてください"
+        "（活用や助詞を含めない）。そして同じ表記が `passage` の中に現れるようにします。",
+    ]
+    if exclude:
+        listed = "、".join(sorted(set(exclude))[:200])
+        parts += ["", "## すでに辞書にある語（挙げないこと）", listed]
+    body = sample_text((text or "").strip(), EXTRACT_TEXT_CHARS)
+    parts += [
+        "",
+        "## 本文",
+        *_gap_note(body),
+        body,
+        "",
+        "## 出力形式",
+        "次の JSON 配列だけを出力してください。前置き・後置きの文章は書かないこと。",
+        "該当する語が無ければ空の配列 [] を返してください。",
+        _NEEDED_SCHEMA_HINT,
+    ]
+    style_block = build_style_block(style(), "`passage`", "`term` `anchor` `kind`")
+    if style_block:
+        parts += ["", style_block]
+    return "\n".join(parts)
+
+
+_MD_HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$", re.M)
+
+
+def _anchor_end(text: str, anchor: str) -> int | None:
+    """``anchor`` の見出しが持つ節の末尾（次の見出しの直前）の位置。
+
+    見つからなければ ``None``。**呼ぶ側が末尾へ足す**（黙って落とさない）。
+    """
+    anchor = (anchor or "").strip().lstrip("#").strip()
+    if not anchor:
+        return None
+    for m in _MD_HEADING.finditer(text):
+        if m.group(1).strip() != anchor:
+            continue
+        nxt = _MD_HEADING.search(text, m.end())
+        return nxt.start() if nxt else len(text)
+    return None
+
+
+def insert_passages(text: str, items: list[dict]) -> str:
+    """提案された一節を本文へ入れる。**入出力だけで、保存はしない。**
+
+    ``anchor`` の節の末尾へ入れ、見つからなければ本文の末尾へ足す ——
+    **場所が分からないことを理由に落とさない**（落とすと語が登録できなくなる）。
+    """
+    out = (text or "").rstrip("\n")
+    for item in items:
+        passage = str(item.get("passage") or "").strip()
+        if not passage:
+            continue
+        at = _anchor_end(out, str(item.get("anchor") or ""))
+        if at is None:
+            out = out + "\n\n" + passage
+        else:
+            head = out[:at].rstrip("\n")
+            tail = out[at:].lstrip("\n")
+            out = head + "\n\n" + passage + "\n\n" + tail
+    return out.rstrip("\n") + "\n"
+
+
+def _links_after_insert(text: str, items: list[dict]) -> set[str]:
+    """一節を入れた本文で、実際にリンクになる語の集合。
+
+    **照合は `Linker` に任せる。** 素の部分一致で確かめると、境界の規則や
+    大文字小文字の扱いが `annotate()` とずれ、**リンクにならない語を「出てくる」と
+    言う**ことになる（`?ref=` の出現探しと同じ理由）。**候補をまとめて 1 つの
+    `Linker` に入れる**ので、長い表記に食われて出てこない語もここで落ちる。
+    """
+    if not items:
+        return set()
+    entries = [
+        Entry(term=item["term"], slug=slugify(item["term"]), category="_", scope=LOCAL_SCOPE)
+        for item in items
+    ]
+    linker = Linker(entries)
+    return {e.term for e in linker.entries_in(insert_passages(text, items))}
+
+
+def filter_needed(
+    raw: list[dict], text: str, *, limit: int, kinds: list[str] | None = None
+) -> tuple[list[dict], list[dict]]:
+    """AI の申告をそのまま信じずに整える。返すのは (採用, 落としたもの)。
+
+    確かめるのは**機械で確かめられることだけ**（内容の当否は人が公開の直前に見る）:
+
+    - `passage` が `term` を含むか —— 含まなければ本文に入れても語が現れない
+    - すでに登録済みでないか
+    - 種別ごとの枠（`filter_candidates()` と同じ `allocate_quota()`）
+    - **入れたあとに実際にリンクになるか** —— ここが本物の検算
+    """
+    kinds = normalize_kinds(kinds)
+    quota = allocate_quota(limit, kinds)
+    used = {k: 0 for k in kinds}
+    order = {k: i for i, k in enumerate(kinds)}
+
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    seen: set[str] = set()
+
+    for item in raw:
+        term = str(item.get("term") or "").strip()
+        if not term:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        kind = str(item.get("kind") or "").strip()
+        if kind not in order:
+            kind = ""
+        passage = str(item.get("passage") or "").strip()
+        entry = {
+            "term": term,
+            "kind": kind,
+            "kind_label": kind_label(kind),
+            "scope_hint": EXTRACT_KINDS.get(kind, {}).get("scope", ""),
+            "reading": str(item.get("reading") or "").strip(),
+            "why": str(item.get("why") or "").strip(),
+            "anchor": str(item.get("anchor") or "").strip()[:120],
+            "passage": passage[:1200],
+        }
+        if not passage:
+            dropped.append({**entry, "reason": "本文に足す一節がありません"})
+            continue
+        # 一節に語が含まれていなければ、入れても本文にその表記は現れない
+        if key not in passage.casefold():
+            dropped.append({**entry, "reason": "一節の中にその表記がありません"})
+            continue
+        existing = store.find_by_surface(term)
+        if existing:
+            dropped.append({
+                **entry,
+                "reason": "登録済み: " + "、".join(e.path_label for e in existing),
+            })
+            continue
+        bucket = kind or next((k for k in kinds if used[k] < quota[k]), "")
+        if not bucket or used[bucket] >= quota[bucket]:
+            label = kind_label(bucket or kind)
+            dropped.append({
+                **entry,
+                "reason": f"「{label}」の枠（{quota.get(bucket, limit)} 件）を超えた",
+            })
+            continue
+        used[bucket] += 1
+        entry["kind"] = bucket
+        entry["kind_label"] = kind_label(bucket)
+        entry["scope_hint"] = EXTRACT_KINDS[bucket]["scope"]
+        kept.append(entry)
+
+    # **最後に、入れたあとの本文で本当にリンクになるかを見る。**
+    # ここまでの検査は「一節にその文字列があるか」でしかない —— 境界の規則や、
+    # 長い表記に食われる（`マルクス` が `マルクス主義` に負ける）ぶんは、
+    # `Linker` に通して初めて分かる
+    linked = _links_after_insert(text, kept)
+    survivors: list[dict] = []
+    for item in kept:
+        if item["term"] in linked:
+            survivors.append(item)
+        else:
+            dropped.append({**item, "reason": "一節を入れてもリンクになりません"})
+    survivors.sort(key=lambda i: order.get(i["kind"], len(order)))
+    return survivors, dropped
+
+
+async def compose_document(
+    *, genre: str = "", theme: str = "", size: int | None = None
+) -> dict:
+    """テーマから本文を 1 枚書く。**保存はしない**（人が見てから置く）。"""
+    size = normalize_size(size)
+    prompt = build_compose_prompt(genre=genre, theme=theme, size=size)
+    ask = partial(_generate, timeout=compose_timeout(size))
+    raw = await to_thread.run_sync(ask, prompt, abandon_on_cancel=True)
+    body = _strip_fence(raw).strip()
+    if not body:
+        raise AIError("本文が空で返ってきました")
+    return {
+        "text": body,
+        "size": size,
+        "chars": len(body),
+        "target_chars": compose_chars(size),
+        "style_source": describe_style()["style_source"],
+    }
+
+
+async def propose_needed(
+    text: str, *, limit: int = DEFAULT_COMPOSE_SIZE, kinds: list[str] | None = None
+) -> dict:
+    """本文に要る語を (語, 一節) の対で提案する。**本文も辞書も書き換えない。**"""
+    if not (text or "").strip():
+        raise AIError("本文が空です")
+    kinds = normalize_kinds(kinds)
+    limit = max(limit, len(kinds))
+    exclude = [s for e in store.load_all() for s in e.surfaces]
+    prompt = build_needed_prompt(text, exclude=exclude, limit=limit, kinds=kinds)
+    ask = partial(_generate, timeout=needed_timeout(limit))
+    raw = await to_thread.run_sync(ask, prompt, abandon_on_cancel=True)
+    kept, dropped = filter_needed(parse_candidates(raw), text, limit=limit, kinds=kinds)
+    return {"candidates": kept, "dropped": dropped, "kinds": kinds}

@@ -320,8 +320,15 @@ def test_the_persona_face_shows_in_the_popup(page, server, seeded):
 
     face = page.locator(".gloss-pop img.pop-face")
     face.wait_for(timeout=10000)
-    # 実際に読めた画像かどうか（壊れていれば naturalWidth が 0）
-    assert face.evaluate("img => img.complete && img.naturalWidth > 0")
+    # **要素が出ただけでは足りない。** `<img>` は DOM に入った時点ではまだ
+    # 読み込み中で、手元では一瞬で終わるぶん普段は通り、**重いときだけ
+    # `complete` が false のまま掴む**（実際に全テストで 1 回落ちた）。
+    # 確かめたい状態そのものを待つ —— 回数ではなく待ち方を直す、の実例
+    page.wait_for_function(
+        "() => { const i = document.querySelector('.gloss-pop img.pop-face');"
+        " return Boolean(i && i.complete && i.naturalWidth > 0); }",
+        timeout=10000,
+    )
 
 
 def test_a_term_inside_the_popup_is_followed_in_place(page, server, isolated_dirs):
@@ -427,6 +434,55 @@ def test_one_term_can_ask_for_its_own_relations(page, server, seeded):
     # 1 語ぶんは探す本数の既定を下げる（本数はそのまま待ち時間になる）
     assert page.locator("dialog.sheet[open] [data-ref=limit]").input_value() == "10"
     page.click("dialog.sheet[open] [data-ref=cancel]")
+
+
+def test_the_compose_dialog_asks_for_three_things(page, server, seeded):
+    """✨ AI 執筆 の入口と、聞く項目が 3 つであること。
+
+    **AI は呼ばない**（ここで見るのは、⋯ から開けることと、欄の顔ぶれ）。
+    入口を ⋯ に置いたのは「たまに使う・入口は残したい」に当たるため ——
+    上のバーは 1 行に収める約束なので、そちらには足さない。
+
+    **文体の欄が無いこと**も見る。`.glosspop/style.md` と ⚙ が唯一の口で、
+    ここに写しを作ると「フォルダに書いたのに効かない」が起きる。
+    """
+    page.goto(server)
+    click_menu_item(page, "sourceMenu", "AI 執筆")
+
+    root = "[data-ref=composeDialog][open]"
+    # **要素の存在を待つだけでは足りない。** 欄は雛形にあるので即座に見つかるが、
+    # 中身は `/api/ai/compose-options` が返ってから入る。**最後に書かれるもの**
+    # （語数の目安）が出るまで待つ ——「待つ対象を広く取らない」の裏返しで、
+    # ここは狭すぎると読み込み前の空の値を読んでしまう
+    page.locator(f"{root} [data-ref=sizeNote]:not(:empty)").wait_for(timeout=10000)
+    # 聞くのは 3 つだけ（ジャンル / テーマ・仮定の論 / 語数）
+    for ref in ("genre", "theme", "size"):
+        assert page.locator(f"{root} [data-ref={ref}]").count() == 1, ref
+    # **文体の欄は無い**
+    assert page.locator(f"{root} [data-ref=style]").count() == 0
+
+    # 語数は段から選ぶ。既定は抽出と同じ 12
+    assert page.locator(f"{root} [data-ref=size]").input_value() == "12"
+    # ジャンルは「おまかせ」を含む（完全ランダム指定ができる）
+    assert "おまかせ" in (page.locator(f"{root} [data-ref=genre]").text_content() or "")
+    # 本文がまだ無いうちは、ファイルにする口も開く口も出さない
+    for ref in ("open", "save"):
+        assert page.locator(f"{root} [data-ref={ref}]").is_hidden()
+    # **「閉じる」は必ず見えている**（✕ だけだと分かりにくい、という指摘への答え）
+    assert page.locator(f"{root} [data-ref=done]").is_visible()
+    # 「書き出す」が 2 つ並ばないよう、名前で対象を言う
+    assert "用語を辞書に" in (page.locator(f"{root} [data-ref=go]").text_content() or "")
+
+    # **プレビューはサーバが描く**（`/api/render`）。手元に Markdown を読む手段は
+    # 無いので、ここで別に描くとビューアと見え方がずれる。AI は呼ばない
+    page.fill(f"{root} [data-ref=text]", "# 題\n\n本文。\n")
+    page.locator(f"{root} [data-ref=preview] h1").wait_for(timeout=10000)
+    assert (page.locator(f"{root} [data-ref=preview] h1").text_content() or "").strip() == "題"
+    # 本文ができたら保存の欄と、置き場所の説明が出る
+    assert page.locator(f"{root} [data-ref=saveBox]").is_visible()
+    assert "保存します" in (page.locator(f"{root} [data-ref=target]").text_content() or "")
+
+    page.click(f"{root} [data-ref=close]")
 
 
 def test_the_graph_draws_nodes_and_an_edge(page, server, seeded):

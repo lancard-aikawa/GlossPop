@@ -122,9 +122,11 @@ class TransientError(LLMError):
 #: Claude 258.6 秒 / Gemini 72.4 秒（実測）。同じ見積もりを当てると、速いほうで
 #: 「駄目だった」と分かるのが遅すぎる
 #: 読みは 1 件あたり十数トークンしか書かせないので、関係や抽出よりずっと軽い
+#: 執筆 (`compose`) は語数ぶんの本文を、`needed` は語ごとに一節を書かせるので、
+#: 語だけ挙げさせる `extract` より重い
 SECONDS_PER_ITEM: dict[str, dict[str, int]] = {
-    "claude": {"relation": 22, "extract": 10, "reading": 3},
-    "gemini": {"relation": 8, "extract": 4, "reading": 1},
+    "claude": {"relation": 22, "needed": 14, "extract": 10, "compose": 6, "reading": 3},
+    "gemini": {"relation": 8, "needed": 5, "extract": 4, "compose": 2, "reading": 1},
 }
 TIMEOUT_BASE = 60
 

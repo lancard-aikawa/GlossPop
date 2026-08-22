@@ -136,6 +136,48 @@ class ExtractRequest(BaseModel):
     kinds: list[str] = []
 
 
+class ComposeRequest(BaseModel):
+    """テーマから本文を 1 枚書かせる。**指定するのは 3 つだけ。**
+
+    **文体はここに載せない** —— `.glosspop/style.md` と ⚙ が唯一の口で、
+    写しを作ると片方だけ古くなる（「全体に書いたのに効かない」が起きる）。
+    保存先も載せない（`scope: "auto"` が既にある）。
+    """
+
+    #: ジャンル。空なら AI に選ばせる（完全ランダム指定）
+    genre: str = ""
+    #: テーマ、または仮定の論。空なら AI に立てさせる
+    theme: str = ""
+    #: 語数の段 (ai.COMPOSE_SIZES)。読めない値は既定に落ちる
+    size: int = ai.DEFAULT_COMPOSE_SIZE
+
+
+class NeededRequest(BaseModel):
+    """本文に**要るのに名前の付いていない語**を、一節ごと提案させる。"""
+
+    text: str = ""
+    limit: int = ai.DEFAULT_COMPOSE_SIZE
+    kinds: list[str] = []
+
+
+class InsertRequest(BaseModel):
+    """提案された一節を本文へ入れる。**保存はしない**（結果を返すだけ）。"""
+
+    text: str = ""
+    #: 入れるもの。``anchor`` と ``passage`` を見る
+    items: list[dict] = []
+
+
+class ComposeSaveRequest(BaseModel):
+    """執筆した本文を、開いているフォルダに保存する。"""
+
+    text: str = ""
+    #: ファイル名。空なら本文の題から作る（拡張子は `.md` に固定）
+    name: str = ""
+    #: 同名があるとき、明示されたときだけ上書きする
+    overwrite: bool = False
+
+
 class RelationsDraftRequest(BaseModel):
     """登録済みの用語どうしの関係を AI に下書きさせる。"""
 
@@ -539,6 +581,76 @@ def _safe_content_path(rel: str) -> Path:
     if target.suffix.lower() not in CONTENT_SUFFIXES:
         raise HTTPException(400, f"対応していない拡張子です: {target.suffix}")
     return target
+
+
+def _safe_new_content_path(name: str) -> Path:
+    """**まだ無いファイル**の置き場所を、開いているフォルダの中に限って解決する。
+
+    `_safe_content_path()` は既にあるファイル用（`is_file()` を要求する）なので
+    書き込みには使えない。**基準は必ず `config.content_dir()`** —— 直接パスを
+    組み立てると、フォルダを切り替えたあとに別のフォルダへ書く。
+
+    名前は `ai.safe_filename()` で潰してから使う（区切り文字も禁止文字も落ちる）
+    が、**組み立てた結果が中に収まっているかを最後にもう一度確かめる** ——
+    zip の展開と同じで、外から来た名前をそのまま繋がない。
+    """
+    stem = ai.safe_filename(Path(name or "").stem)
+    base = config.content_dir().resolve()
+    target = (base / f"{stem}.md").resolve()
+    if target.parent != base:
+        raise HTTPException(400, "開いているフォルダの外には書けません")
+    return target
+
+
+@app.get("/api/compose/target")
+def compose_target(name: str = "") -> dict:
+    """執筆したものをどこに置くか。**押す前に画面へ出すための材料。**
+
+    上書きになるかを先に返すのは、控えを取る仕組みが文書には無いため
+    （辞書のほうは `archive.write_backup()` がある）。**削除や統合と同じで、
+    何が起きるかを先に見せるのが代わりの担保。**
+    """
+    target = _safe_new_content_path(name)
+    root = config.content_dir()
+    return {
+        "root": str(root),
+        "root_label": root.name,
+        "name": target.name,
+        "exists": target.is_file(),
+    }
+
+
+@app.post("/api/compose/save")
+def compose_save(req: ComposeSaveRequest) -> dict:
+    """執筆した本文を、開いているフォルダに `.md` として書く。
+
+    **GlossPop が利用者の文書を書く唯一の口。** ここを「編集全般」に広げないこと
+    —— 広げるとビューアがエディタになり、外のエディタで直接編集してよいという
+    前提と、どちらが正かが決まらなくなる。
+
+    **黙って上書きしない**（`overwrite` を明示させる）。文書には控えの仕組みが
+    無いので、先に見せることでしか担保できない。
+    """
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "本文が空です")
+    target = _safe_new_content_path(req.name or ai.suggest_filename(text))
+    existed = target.is_file()
+    if existed and not req.overwrite:
+        raise HTTPException(
+            409, f"「{target.name}」はすでにあります。名前を変えるか、上書きを選んでください。"
+        )
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text.rstrip("\n") + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(500, f"書けませんでした: {exc}") from exc
+    return {
+        "name": target.name,
+        "root": str(config.content_dir()),
+        "overwritten": existed,
+        "chars": len(text),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -2671,6 +2783,64 @@ async def ai_extract(req: ExtractRequest) -> dict:
         )
     except ai.AIError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/ai/compose-options")
+def ai_compose_options() -> dict:
+    """執筆で選ばせる項目の一覧。**正はここではなく `ai.py`。**"""
+    return {
+        "genres": ai.COMPOSE_GENRES,
+        "sizes": [
+            {"size": n, "chars": ai.compose_chars(n)} for n in ai.compose_sizes()
+        ],
+        "default_size": ai.DEFAULT_COMPOSE_SIZE,
+    }
+
+
+@app.post("/api/ai/compose")
+async def ai_compose(req: ComposeRequest) -> dict:
+    """テーマから本文を 1 枚書く。**保存はしない**（返すだけ）。
+
+    保存も公開もここではやらない —— 公開の側 (`publish.py`) が commit も push も
+    せず、既定の出力先も持たないのと同じ約束で、**外向きの最後の一歩は人が踏む**。
+    """
+    if not ai.available():
+        raise HTTPException(503, "claude CLI が見つかりません。手動入力で登録してください。")
+    try:
+        return await ai.compose_document(
+            genre=req.genre, theme=req.theme, size=req.size
+        )
+    except ai.AIError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/ai/needed")
+async def ai_needed(req: NeededRequest) -> dict:
+    """本文に要る語を (語, 一節) の対で提案する。**本文も辞書も書き換えない。**
+
+    **語だけでは登録できない** —— 本文に出てこない表記はリンクにならないので、
+    提案は必ず「本文に足す一節」と対で受け取り、入れたあとに実際にリンクになるかを
+    `ai.filter_needed()` が機械で確かめる。
+    """
+    if not ai.available():
+        raise HTTPException(503, "claude CLI が見つかりません。手動入力で登録してください。")
+    try:
+        return await ai.propose_needed(
+            req.text, limit=max(1, min(req.limit, 40)), kinds=req.kinds
+        )
+    except ai.AIError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/ai/insert")
+def ai_insert(req: InsertRequest) -> dict:
+    """採用した一節を本文へ入れた結果を返す。**AI を呼ばない**し、保存もしない。
+
+    入れる場所の規則を**クライアント側に書かない**ための口。2 か所に書くと、
+    見出しが見つからないときの扱い（末尾へ足す）が片方だけずれる。
+    """
+    text = ai.insert_passages(req.text, req.items)
+    return {"text": text, "chars": len(text)}
 
 
 # **候補語の抽出にフォルダ横断の口は無い**（``/api/ai/extract`` の 1 つだけ）。

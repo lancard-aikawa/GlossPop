@@ -18,6 +18,7 @@ import { installOverlay, open } from "./overlay.js";
 import { openRelationsDialog } from "./relations-draft.js";
 import { installSelectionAdd } from "./select-add.js";
 import { available as speechAvailable, createReader } from "./speech.js";
+import { openComposeDialog } from "./compose.js";
 import { openPublishDialog } from "./publish.js";
 
 const $ = (id) => document.getElementById(id);
@@ -394,6 +395,22 @@ $("sourceMenu").replaceWith(menuButton({
       ref: "publish",
       title: "辞書を 1 枚のページとメタ画像にして書き出す",
       onSelect: () => openPublishDialog(),
+    },
+    {
+      // **たまに使う操作なので行に足さない。** そして「読むもの」ではなく
+      // 「書くもの」なので、フォルダ・URL のタブとも並べない
+      label: "✨ AI 執筆…",
+      ref: "compose",
+      title: "テーマから本文を 1 枚書き、要る語を一節ごと足す",
+      onSelect: () =>
+        openComposeDialog({
+          // **保存してあればファイルとして開く。** そうすれば読書位置も
+          // `?doc=` の相関図も効く。保存前は貼り付けと同じ経路（そちらでは効かない）
+          onOpen: (text, savedName) =>
+            savedName
+              ? openContent(savedName)
+              : setSource({ text, kind: "markdown", filename: null }),
+        }),
     },
   ],
 }));
