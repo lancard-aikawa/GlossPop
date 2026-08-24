@@ -18,7 +18,7 @@
 // 写しを作ると「フォルダに書いたのに効かない」が起きる。
 //
 // **本文欄は最初から出す。** 手持ちの本文を貼って、用語の書き出しだけ使う道を塞がない。
-import { api, el, setStatus } from "./base.js";
+import { api, el, mapPool, setStatus, ticking } from "./base.js";
 import { invalidatePopupCache } from "./popup.js";
 
 let dialog = null;
@@ -295,7 +295,11 @@ export async function openComposeDialog({ onOpen = null, text = "" } = {}) {
 
   async function compose() {
     busy = true;
-    setStatus(refs.status, "本文を書いています… （語数が多いほど待ちます）");
+    // 応答は最後にまとめて返る（語数が多いほど待つ）ので、経過秒を出す
+    const wait = ticking(
+      refs.status,
+      (s) => `本文を書いています…（${s} 秒経過。語数が多いほど待ちます）`,
+    );
     paint();
     try {
       const res = await api("/api/ai/compose", {
@@ -306,12 +310,15 @@ export async function openComposeDialog({ onOpen = null, text = "" } = {}) {
           size: Number(refs.size.value),
         },
       });
+      wait.stop();          // **文言を書く前に止める**
       setBody(res.text, { rename: true });
       setStatus(
         refs.status,
-        `${res.chars} 字（目安 ${res.target_chars} 字）で書けました。そのまま直せます。`,
+        `${res.chars} 字（目安 ${res.target_chars} 字）で書けました（${wait.secs()} 秒）。`
+          + "そのまま直せます。",
       );
     } catch (err) {
+      wait.stop();
       setStatus(refs.status, String(err.message || err), "error");
     } finally {
       busy = false;
@@ -321,13 +328,14 @@ export async function openComposeDialog({ onOpen = null, text = "" } = {}) {
 
   async function propose() {
     busy = true;
-    setStatus(refs.status, "本文に要る語を探しています…");
+    const wait = ticking(refs.status, (s) => `本文に要る語を探しています…（${s} 秒経過）`);
     paint();
     try {
       const res = await api("/api/ai/needed", {
         method: "POST",
         body: { text: body, limit: Number(refs.size.value) },
       });
+      wait.stop();          // **文言を書く前に止める**
       rows = (res.candidates || []).map(makeRow);
       for (const r of rows) r.check.addEventListener("change", paint);
       refs.list.replaceChildren(...rows.map((r) => r.row));
@@ -341,10 +349,12 @@ export async function openComposeDialog({ onOpen = null, text = "" } = {}) {
       setStatus(
         refs.status,
         rows.length
-          ? `${rows.length} 語。チェックしたものを本文に足してから、辞書に登録します。`
-          : "足せる語は見つかりませんでした。",
+          ? `${rows.length} 語（${wait.secs()} 秒）。`
+            + "チェックしたものを本文に足してから、辞書に登録します。"
+          : `足せる語は見つかりませんでした（${wait.secs()} 秒）。`,
       );
     } catch (err) {
+      wait.stop();
       setStatus(refs.status, String(err.message || err), "error");
     } finally {
       busy = false;
@@ -363,6 +373,7 @@ export async function openComposeDialog({ onOpen = null, text = "" } = {}) {
     if (!targets.length) return;
     busy = true;
     paint();
+    let tick = null;
     try {
       // 1. 本文に一節を入れる（入れ方の規則はサーバに 1 か所だけ置く）
       const res = await api("/api/ai/insert", {
@@ -375,10 +386,24 @@ export async function openComposeDialog({ onOpen = null, text = "" } = {}) {
       savedName = "";               // 本文が変わったので、ファイルとは別物になった
       schedulePreview(0);
 
-      // 2. 語ごとに下書きして保存する（`extract.js` と同じ口を叩く）
+      // 2. 語ごとに下書きして保存する（`extract.js` と同じ口を叩く）。
+      //    **同時に AI_POOL 本まで走らせる** —— 下書きは 1 語あたり 20 秒ほどで、
+      //    順に待つと語数ぶん積み上がる（実測: 逐次 4 語 77.2 秒 → 同時 25.2 秒）。
+      //    保存まで並列でよい: `store` と `categories` はどちらも RLock ＋
+      //    tmp.replace で、呼び出しは store → categories の一方向しかない
       let saved = 0;
-      for (const [i, row] of targets.entries()) {
-        setStatus(refs.status, `${i + 1}/${targets.length}: ${row.item.term} を下書き中…`, "busy");
+      let done = 0;
+      let running = 0;
+      // 経過秒も出す（数分かかるので、数字が動いていないと固まったように見える）
+      const wait = ticking(
+        refs.status,
+        (s) => `${done}/${targets.length} 完了（${running} 本実行中・${s} 秒経過）`,
+      );
+      const progress = () => wait.paint();
+      tick = wait;
+      await mapPool(targets, async (row) => {
+        running++;
+        progress();
         setStatus(row.state, "下書き中", "busy");
         try {
           const draft = await api("/api/ai/draft", {
@@ -402,12 +427,18 @@ export async function openComposeDialog({ onOpen = null, text = "" } = {}) {
         } catch (err) {
           setStatus(row.state, String(err.message || err), "error");
         }
-      }
+        running--;
+        done++;
+        progress();
+      });
+      wait.stop();          // **文言を書く前に止める**
+      tick = null;
       // 辞書が変わったので、本文の吹き出しとリンクを作り直させる
       if (saved) invalidatePopupCache();
       setStatus(
         refs.status,
-        `${targets.length} 語ぶんの一節を本文に入れ、${saved} 語を辞書に登録しました。` +
+        `${targets.length} 語ぶんの一節を本文に入れ、${saved} 語を辞書に登録しました` +
+          `（${wait.secs()} 秒）。` +
           "  本文はまだファイルになっていません（📄 本文を保存…）。",
       );
       refreshTarget();
@@ -415,6 +446,7 @@ export async function openComposeDialog({ onOpen = null, text = "" } = {}) {
     } catch (err) {
       setStatus(refs.status, String(err.message || err), "error");
     } finally {
+      if (tick) tick.stop();           // 途中で失敗しても打ち直しを止める
       busy = false;
       paint();
     }

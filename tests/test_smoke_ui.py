@@ -3563,6 +3563,64 @@ def test_extracting_offers_another_name_as_an_alias(page, server, seeded, monkey
     assert store.find_by_surface("ジョバンニ君")[0].term == "ジョバンニ"
 
 
+def test_extract_can_skip_the_review_and_save(page, server, seeded, monkeypatch):
+    """「下書きができ次第そのまま保存」で、確認の段を挟まずに辞書へ入るまで。
+
+    **ボタンは 1 つのまま**（段が 1 つ減るだけ）。下書きは同時に走るので、進捗は
+    「終わった数と実行中の本数」で出す —— 並列では「3/12: 用語名」が嘘になる。
+    **保存済みの行からも「編集」で開き直せる**ことまで見る: 確認を省いた道では、
+    閉じるまでのこの一覧が唯一の見直しの場なので、ここが消えると後から直せない。
+    """
+    from glosspop import ai
+
+    monkeypatch.setattr(ai, "available", lambda: True)
+
+    def answer(prompt, **_):
+        # 抽出のプロンプトだけが別名の欄を持つ（下書きは 1 語ぶんの JSON を返す）
+        if "alias_of" in prompt:
+            return json.dumps([
+                {"term": "活版所", "kind": "proper", "why": "働く場所",
+                 "context": "ジョバンニは活版所で働いていた。"},
+                {"term": "授業", "kind": "term", "why": "場面の枠",
+                 "context": "午后の授業"},
+            ])
+        term = "活版所" if "活版所" in prompt else "授業"
+        return json.dumps({
+            "term": term,
+            "category": "用語",
+            "summary": f"{term}の要約。",
+            "definition": f"{term}の説明。",
+            "scope": "global",
+        })
+
+    monkeypatch.setattr(ai, "_generate", answer)
+
+    page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
+    page.locator("a.gloss-link").first.wait_for(timeout=15000)
+    page.click("#extract")
+    page.locator("dialog.sheet .kind-list .check").first.wait_for(timeout=10000)
+    page.select_option("dialog.sheet [data-ref=spoiler]", "full")
+    # **覚えない選択**なので、開くたびに「確認してから」に戻っている
+    assert page.locator("dialog.sheet [data-ref=mode]").input_value() == "review"
+    page.select_option("dialog.sheet [data-ref=mode]", "auto")
+    page.click("dialog.sheet button:has-text('種別で候補を抽出する')")
+
+    # 主ボタンは 1 つのまま。文言だけが「下書きして保存する」に変わる
+    page.locator("dialog.sheet [data-ref=go]:has-text('下書きして保存する')").wait_for(
+        timeout=20000
+    )
+    page.click("dialog.sheet [data-ref=go]")
+
+    page.locator("dialog.sheet [data-ref=status]:has-text('2 語を保存しました')").wait_for(
+        timeout=20000
+    )
+    assert sorted(e.term for e in store.load_all()) == [
+        "カムパネルラ", "ジョバンニ", "授業", "活版所",
+    ]
+    # 保存したあとも見直せる（行の「編集」は残る）
+    assert page.locator("dialog.sheet .cand-list button:has-text('編集'):visible").count() == 2
+
+
 def test_relations_can_be_drafted_then_continued(page, server, seeded, monkeypatch):
     """下書き → 書き込み →「続けて探す」で**書いたぶんが除かれる**まで通す。
 

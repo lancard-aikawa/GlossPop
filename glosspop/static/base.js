@@ -24,6 +24,65 @@ export async function api(path, { method = "GET", body, signal } = {}) {
   return data;
 }
 
+//: 同時に投げてよい AI 呼び出しの本数。**好みで変える値ではない。**
+//:
+//: ブラウザは同一オリジンへ 6 本までしか繋がず、`heartbeat.js` が 8 秒ごとに
+//: `/api/alive` を通す必要がある（25 秒途切れると `watchdog.py` がサーバを止める）。
+//: 6 本を下書きで埋めると ping が後ろに詰まり、**下書きの最中にサーバが自分で
+//: 終わる** —— しかも数えているのは専用ウィンドウ (`app`) のときだけなので、
+//: `serve` のブラウザタブでは再現しない。**予備を 2 本残すこと。**
+//:
+//: 実測 (sonnet, 1 語ぶんの下書き): 逐次 4 語 77.2 秒 → 同時 4 語 25.2 秒 (3.07 倍)。
+//: 1 本あたりは 19.3 → 21.2 秒に伸びるだけで、失敗 (429/503) は出ていない。
+export const AI_POOL = 4;
+
+/**
+ * `items` を最大 `limit` 本ずつ並べて処理する。返りは**入力順**。
+ *
+ * **例外は握らない。** 失敗をどう見せるか（行に出す・チェックを外す）は呼ぶ側の
+ * 仕事で、ここで握ると握った先で握り潰される。呼ぶ側は worker の中で捌くこと。
+ *
+ * `signal` が落ちたら**まだ始めていないものは呼ばない**。走っている本は呼ぶ側が
+ * 同じ signal を `api()` に渡していれば一緒に切れる。
+ */
+export async function mapPool(items, worker, { limit = AI_POOL, signal } = {}) {
+  const out = new Array(items.length);
+  let next = 0;
+  const run = async () => {
+    while (next < items.length) {
+      const i = next++;
+      if (signal?.aborted) return;
+      out[i] = await worker(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  return out;
+}
+
+/**
+ * 「N 秒経過」を 1 秒ごとに打ち直す。**応答が最後にまとめて返る仕事に必ず付ける**
+ * —— 数分かかることがあり、数字が動いていないと固まったように見えて閉じられる。
+ *
+ * `render(秒)` が状態の文字列を作る。返りの `stop()` は打ち直しを止めて合計秒を
+ * 返す。**終わりの文言を書く前に止めること** —— 止める前に書くと、次の打ち直しが
+ * 1 秒後にそれを上書きする。
+ */
+export function ticking(node, render, ms = 1000) {
+  const started = Date.now();
+  const secs = () => Math.round((Date.now() - started) / 1000);
+  const paint = () => setStatus(node, render(secs()), "busy");
+  paint();
+  const timer = setInterval(paint, ms);
+  return {
+    secs,
+    paint,
+    stop: () => {
+      clearInterval(timer);
+      return secs();
+    },
+  };
+}
+
 // ネタバレ設定 (AI にどこまで読ませるか) は登録ダイアログと抽出ダイアログで共用する
 const SPOILER_KEY = "glosspop.spoiler";
 

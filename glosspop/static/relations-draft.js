@@ -3,7 +3,7 @@
 // 関係のデータ構造だけあっても 1 本ずつ手で書くことになり、図が空のまま終わる。
 // ここがそれを埋める側。**用語は作らない**（それは extract.js の仕事）ので、
 // 下書きは 1 回の呼び出しで済む。まとめて登録のような語数ぶんのループは無い。
-import { api, defaultSpoiler, el, RANK_MARK, rememberSpoiler, setStatus } from "./base.js";
+import { api, defaultSpoiler, el, RANK_MARK, rememberSpoiler, setStatus, ticking } from "./base.js";
 
 let dialog = null;
 let refs = {};
@@ -151,12 +151,10 @@ export async function openRelationsDialog({
     paintGo();
     // **1 本あたり 20 秒ほどかかる。** 進捗の出しようが無い（応答は最後にまとめて
     // 返る）ので、せめて経過秒を出す —— 出さないと固まったように見えて閉じられる
-    const started = Date.now();
-    const tick = setInterval(() => {
-      const sec = Math.round((Date.now() - started) / 1000);
-      setStatus(refs.status, `AI が関係を探しています（${sec} 秒経過）`, "busy");
-    }, 1000);
-    setStatus(refs.status, "AI が関係を探しています（数分かかることがあります）", "busy");
+    const wait = ticking(
+      refs.status,
+      (s) => `AI が関係を探しています（${s} 秒経過。数分かかることがあります）`,
+    );
     try {
       controller = new AbortController();
       const res = await api("/api/ai/relations", {
@@ -187,11 +185,11 @@ export async function openRelationsDialog({
         refs.list.replaceChildren(...rows.map((r) => r.li));
         for (const row of rows) row.check.addEventListener("change", paintGo);
       }
-      clearInterval(tick);
-      setStatus(refs.status, `候補 ${rows.length} 本`);
+      wait.stop();          // **文言を書く前に止める**
+      setStatus(refs.status, `候補 ${rows.length} 本（${wait.secs()} 秒）`);
       paintNotes(res);
     } catch (err) {
-      clearInterval(tick);
+      wait.stop();
       // タイムアウトは「本数を減らせば通る」ので、そこまで言う
       const hint = /タイムアウト/.test(err.message)
         ? "（探す本数を減らすか、カテゴリで範囲を絞ってください）"
@@ -199,7 +197,7 @@ export async function openRelationsDialog({
       if (!aborted) setStatus(refs.status, err.message + hint, "error");
       refs.spoiler.disabled = refs.limit.disabled = false;   // やり直せるように戻す
     }
-    clearInterval(tick);
+    wait.stop();
     busy = false;
     refs.stop.hidden = true;
     paintGo();

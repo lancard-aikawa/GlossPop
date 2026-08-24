@@ -124,8 +124,13 @@ class TransientError(LLMError):
 #: 読みは 1 件あたり十数トークンしか書かせないので、関係や抽出よりずっと軽い
 #: 執筆 (`compose`) は語数ぶんの本文を、`needed` は語ごとに一節を書かせるので、
 #: 語だけ挙げさせる `extract` より重い
+#:
+#: **`extract` は 10 では足りなかった**（実測: 既定の 12 語で 155 秒 ＝ 約 13 秒/語。
+#: 持ち時間 180 秒の 86% で、もう少し長い文書なら 3 分待った末に全部消える）。
+#: 20 にして既定の 12 語で 300 秒 —— 関係の下書きで踏んだのと同じ形なので、
+#: **実測より短い見積もりを置かないこと**
 SECONDS_PER_ITEM: dict[str, dict[str, int]] = {
-    "claude": {"relation": 22, "needed": 14, "extract": 10, "compose": 6, "reading": 3},
+    "claude": {"relation": 22, "needed": 14, "extract": 20, "compose": 6, "reading": 3},
     "gemini": {"relation": 8, "needed": 5, "extract": 4, "compose": 2, "reading": 1},
 }
 TIMEOUT_BASE = 60

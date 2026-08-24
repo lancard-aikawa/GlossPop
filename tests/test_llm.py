@@ -154,6 +154,14 @@ class TestTimeoutEstimate:
         monkeypatch.setattr(config, "CLAUDE_TIMEOUT_MAX", 300)
         assert llm.estimate_timeout("relation", 999, "claude") == 300
 
+    def test_extract_gets_five_minutes_at_the_default_size(self):
+        """既定の 12 語で 300 秒。**実測 155 秒**（約 13 秒/語）に対する余裕。
+
+        以前は 10 秒/語 ＝ 180 秒で、実測が その 86% まで来ていた（もう少し長い
+        文書なら、3 分待った末にタイムアウトで全部消える）。
+        """
+        assert llm.estimate_timeout("extract", 12, "claude") == 300
+
     def test_unknown_provider_falls_back(self):
         assert llm.estimate_timeout("relation", 5, "でたらめ") == \
                llm.estimate_timeout("relation", 5, "claude")

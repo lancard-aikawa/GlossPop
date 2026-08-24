@@ -5,7 +5,9 @@
 //
 // **その前にもう 1 段ある: 何を抜き出すか (種別) を先に決める。** 種別を指定
 // せずに頼むと AI は語義説明のできる語ばかり挙げ、登場人物がまるごと落ちる。
-import { api, defaultSpoiler, el, rememberSpoiler, setStatus } from "./base.js";
+import {
+  api, defaultSpoiler, el, mapPool, rememberSpoiler, setStatus, ticking,
+} from "./base.js";
 import { openEntryEditor } from "./editor.js";
 import { invalidatePopupCache } from "./popup.js";
 import { openRelationsDialog } from "./relations-draft.js";
@@ -65,6 +67,11 @@ function build() {
           <option value="position">初出位置だけ（AI を使わない）</option>
           <option value="first">初出の場面だけで書く</option>
           <option value="full">全文から書く（ネタバレ可）</option>
+        </select>
+        <select data-ref="mode" class="auto-width" aria-label="確認"
+                title="下書きを確認してから保存するか、できたものからそのまま保存するか">
+          <option value="review">下書きを確認してから保存</option>
+          <option value="auto">下書きができ次第そのまま保存</option>
         </select>
         <span class="status" data-ref="status"></span>
         <span class="spacer"></span>
@@ -185,6 +192,11 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
     rememberSpoiler(refs.spoiler.value);
     paintGo();
   };
+  // **覚えない。** ネタバレ設定は覚えているが、あれは「AI に何を読ませるか」で、
+  // こちらは「見ずに辞書へ書き込むか」。前回の選択が黙って続くと、次に開いた人が
+  // 主ボタンを 1 回押しただけで十数語が入る
+  refs.mode.value = "review";
+  refs.mode.onchange = () => paintGo();
   refs.list.replaceChildren();
   refs.kinds.replaceChildren();
   refs.kindbox.hidden = false;
@@ -230,13 +242,19 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
     const n = selected(rows).length;
     const phase = rows.some((r) => r.draft) ? "保存" : "下書き";
     const noAI = refs.spoiler.value === "position";
+    // 確認を省く選択でも**ボタンは 1 つのまま**。文言だけが変わる
+    const auto = refs.mode.value === "auto";
     refs.go.disabled = busy || n === 0;
     refs.go.textContent =
       phase === "保存"
         ? `チェックした ${n} 語を保存`
         : noAI
-          ? `選んだ ${n} 語を取り込む（AI なし）`
-          : `選んだ ${n} 語の下書きを作る`;
+          ? auto
+            ? `選んだ ${n} 語を取り込んで保存（AI なし）`
+            : `選んだ ${n} 語を取り込む（AI なし）`
+          : auto
+            ? `選んだ ${n} 語を下書きして保存する`
+            : `選んだ ${n} 語の下書きを作る`;
     refs.toggle.hidden = false;
     refs.toggle.textContent = n ? "全解除" : "全選択";
   };
@@ -267,7 +285,8 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
     refs.kindbox.disabled = true;
     refs.stop.hidden = false;
     paintGo();
-    setStatus(refs.status, "AI が候補を抽出中 (数十秒かかります)", "busy");
+    // 応答は最後にまとめて返るので、せめて経過秒を出す
+    const wait = ticking(refs.status, (s) => `AI が候補を抽出中（${s} 秒経過）`);
     try {
       controller = new AbortController();
       const res = await api("/api/ai/extract", {
@@ -275,6 +294,7 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
         signal: controller.signal,
         body: { text, source, kinds },
       });
+      wait.stop();          // **文言を書く前に止める**（止めないと 1 秒後に上書きされる）
       controller = null;
       rows = (res.candidates || []).map(makeRow);
       aliasRows = (res.aliases || []).map(makeAliasRow);
@@ -302,11 +322,12 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
           refs.status,
           [`候補 ${rows.length} 語`, aliasRows.length ? `別名 ${aliasRows.length} 件` : ""]
             .filter(Boolean)
-            .join(" / ")
+            .join(" / ") + `（${wait.secs()} 秒）`
         );
       }
       paintNotes(res);
     } catch (err) {
+      wait.stop();
       // 閉じられて中断したときは、消えたダイアログにエラーを書きに行かない
       if (!aborted) setStatus(refs.status, err.message, "error");
       refs.kindbox.disabled = false;   // やり直せるように戻す
@@ -326,64 +347,148 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
     refs.dropped.textContent = notes.join(" / ");
   };
 
-  /** 選ばれた語の下書きを順に作る。1 語ずつなので進捗を出し、中止も効く。 */
+  /**
+   * 1 語ぶんを辞書へ書き込む。**確認あり・なしで同じ口を通す** —— 別々に書くと、
+   * 片方だけ保存先の決め方や後始末が古くなる。
+   */
+  const saveRow = async (row) => {
+    row.saved = await api("/api/entries", {
+      method: "POST",
+      // 「AI が選ぶ」なら下書きに入っている保存先をそのまま使う
+      body: {
+        ...row.draft,
+        scope: refs.scope.value === "auto" ? row.draft.scope || "global" : refs.scope.value,
+      },
+    });
+    saved++;
+    setStatus(row.state, `保存しました (${row.saved.path_label})`);
+    row.check.checked = false;
+    row.check.disabled = true;
+    // **保存したあとも「編集」を残す。** 確認を省いた道では、閉じるまでのこの
+    // 一覧が唯一の見直しの場になる。用語ページへのリンクにしないのは、覆い
+    // (`overlay.js`) がこの modal の**裏**に開いて何も起きていないように見えるため
+    row.edit.hidden = false;
+  };
+
+  /**
+   * 選ばれた語の下書きを作る（`refs.mode` が `auto` ならそのまま保存まで）。
+   *
+   * **同時に `AI_POOL` 本まで走らせる。** 実測 (sonnet, 1 語ぶんの下書き) で
+   * 逐次 4 語 77.2 秒 → 同時 4 語 25.2 秒。同時数を決めているのは好みではなく
+   * ブラウザの 6 接続と heartbeat で、理由は `base.js` の `AI_POOL` に書いてある。
+   *
+   * 進捗は**終わった数といま走っている本数**で出す —— 並列では
+   * 「3/12: 用語名」が嘘になる（どの語が終わったかは行が持っている）。
+   */
   const runDrafts = async () => {
     const targets = selected(rows);
     if (!targets.length) return;
+    // 押した時点の選択で通しきる（途中で変えられても半分だけ効かせない）
+    const auto = refs.mode.value === "auto";
     aborted = false;
-    refs.go.disabled = refs.toggle.disabled = true;
+    refs.go.disabled = refs.toggle.disabled = refs.mode.disabled = true;
     refs.stop.hidden = false;
+    // **中止は 1 回の実行につき 1 つ。** 全部の呼び出しに同じ signal を渡して
+    // おけば、閉じたときの `controller?.abort()` で走っている本が全部切れる
+    controller = new AbortController();
+    const signal = controller.signal;
     let done = 0;
-    for (const row of targets) {
-      if (aborted) break;
-      setStatus(refs.status, `下書き ${done + 1}/${targets.length}: ${row.candidate.term}`, "busy");
-      setStatus(row.state, "生成中", "busy");
-      controller = new AbortController();
-      try {
-        const res = await api("/api/ai/draft", {
-          method: "POST",
-          body: {
-            term: row.candidate.term,
-            context: row.candidate.context,
-            source,
-            spoiler: refs.spoiler.value,
-            scope: refs.scope.value,
-            // 抽出時の種別。保存先 (人物ならこのフォルダの辞書) の下敷きになる
-            kind: row.candidate.kind || "",
-          },
-          signal: controller.signal,
-        });
-        row.draft = res.draft;
-        const label = [res.draft.category, res.draft.subcategory].filter(Boolean).join(" / ");
-        const first = res.draft.first_locator
-          ? `初出 ${res.draft.first_file} ${res.draft.first_locator}`
-          : "";
-        // どちらの辞書に入るかは語ごとに変わるので、行ごとに見せる
-        const mark = res.draft.scope === "local" ? "📁 " : "";
-        setStatus(row.state, mark + (label || "カテゴリ未定"));
-        row.li.querySelector(".hint").textContent =
-          [res.draft.summary, first].filter(Boolean).join(" — ");
-        row.edit.hidden = false;
-      } catch (err) {
-        if (aborted) break;
-        setStatus(row.state, err.message, "error");
-        row.check.checked = false;
-      }
-      done++;
+    let running = 0;
+    // **経過秒も出す。** 進捗が動くのは語が終わったときだけなので、その間ずっと
+    // 止まって見える（1 秒ごとの打ち直しは `ticking` が持っている）
+    const wait = ticking(refs.status, (s) => {
+      const what = auto ? "下書きと保存" : "下書き";
+      return `${what} ${done}/${targets.length} 完了（${running} 本実行中・${s} 秒経過）`;
+    });
+    const progress = () => wait.paint();
+    try {
+      await mapPool(
+        targets,
+        async (row) => {
+          running++;
+          progress();
+          try {
+            // **できている下書きは作り直さない。** 確認の段から「そのまま保存」へ
+            // 切り替えて押したとき、同じ語をもう一度書かせることになる
+            if (!row.draft) {
+              setStatus(row.state, "生成中", "busy");
+              const res = await api("/api/ai/draft", {
+                method: "POST",
+                body: {
+                  term: row.candidate.term,
+                  context: row.candidate.context,
+                  source,
+                  spoiler: refs.spoiler.value,
+                  scope: refs.scope.value,
+                  // 抽出時の種別。保存先 (人物ならこのフォルダの辞書) の下敷きになる
+                  kind: row.candidate.kind || "",
+                },
+                signal,
+              });
+              row.draft = res.draft;
+              const label = [res.draft.category, res.draft.subcategory].filter(Boolean).join(" / ");
+              const first = res.draft.first_locator
+                ? `初出 ${res.draft.first_file} ${res.draft.first_locator}`
+                : "";
+              // どちらの辞書に入るかは語ごとに変わるので、行ごとに見せる
+              const mark = res.draft.scope === "local" ? "📁 " : "";
+              setStatus(row.state, mark + (label || "カテゴリ未定"));
+              row.li.querySelector(".hint").textContent =
+                [res.draft.summary, first].filter(Boolean).join(" — ");
+              row.edit.hidden = false;
+            }
+            if (auto) {
+              setStatus(row.state, "保存中", "busy");
+              await saveRow(row);
+            }
+          } catch (err) {
+            // 閉じられて中断したときは、消えたダイアログに書きに行かない
+            if (!aborted) {
+              setStatus(row.state, err.message, "error");
+              row.check.checked = false;
+            }
+          }
+          running--;
+          done++;
+          progress();
+        },
+        { signal }
+      );
+    } finally {
+      wait.stop();          // **文言を書く前に止める**
     }
     controller = null;
     refs.stop.hidden = true;
-    refs.toggle.disabled = false;
+    refs.toggle.disabled = refs.mode.disabled = false;
     const made = rows.filter((r) => r.draft).length;
-    if (made) {
-      refs.lead.textContent =
-        "内容を確認して、保存する語にチェックを残してください。個別に直すなら「編集」から開けます。";
+    if (auto) {
+      if (saved) {
+        invalidatePopupCache();
+        refs.lead.textContent =
+          "辞書に書き込みました。直すなら各行の「編集」から開けます。";
+      }
+      // 登録しただけでは関係が空のまま。ここで続きへ渡す
+      refs.relations.hidden = saved < 2;
+      setStatus(
+        refs.status,
+        aborted
+          ? `中止しました（${saved} 語を保存済み・${wait.secs()} 秒）`
+          : `${saved} 語を保存しました（${wait.secs()} 秒）`,
+        aborted ? "error" : ""
+      );
+    } else {
+      if (made) {
+        refs.lead.textContent =
+          "内容を確認して、保存する語にチェックを残してください。個別に直すなら「編集」から開けます。";
+      }
+      setStatus(
+        refs.status,
+        aborted
+          ? `中止しました（${made} 語ぶんできています・${wait.secs()} 秒）`
+          : `${made} 語の下書きができました（${wait.secs()} 秒）。確認して保存してください。`,
+        aborted ? "error" : ""
+      );
     }
-    setStatus(
-      refs.status,
-      aborted ? `中止しました（${made} 語ぶんできています）` : `${made} 語の下書きができました。確認して保存してください。`,
-      aborted ? "error" : ""
-    );
     paintGo();
   };
 
@@ -396,19 +501,7 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
     for (const row of targets) {
       setStatus(refs.status, `保存 ${done + 1}/${targets.length}: ${row.candidate.term}`, "busy");
       try {
-        row.saved = await api("/api/entries", {
-          method: "POST",
-          // 「AI が選ぶ」なら下書きに入っている保存先をそのまま使う
-          body: {
-            ...row.draft,
-            scope: refs.scope.value === "auto" ? row.draft.scope || "global" : refs.scope.value,
-          },
-        });
-        saved++;
-        setStatus(row.state, `保存しました (${row.saved.path_label})`);
-        row.check.checked = false;
-        row.check.disabled = true;
-        row.edit.hidden = true;
+        await saveRow(row);
       } catch (err) {
         setStatus(row.state, err.message, "error");
       }
@@ -482,6 +575,8 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
   // 主ボタンは 1 つで、段によって役割が変わる (種別を選ぶ → 抽出 → 下書き → 保存)
   const onGo = () => {
     if (!rows.length) return runExtract();
+    // 確認を省く道では段が 1 つしかない（下書きと保存が同じ 1 押し）
+    if (refs.mode.value === "auto") return runDrafts();
     return rows.some((r) => r.draft) ? runSaves() : runDrafts();
   };
 
@@ -492,15 +587,22 @@ export async function openExtractDialog({ text = "", source = "" } = {}) {
       context: row.candidate.context,
       source: origin,
       scope: refs.scope.value,
-      entry: { ...row.draft, term: row.draft?.term || row.candidate.term, source: origin },
+      // **保存済みなら更新として開く。** 新規として開くと同じ ref にもう一度
+      // 書こうとして 409 になる（確認を省いた道では保存済みの行から開かれる）
+      ref: row.saved?.ref || null,
+      entry: row.saved || {
+        ...row.draft,
+        term: row.draft?.term || row.candidate.term,
+        source: origin,
+      },
     });
     if (!result) return;
+    if (!row.saved) saved++;
     row.saved = result;
-    saved++;
     setStatus(row.state, `保存しました (${result.path_label})`);
     row.check.checked = false;
     row.check.disabled = true;
-    row.edit.hidden = true;
+    row.edit.hidden = false;   // 直したあとも開き直せる
     paintGo();
   };
 
