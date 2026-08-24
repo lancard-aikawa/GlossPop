@@ -262,8 +262,10 @@ def _og(title: str, note: str, name: str, base: str, stamp: str,
         lines.append(f'<meta property="og:image:alt" content="{_attr(title)}">')
         lines.append(f'<meta name="twitter:image" content="{src}">')
         if size:
-            # **大きさを書く。** 無いと、画像を取って測るまで「小さいカード」の
-            # まま出す実装がある（実測でそう見えた）。決め打ちではなく実物から読む
+            # **大きさを書く。** 効いたかどうかは確かめられていない（→ CLAUDE.md の
+            # 「X に貼ったときの見え方」。1 度これを原因だと誤診した）。害は無いので
+            # 残してあるが、**実物から読む** —— 決め打ちにすると、カードの作りを
+            # 変えたときに黙ってずれる
             lines.append(f'<meta property="og:image:type" content="image/png">')
             lines.append(f'<meta property="og:image:width" content="{size[0]}">')
             lines.append(f'<meta property="og:image:height" content="{size[1]}">')
