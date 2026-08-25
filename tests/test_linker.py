@@ -419,3 +419,50 @@ def test_longest_still_wins_inside_the_trie():
         "<p>銀河鉄道の夜を読む</p>",
     )
     assert ">銀河鉄道の夜</a>" in out
+
+
+def test_counts_come_from_the_same_matching():
+    """``counts`` は annotate が当たった場所そのもので数える。
+
+    **数える口を別に作らない**ための引数なので、当たり方は当然リンクと同じ ——
+    ``<pre>`` の中は数えないし、強調で割れた語 (``**冪**等``) は 1 回と数える。
+    """
+    counts: dict[str, int] = {}
+    link(
+        [mk("冪等", slug="idem")],
+        "<p>冪等。<strong>冪</strong>等。<code>冪等</code></p><pre>冪等</pre>",
+        counts=counts,
+    )
+    # 地の文 + 強調で割れたもの + インラインコード = 3。`<pre>` の中は数えない
+    assert counts == {"テスト/idem": 3}
+
+
+def test_counts_are_true_even_when_only_the_first_is_linked():
+    """``first_only`` は**見せ方**の指定で、何回出てくるかは変わらない。
+
+    数えるのを `first_only` の判定より後ろに置くと、この設定のとき全部 1 になる。
+    """
+    counts: dict[str, int] = {}
+    out, _ = link(
+        [mk("用語", slug="term")],
+        "<p>用語 と 用語 と 用語</p>",
+        first_only=True,
+        counts=counts,
+    )
+    assert out.count('class="gloss-link"') == 1
+    assert counts == {"テスト/term": 3}
+
+
+def test_counts_are_per_entry_when_the_surface_is_shared():
+    """同じ表記がカテゴリ違いで併存していたら、**両方に**数える。
+
+    `occurrences()` が group の全エントリに数えるのと同じ（`find_by_surface()` が
+    リストを返す辞書なので、片方だけに寄せる根拠が無い）。
+    """
+    counts: dict[str, int] = {}
+    link(
+        [mk("ソース", category="料理", slug="sauce"), mk("ソース", category="開発", slug="source")],
+        "<p>ソースとソース</p>",
+        counts=counts,
+    )
+    assert counts == {"料理/sauce": 2, "開発/source": 2}

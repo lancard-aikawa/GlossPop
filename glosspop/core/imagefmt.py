@@ -27,6 +27,20 @@ IMAGE_SUFFIXES = (".png", ".webp", ".jpg", ".jpeg", ".gif")
 #: ラスタだと**背景だけボケる**（にじむと SVG の意味が無い、と決めてある側と食い違う）
 MAP_SUFFIXES = (".svg", *IMAGE_SUFFIXES)
 
+#: 拡張子 → Content-Type。**配る側が名乗る型はここ 1 か所**（`app` の 2 つの表も
+#: ここから引く）。どの形式を通すかは呼ぶ側が決めるが、**同じ拡張子に違う型を
+#: 名乗る理由は無い** —— 表が散ると、形式を足したときに片方だけ
+#: `application/octet-stream` で配られる（画面には出るのに X には拾われない、
+#: のような見えにくい壊れ方をする）
+MIME_TYPES: dict[str, str] = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+}
+
 #: 先頭のバイト列 → 拡張子。**WebP はここに入れられない**（RIFF コンテナなので
 #: 先頭 4 バイトが他と同じ。下で別に見る）
 _MAGIC: dict[bytes, str] = {

@@ -217,6 +217,21 @@ a { color: var(--accent); }
 
 main.doc-wrap { padding: 28px 40px 120px; }
 
+/* ファイルに付けた絵（本文の先頭）。**大きさは用語ページの写真と同じ扱い** ——
+   開いた瞬間に本文が画面外へ押し出されないよう、高さに上限を持たせる
+   （本文の一部として流れるので、上のバーのように常時占有はしない） */
+.doc-cover {
+  display: block;
+  max-width: min(100%, 640px);
+  max-height: 320px;
+  margin: 0 40px 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  object-fit: contain;
+}
+@media (max-width: 760px) { .doc-cover { margin: 0 16px 4px; } }
+
 @media (max-width: 1100px) {
   .layout { grid-template-columns: 240px minmax(0, 1fr); }
   .side.right { display: none; }
@@ -450,6 +465,24 @@ body.dropping::after {
   text-overflow: ellipsis;
 }
 .filelist button:hover { background: var(--panel-2); color: var(--fg); }
+/* ファイルごとの画像。**絵があるときだけ形を変える** —— 上の block は
+   text-overflow のために要るので、横に並べるときは名前のほうを span で切る
+   （`.backup-head` と同じ形。ボタンは縮まないので、潰れるのは必ず隣） */
+.filelist button.has-thumb { display: flex; align-items: center; gap: 6px; }
+.filelist button.has-thumb > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-thumb {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 3px;
+  background: var(--panel-2);
+}
+
 .filelist button[aria-current="true"] {
   background: var(--accent-soft);
   color: var(--accent);
@@ -518,6 +551,18 @@ body.dropping::after {
 }
 .termlist a:hover { background: var(--panel-2); }
 .termlist .cat { display: block; font-size: var(--fs-10); color: var(--fg-faint); }
+/* この文書に何回出てくるか。**用語のうしろに流す** —— 右端へ絶対配置すると、
+   長い用語がその下へ潜る（パネルは 240px しかない）。1 回のときは出さないので、
+   付いている＝2 回以上、と読める */
+.termlist .term-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--fg-faint);
+  font-size: var(--fs-10);
+  white-space: nowrap;
+}
 
 .empty { font-size: var(--fs-12); color: var(--fg-faint); padding: 4px 0; }
 

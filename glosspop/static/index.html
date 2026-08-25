@@ -26,7 +26,7 @@ try {
   <nav class="topnav">
     <a href="/" aria-current="page">ビューア</a>
     <a href="/glossary">辞書</a>
-    <a href="/graph" title="辞書を図で見る（段の図・交差しない図・行列・中心の図・時系列・地図）">図</a>
+    <a href="/graph" title="辞書の関係を見る（段の図・交差しない図・行列・中心の図・時系列・地図）">関係</a>
   </nav>
   <span class="spacer"></span>
   <span class="meta" id="count"></span>
@@ -125,19 +125,17 @@ try {
 
   <main class="doc-wrap">
     <div id="docHead" class="doc" hidden>
+      <!-- **行の顔ぶれを固定する。** ものの名前（用語 / 関係 / 画像）で束ねてあるので、
+           機能を足しても行は伸びない —— 用語に何か足すならその中へ入る。
+           ⋯ ではなく名前にしているのは、**何の機能群なのかが押す前に読める**ため。
+           中身は viewer.js が menuButton() で作る -->
       <div class="check-row">
         <p class="hint" id="docMeta"></p>
         <span class="spacer"></span>
         <button type="button" id="speak" title="本文を読み上げる (辞書のリンクと吹き出しはそのまま使える)" hidden>▶ 読み上げ</button>
-        <button type="button" id="extract" title="この文書から辞書化する語を挙げる">✨ 用語を抽出</button>
-        <!-- 下書きが読むのは「いま開いている文書」。読むものが決まっている場所は
-             ここだけなので、図の側ではなく本文の側に置く -->
-        <button type="button" id="draftRelations"
-                title="この文書から、登録済みの用語どうしの関係を探す">✨ 関係を下書き</button>
-        <!-- フォルダの中のファイルを開いているときだけ。貼り付け / URL には
-             サーバ側から読み直せる道が無いので出さない（出しても絞れない） -->
-        <a class="btn" id="docGraph" href="/graph"
-           title="この文書に出てくる語だけの図" hidden>🕸 この文書の図</a>
+        <span id="termMenu"></span>
+        <span id="relMenu"></span>
+        <span id="imageMenu"></span>
       </div>
       <div class="check-row speech-bar" id="speechBar" hidden>
         <button type="button" id="speakPrev" title="前の段落">◀◀</button>
@@ -160,6 +158,12 @@ try {
       </div>
       <p class="status" id="docStatus" hidden></p>
     </div>
+    <!-- ファイルに付けた絵。**本文の先頭に出す**（用語ページの `.entry-photo` と
+         同じ形）。右パネルに置かないのは、あそこが「この文書への索引」（目次・
+         用語）の場所であることと、**1100px 以下で丸ごと消える**ため ——
+         索引は本文があれば辿れるが、絵は本文の中に無い。
+         **`#doc` の外に置く**こと（中は描き直しのたびに innerHTML ごと入れ替わる） -->
+    <img class="doc-cover" id="docCover" alt="" draggable="false" hidden>
     <article class="doc" id="doc">
       <h1>GlossPop</h1>
       <p>Markdown やテキストを表示して、<strong>知らない言葉を選択するだけで辞書に登録</strong>できるビューアです。</p>

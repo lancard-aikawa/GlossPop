@@ -296,6 +296,74 @@ def test_辞書ページへのhrefは外す(out):
     assert 'tabindex="0"' in page
 
 
+# --- 本文のページのカード ---------------------------------------------
+
+PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000004b0000002760806000000"
+) + b"0" * 32
+
+
+def test_本文のページにもカードのタグを書く(based, tmp_path):
+    """**辞書の 1 枚だけがカードを持っていた。** 文書のページを貼ると何も出ない。"""
+    art = tmp_path / "章.png"
+    art.write_bytes(PNG)
+    got = publish.write_site(
+        [entry("あ")], name="辞書", pages=[a_page(image=str(art))]
+    )
+    page = (based / "辞書" / "docs" / "章.html").read_text(encoding="utf-8")
+    # 絵はページの隣に、**ページと同じ名前**で置く
+    assert (based / "辞書" / "docs" / "章.png").read_bytes() == PNG
+    assert got["documents"][0]["image"] == "docs/章.png"
+    # URL は絶対で percent-encode されていて、**`?v=` が付く**
+    assert 'og:image" content="https://example.github.io/repo/%E8%BE%9E%E6%9B%B8/docs/%E7%AB%A0.png?v=' in page
+    assert 'og:url" content="https://example.github.io/repo/%E8%BE%9E%E6%9B%B8/docs/%E7%AB%A0.html"' in page
+    assert 'twitter:card" content="summary_large_image"' in page
+    # 大きさは**実ファイルから読む**（決め打ちしない）
+    assert 'og:image:width" content="1200"' in page
+    assert 'og:image:height" content="630"' in page
+    assert 'og:image:type" content="image/png"' in page
+
+
+def test_絵の無い文書は画像のタグを書かない(based):
+    """**辞書のカードで代用しない。** 全部の文書が同じ絵になるうえ、
+    貼った相手には「この文書の絵」に見える。"""
+    publish.write_site([entry("あ")], name="辞書", pages=[a_page()])
+    page = (based / "辞書" / "docs" / "章.html").read_text(encoding="utf-8")
+    assert "og:image" not in page
+    # 見出しだけの小さいカードは出したいので、`summary` には落とす
+    assert 'twitter:card" content="summary"' in page
+    assert 'og:url" content="https://' in page
+
+
+def test_基準URLが無ければ本文のページも画像のタグを書かない(out, tmp_path):
+    art = tmp_path / "章.png"
+    art.write_bytes(PNG)
+    publish.write_site([entry("あ")], name="辞書", pages=[a_page(image=str(art))])
+    page = (out / "辞書" / "docs" / "章.html").read_text(encoding="utf-8")
+    assert "og:image" not in page and "og:url" not in page
+    # 絵そのものは置く（ページから見えるので、タグが無いだけ）
+    assert (out / "辞書" / "docs" / "章.png").exists()
+
+
+def test_画像でないものは置かない(based, tmp_path):
+    """**名乗りは使わない。** 拡張子ではなく中身で見分ける（配る口と同じ規則）。"""
+    art = tmp_path / "章.png"
+    art.write_bytes(b"<svg xmlns=''></svg>")
+    got = publish.write_site(
+        [entry("あ")], name="辞書", pages=[a_page(image=str(art))]
+    )
+    assert got["documents"][0]["image"] == ""
+    assert not (based / "辞書" / "docs" / "章.png").exists()
+
+
+def test_クローラの上限を超えたら断りを出す(based, monkeypatch):
+    """**切らずに、超えたことを言う。** ページは読めるのにカードだけ出ない。"""
+    monkeypatch.setattr(publish, "CRAWLER_MAX_BYTES", 500)
+    got = publish.write_site([entry("あ")], name="辞書", pages=[a_page()])
+    assert any("MB を超えました" in w for w in got["warnings"])
+    assert any("第一章" in w for w in got["warnings"])
+
+
 def embedded(page_text: str) -> dict:
     """ページに埋まっている辞書を読み出す。**属性 → HTML 解除 → JSON。**"""
     found = re.search(r'data-dict="([^"]*)"', page_text)

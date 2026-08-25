@@ -52,6 +52,17 @@ _BAD_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 #: 名前の上限。長すぎるパスは Windows で書けない
 NAME_MAX = 60
 
+#: 断りに名前を並べる上限（`archive.MAX_REPORTED` と同じ考え方で、**切ったことは
+#: 件数で分かるようにする**）
+MAX_REPORTED = 5
+
+#: クローラが取りに来るページの上限。**X の文書にそう書いてある**
+#: （→ [docs/x-cards.md](../docs/x-cards.md)）—— 超えると
+#: "Fetching the page failed because the response is too large" でカードが出ない。
+#: 本文のページは**辞書をページに埋め込む**ので、長編では届きうる。
+#: **切らずに、超えたことを返す**（黙って欠けたものを渡さない、はここでも同じ）
+CRAWLER_MAX_BYTES = 2 * 1024 * 1024
+
 #: カードの上限。**X が受け取れるのは 5MB まで**（実測: 25 語の 2 倍描画で 390KB
 #: なので十分に余裕がある）。超えるものは貼っても出ないので、書く前に断る
 CARD_MAX_BYTES = 5 * 1024 * 1024
@@ -117,7 +128,10 @@ def _page_url(base: str, name: str, *, file: str = "") -> str:
     """
     if not base:
         return ""
-    tail = f"/{file}" if file else "/"
+    # **ファイル名も encode する。** 本文のページの名前は元のファイル名から作るので
+    # 日本語になりうる（`doc_slug()` は禁止文字を落とすだけ）—— 生のまま
+    # `og:url` に載せると、配信されている URL と食い違う
+    tail = f"/{quote(file, safe='/')}" if file else "/"
     return f"{base.rstrip('/')}/{quote(safe_name(name))}{tail}"
 
 
@@ -155,6 +169,24 @@ def _warnings(name: str, base: str) -> list[str]:
             "取りに行くと 404 になり、カードが出ません（英数字の名前にすると確実です）"
         )
     return out
+
+
+def _too_big(documents: list[dict]) -> list[str]:
+    """クローラの上限を超えたページ。**切らずに、超えたことを言う。**
+
+    2 MB は X の文書に書いてある値（→ docs/x-cards.md）。本文のページは辞書を
+    ページに埋め込むので、長編で届きうる —— **ページ自体は正しく読めるのに
+    カードだけ出ない**ので、言わないと原因を追えない。
+    """
+    over = [d for d in documents if d.get("bytes", 0) > CRAWLER_MAX_BYTES]
+    if not over:
+        return []
+    names = "、".join(d["title"] for d in over[:MAX_REPORTED])
+    more = f" ほか {len(over) - MAX_REPORTED} 件" if len(over) > MAX_REPORTED else ""
+    return [
+        f"{len(over)} 件の本文が {CRAWLER_MAX_BYTES // 1024 // 1024} MB を超えました"
+        f"（{names}{more}）。ページは読めますが、X などのカードは出ません"
+    ]
 
 
 _TEMPLATE = """<!doctype html>
@@ -231,16 +263,32 @@ def _card_size(name: str) -> tuple[int, int] | None:
     return (int(got[0]), int(got[1])) if got else None
 
 
-def _og(title: str, note: str, name: str, base: str, stamp: str,
-        size: tuple[int, int] | None = None) -> str:
+def _meta(
+    *,
+    title: str,
+    note: str,
+    site: str,
+    page_url: str,
+    image_url: str,
+    size: tuple[int, int] | None = None,
+    image_type: str = "image/png",
+    imageless_card: str = "",
+) -> str:
     """カードのタグ。**基準 URL が無ければ画像のタグを書かない。**
 
     相対 URL の ``og:image`` は無視されるので、書いても出ない。**書かない**ほうが
     「出ないのはなぜか」を追いやすい（半端なタグは「効いているはず」に見える）。
+
+    辞書の 1 枚 (`_og`) と本文のページ (`_doc_og`) が**同じ組み立てを通る** ——
+    写しを作ると、`twitter:*` を足したときのように片方だけ古くなる。
+
+    ``imageless_card`` は**絵が無いときに書く `twitter:card`**。辞書の 1 枚では
+    空（＝書かない）。本文のページは ``summary`` を書く —— 絵の無い文書でも
+    見出しだけのカードは出したい。
     """
     lines = [
         '<meta property="og:type" content="article">',
-        f'<meta property="og:site_name" content="{_attr(name)}">',
+        f'<meta property="og:site_name" content="{_attr(site)}">',
         f'<meta property="og:title" content="{_attr(title)}">',
         f'<meta property="og:description" content="{_attr(note)}">',
         # **`twitter:*` も書く。** 仕様上は `og:*` に落ちることになっているが、
@@ -249,15 +297,13 @@ def _og(title: str, note: str, name: str, base: str, stamp: str,
         f'<meta name="twitter:title" content="{_attr(title)}">',
         f'<meta name="twitter:description" content="{_attr(note)}">',
     ]
-    page = _page_url(base, name)
-    if page:
-        lines.append(f'<meta property="og:url" content="{_attr(page)}">')
-    image = _page_url(base, name, file=NAME_CARD)
-    if image:
+    if page_url:
+        lines.append(f'<meta property="og:url" content="{_attr(page_url)}">')
+    if image_url:
         # **`?v=` で URL を変える。** X はカードを URL ごとに覚えていて、確実に
         # 更新させる手段が無い（旧 Card Validator は廃止）。中身から作った印なので、
         # 変わっていなければ URL も変わらない（無駄なキャッシュ切れを起こさない）
-        src = _attr(f"{image}?v={stamp}")
+        src = _attr(image_url)
         lines.append(f'<meta property="og:image" content="{src}">')
         lines.append(f'<meta property="og:image:alt" content="{_attr(title)}">')
         lines.append(f'<meta name="twitter:image" content="{src}">')
@@ -266,12 +312,52 @@ def _og(title: str, note: str, name: str, base: str, stamp: str,
             # 「X に貼ったときの見え方」。1 度これを原因だと誤診した）。害は無いので
             # 残してあるが、**実物から読む** —— 決め打ちにすると、カードの作りを
             # 変えたときに黙ってずれる
-            lines.append(f'<meta property="og:image:type" content="image/png">')
+            lines.append(f'<meta property="og:image:type" content="{_attr(image_type)}">')
             lines.append(f'<meta property="og:image:width" content="{size[0]}">')
             lines.append(f'<meta property="og:image:height" content="{size[1]}">')
         lines.append(f'<meta name="twitter:image:alt" content="{_attr(title)}">')
         lines.append('<meta name="twitter:card" content="summary_large_image">')
+    elif imageless_card:
+        # 絵の無い文書でも、見出しだけの小さいカードは出したい
+        lines.append(f'<meta name="twitter:card" content="{_attr(imageless_card)}">')
     return "\n".join(lines)
+
+
+def _og(title: str, note: str, name: str, base: str, stamp: str,
+        size: tuple[int, int] | None = None) -> str:
+    """辞書の 1 枚のタグ。絵は `card.png` **1 枚だけ**。"""
+    image = _page_url(base, name, file=NAME_CARD)
+    return _meta(
+        title=title,
+        note=note,
+        site=name,
+        page_url=_page_url(base, name),
+        image_url=f"{image}?v={stamp}" if image else "",
+        size=size,
+    )
+
+
+def _doc_og(
+    *, title: str, note: str, site: str, base: str, name: str,
+    file: str, image: str, stamp: str, size: tuple[int, int] | None,
+) -> str:
+    """本文のページ 1 枚ぶんのタグ。
+
+    **絵はその文書のもの**（辞書の 1 枚とは別）。無ければ `og:image` を書かず、
+    `twitter:card` は ``summary`` に落とす —— **辞書のカードで代用しない**。
+    全部の文書が同じ絵になるうえ、貼った相手には「この文書の絵」に見える。
+    """
+    src = _page_url(base, name, file=f"{DIR_DOCS}/{image}") if image else ""
+    return _meta(
+        title=title,
+        note=note,
+        site=site,
+        page_url=_page_url(base, name, file=f"{DIR_DOCS}/{file}"),
+        image_url=f"{src}?v={stamp}" if src else "",
+        size=size,
+        image_type=imagefmt.MIME_TYPES.get(Path(image).suffix.lower(), "image/png"),
+        imageless_card="summary",
+    )
 
 
 def _doc_list(documents: list[dict]) -> str:
@@ -354,11 +440,14 @@ def write_site(
     card_stamp = safe_stamp(card_stamp)
     target = site_dir(name)
     target.mkdir(parents=True, exist_ok=True)
+    # **本文のページにもカードのタグを書く**ので、基準 URL はここで解決して渡す
+    # （`_page_url()` は基準が無ければ空を返す ＝ 画像のタグを書かない）
+    base = config.publish_base_url()
 
     documents: list[dict] = []
     if pages:
         write_assets(name)
-        documents = write_documents(name, pages)
+        documents = write_documents(name, pages, base=base)
 
     (target / NAME_HTML).write_text(
         build_page(entries, name=name, card_stamp=card_stamp, documents=documents),
@@ -371,7 +460,6 @@ def write_site(
     if marker is not None and not marker.exists():
         marker.write_text("", encoding="utf-8")
 
-    base = config.publish_base_url()
     return {
         "dir": str(target),
         "html": str(target / NAME_HTML),
@@ -382,7 +470,7 @@ def write_site(
             if base and card_stamp else ""
         ),
         "nojekyll": str(marker) if marker else "",
-        "warnings": _warnings(name, base),
+        "warnings": [*_warnings(name, base), *_too_big(documents)],
     }
 
 
@@ -513,6 +601,8 @@ _READER = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
+<meta name="description" content="{note}">
+{og}
 <link rel="stylesheet" href="../{assets}/{css}">
 </head>
 <body>
@@ -530,7 +620,7 @@ _READER = """<!doctype html>
 """
 
 
-def build_reader(*, title: str, body_html: str, dictionary: dict) -> str:
+def build_reader(*, title: str, body_html: str, dictionary: dict, og: str = "") -> str:
     """本文 1 ページぶんの HTML。**辞書はここに埋める**（通信しない）。
 
     辞書は**属性に置く**（`data-dict`）。インラインの ``<script>`` に JSON を書くと、
@@ -542,6 +632,8 @@ def build_reader(*, title: str, body_html: str, dictionary: dict) -> str:
     return _READER.format(
         title=_attr(title),
         note=_attr(f"下線の語にふれると意味が出ます・{len(dictionary)} 語"),
+        # **エスケープは出す直前の 1 回だけ**（`_doc_og()` の中で通してある）
+        og=og,
         body=body_html,
         dict=_attr(packed),
         assets=DIR_ASSETS,
@@ -550,11 +642,45 @@ def build_reader(*, title: str, body_html: str, dictionary: dict) -> str:
     )
 
 
-def write_documents(name: str, pages: list[dict]) -> list[dict]:
+def _write_doc_image(target: Path, file: str, source: str) -> tuple[str, str, tuple[int, int] | None]:
+    """その文書の絵をページの隣に置く。``(ファイル名, 印, 大きさ)``。
+
+    **名前はページと揃える**（`章-一.html` の隣が `章-一.png`）—— ページ名は
+    `doc_slug()` が重なりを番号で分けているので、こちらも自動的に一意になる。
+
+    **拡張子は中身から決める**（`sniff()`）。渡されるのは手元のパスだが、
+    名乗りを使わないのは配る口と同じ規則。**SVG は通さない** —— X が受け取らない
+    （→ docs/x-cards.md）うえ、用語ごとの画像と同じ線。
+    """
+    if not source:
+        return "", "", None
+    try:
+        data = Path(source).read_bytes()
+    except OSError:
+        return "", "", None
+    suffix = imagefmt.sniff(data)
+    if suffix is None:
+        return "", "", None
+    image = f"{Path(file).stem}{suffix}"
+    (target / image).write_bytes(data)
+    got = imagefmt.size(data)
+    return (
+        image,
+        hashlib.sha256(data).hexdigest()[:8],
+        (int(got[0]), int(got[1])) if got else None,
+    )
+
+
+def write_documents(name: str, pages: list[dict], *, base: str = "") -> list[dict]:
     """本文のページを書く。返すのは**索引に載せるための一覧**。
 
-    ``pages`` は ``{"path", "title", "html", "lookup"}``。中身を作るのは呼ぶ側
-    （レンダリングも照合もアプリ側の仕事で、ここは**外へ出す形に整えるだけ**）。
+    ``pages`` は ``{"path", "title", "html", "lookup", "image"}``。中身を作るのは
+    呼ぶ側（レンダリングも照合もアプリ側の仕事で、ここは**外へ出す形に整えるだけ**）。
+    ``image`` は**手元のファイルのパス** —— 置いてある絵を知っているのは呼ぶ側だけ、
+    というのは点検が `maps` を受け取るのと同じ形。
+
+    返り値の ``bytes`` は書いたページの大きさ。**クローラの上限 (2 MB) を超えたら
+    呼ぶ側が断りを出す** —— 切らずに、超えたことを言う。
     """
     target = site_dir(name) / DIR_DOCS
     target.mkdir(parents=True, exist_ok=True)
@@ -562,23 +688,35 @@ def write_documents(name: str, pages: list[dict]) -> list[dict]:
     made: list[dict] = []
     for page in pages:
         file = doc_slug(page["path"], taken)
+        title = page.get("title") or Path(page["path"]).stem
         dictionary = {
             surface: {**found, "entries": [strip_entry(e) for e in found.get("entries", [])]}
             for surface, found in (page.get("lookup") or {}).items()
         }
-        (target / file).write_text(
-            build_reader(
-                title=page.get("title") or Path(page["path"]).stem,
-                body_html=unlink(page.get("html", "")),
-                dictionary=dictionary,
+        image, stamp, size = _write_doc_image(target, file, page.get("image") or "")
+        html = build_reader(
+            title=title,
+            body_html=unlink(page.get("html", "")),
+            dictionary=dictionary,
+            og=_doc_og(
+                title=title,
+                note=f"下線の語にふれると意味が出ます・{len(dictionary)} 語",
+                site=name,
+                base=base,
+                name=name,
+                file=file,
+                image=image,
+                stamp=stamp,
+                size=size,
             ),
-            encoding="utf-8",
-            newline="\n",
         )
+        (target / file).write_text(html, encoding="utf-8", newline="\n")
         made.append({
             "path": page["path"],
-            "title": page.get("title") or Path(page["path"]).stem,
+            "title": title,
             "file": f"{DIR_DOCS}/{file}",
             "terms": len(dictionary),
+            "image": f"{DIR_DOCS}/{image}" if image else "",
+            "bytes": len(html.encode("utf-8")),
         })
     return made

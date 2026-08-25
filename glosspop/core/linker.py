@@ -419,11 +419,21 @@ class Linker:
         *,
         first_only: bool = False,
         skip_refs: Iterable[str] = (),
+        counts: dict[str, int] | None = None,
     ) -> tuple[str, list[Entry]]:
         """HTML にリンクを差し込み (書き換え後 HTML, 出現したエントリ) を返す。
 
         エントリは初出順。``first_only`` なら各表記の最初の出現だけをリンクする。
         ``skip_refs`` は無視するエントリ (辞書ページで自分自身を貼らない用)。
+
+        ``counts`` に辞書を渡すと ``ref`` → **その HTML に出てくる回数**を書き込む。
+        **数える口を別に作らないため**にここで受けている —— `occurrences()` は
+        素のテキストに当てるものなので、レンダリング済みの HTML を渡すと
+        タグや属性の中まで数える。別に書くと**一覧に出る語と数が食い違う**
+        （同じ辞書なのに違うことを言う図、と同じ壊れ方）。
+
+        **`first_only` でも本当の回数を数える。** あれは「最初の 1 回だけリンクする」
+        という**見せ方**の指定で、その語が何回出てくるかは変わらない。
         """
         if self._re is None or not html:
             return html, []
@@ -454,6 +464,11 @@ class Linker:
                 entries = group.remaining(skip)
                 if not entries:
                     continue
+                # **数えるのは `first_only` の判定より前。** あとに置くと、
+                # 最初の 1 回だけリンクする設定のときに全部 1 になる
+                if counts is not None:
+                    for e in entries:
+                        counts[e.ref] = counts.get(e.ref, 0) + 1
                 if first_only and group.surface in seen_surfaces:
                     continue
 

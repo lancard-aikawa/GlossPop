@@ -440,13 +440,8 @@ def _linker() -> Linker:
 
 
 #: 画像の拡張子 → Content-Type。**推測に任せない**（間違えるとブラウザが出さない）
-PERSONA_TYPES = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-}
+#: **SVG を含めない**（顔と用語の画像は通さない）。型そのものは `core.imagefmt`
+PERSONA_TYPES = {s: imagefmt.MIME_TYPES[s] for s in imagefmt.IMAGE_SUFFIXES}
 
 
 def _persona_url(scope: str) -> str:
@@ -1681,7 +1676,11 @@ def render_text(req: RenderRequest) -> dict:
     html = render.render_source(
         req.text, kind=kind, filename=req.filename, base_url=req.base_url
     )
-    linked, entries = _linker().annotate(html, first_only=req.first_only)
+    # **回数は annotate に数えさせる。** `occurrences()` は素のテキスト用なので、
+    # レンダリング済みの HTML に当てるとタグや属性の中まで数える。**別に数えると
+    # 一覧に出る語と数が食い違う**ので、当たった場所そのもので数える
+    counts: dict[str, int] = {}
+    linked, entries = _linker().annotate(html, first_only=req.first_only, counts=counts)
     if req.title:
         title = req.title
     elif kind == "html":
@@ -1692,7 +1691,10 @@ def render_text(req: RenderRequest) -> dict:
     return {
         "html": linked,
         "title": title,
-        "terms": [_term_card(e) for e in entries],
+        # **回数を添える。** 30 語ヒットしても、1 回だけの語と 40 回出る語が
+        # 同じ見え方をしていた（「この文書の主役はどれか」が読めない）。
+        # 並びは今までどおり**初出順**
+        "terms": [{**_term_card(e), "count": counts.get(e.ref, 0)} for e in entries],
     }
 
 
@@ -1717,6 +1719,10 @@ def list_content() -> dict:
     base = config.content_dir()
     files: list[dict] = []
     truncated = False
+    # **画像は 1 回の走査で引く。** ファイルごとに `file_image_file()` を呼ぶと
+    # 件数 × 拡張子の数だけ stat が飛ぶ（`_image_index()` と同じ判断）
+    images = store.list_file_images()
+    root = config.local_root() if images else None
     if base.exists():
         for path in _iter_content_files(base):
             if len(files) >= MAX_CONTENT_FILES:
@@ -1726,9 +1732,16 @@ def list_content() -> dict:
                 size = path.stat().st_size
             except OSError:
                 continue
-            files.append(
-                {"path": path.relative_to(base).as_posix(), "name": path.name, "size": size}
-            )
+            one = {"path": path.relative_to(base).as_posix(), "name": path.name, "size": size}
+            if root is not None:
+                # 鍵は辞書と同じ local_root 基準（親を開いても子を開いても同じ）
+                try:
+                    found = images.get(path.relative_to(root).as_posix())
+                except ValueError:
+                    found = None
+                if found is not None:
+                    one["image_url"] = _file_image_url(one["path"], found)
+            files.append(one)
     local_root = config.local_root()
     return {
         "root": str(base),
@@ -2202,6 +2215,11 @@ def _publish_pages() -> tuple[list[dict], bool]:
     if not base.exists():
         return [], False
     linker = _linker()
+    # **置いてある絵を知っているのはこちら**（`publish` は置き場所を知らない）。
+    # 1 回の走査で作る —— ページごとに `file_image_file()` を呼ぶと、
+    # 件数 × 拡張子の数だけ stat が飛ぶ（`_image_index()` と同じ判断）
+    images = store.list_file_images()
+    root = config.local_root() if images else None
     pages: list[dict] = []
     truncated = False
     for path in _iter_content_files(base):
@@ -2215,10 +2233,20 @@ def _publish_pages() -> tuple[list[dict], bool]:
         html, _ = linker.annotate(
             render.render_source(doc.text, filename=path.name)
         )
+        found = None
+        if root is not None:
+            # 鍵は辞書と同じ local_root 基準（`/api/content` と同じ作り方）
+            try:
+                found = images.get(path.relative_to(root).as_posix())
+            except ValueError:
+                found = None
         pages.append({
             "path": path.relative_to(base).as_posix(),
             "title": render.html_title(html) or path.stem,
             "html": html,
+            # **その文書の絵**。渡すのは手元のパスで、外へ出す形に整えるのは
+            # `publish` の仕事（`sniff()` で拡張子を決め、ページの隣へ置く）
+            "image": str(found) if found is not None else "",
             "lookup": {
                 surface: lookup(surface)
                 for surface in sorted(set(_GLOSS_SURFACE.findall(html)))
@@ -2408,14 +2436,8 @@ def persona(scope: str = GLOBAL_SCOPE) -> FileResponse:
 
 #: 画像の Content-Type。**顔・地図・用語ごとの画像で共用**
 #: （`core.imagefmt` の拡張子と対で持つ。`.svg` を使うのは地図だけ）
-IMAGE_TYPES = {
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".webp": "image/webp",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-}
+#: 地図は SVG も配る（出し方で担保している）。型そのものは `core.imagefmt`
+IMAGE_TYPES = {s: imagefmt.MIME_TYPES[s] for s in imagefmt.MAP_SUFFIXES}
 
 
 @app.get("/api/map")
@@ -2671,6 +2693,107 @@ def remove_entry_image(ref: str) -> dict:
         raise HTTPException(404, "その画像がありません")
     store.delete_image(ref)
     return {"ref": ref, "image_url": ""}
+
+
+# --------------------------------------------------------------------------- #
+# ファイルごとの画像
+#
+# **地図とも用語の画像とも別。** 座標も関係も持たず、フォルダの一覧に出るだけの
+# 1 枚なので、`core` も `Linker` も通らない。置き場所と鍵の約束は `store` 側に
+# 書いてある（**鍵は相対パス。ファイル名が変われば切れる**）。
+# --------------------------------------------------------------------------- #
+
+
+def _file_image_key(rel: str) -> str:
+    """一覧の相対パス（**開いているフォルダ基準**）を、置き場所の鍵に直す。
+
+    鍵は辞書と同じ `local_root()` 基準なので、1 巻 2 巻で `.glosspop` を共有して
+    いても親と子で同じ鍵になる。**ファイルが在ることは `_safe_content_path()` が
+    確かめる** —— 名前が変わっていればそこで 404 になり、絵はそのまま切れる
+    （切ってよい、と決めた）。
+    """
+    target = _safe_content_path(rel)
+    root = config.local_root()
+    if root is None or store.file_images_dir() is None:
+        raise HTTPException(400, "いま読んでいるものにはファイルの画像を置けません")
+    try:
+        return target.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise HTTPException(400, "このファイルには置けません") from exc
+
+
+def _file_image_url(rel: str, path: Path) -> str:
+    """配る URL。**更新時刻を入れる**（顔・用語の画像と同じ理由で、入れないと
+    差し替えても古い絵が出る）。"""
+    try:
+        stamp = int(path.stat().st_mtime)
+    except OSError:
+        return ""
+    return f"/api/file-image?path={quote(rel)}&v={stamp}"
+
+
+@app.get("/api/file-image")
+def file_image(path: str) -> FileResponse:
+    """ファイルごとの画像を返す。無ければ 404。
+
+    **SVG は通さない**（用語の画像と同じ線。`<img>` で出すだけなので通す理由が
+    無い）。組み立てた結果が置き場所の中にあることは `store` 側が確かめる。
+    """
+    found = store.file_image_file(_file_image_key(path))
+    if found is None:
+        raise HTTPException(404, "その画像がありません")
+    return FileResponse(
+        found,
+        media_type=IMAGE_TYPES.get(found.suffix.lower(), "application/octet-stream"),
+        headers={
+            "Content-Security-Policy": "sandbox",
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "public, max-age=3600",
+        },
+    )
+
+
+@app.post("/api/file-image")
+async def put_file_image(request: Request, path: str) -> dict:
+    """ファイルごとの画像を置く / 差し替える。**生のバイト列で受ける。**
+
+    multipart にするとファイル名を受け取ることになり、**名乗りを使わない**という
+    約束が守りにくくなる（顔・用語の画像と同じ）。拡張子は中身から決める。
+
+    **ここが `.glosspop` を作りうる口**なので、人が明示的に選んだときにしか
+    通らない形にしてある（「開いただけのフォルダを汚さない」）。
+    """
+    key = _file_image_key(path)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > store.IMAGE_MAX_BYTES:
+        raise HTTPException(413, "画像が大きすぎます")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "画像が空です")
+    if len(data) > store.IMAGE_MAX_BYTES:
+        raise HTTPException(
+            400, f"画像は {store.IMAGE_MAX_BYTES // 1024 // 1024} MB までです"
+        )
+    suffix = imagefmt.sniff(data)
+    if suffix is None:
+        raise HTTPException(400, "画像として読めませんでした（PNG / JPEG / GIF / WebP）")
+    target = store.file_image_path(key, suffix)
+    if target is None:
+        raise HTTPException(400, f"このファイルには置けません: {path}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    store.clear_other_file_images(key, target)
+    return {"path": path, "image_url": _file_image_url(path, target)}
+
+
+@app.delete("/api/file-image")
+def remove_file_image(path: str) -> dict:
+    """ファイルごとの画像を消す。**本文には触らない。**"""
+    key = _file_image_key(path)
+    if store.file_image_file(key) is None:
+        raise HTTPException(404, "その画像がありません")
+    store.delete_file_image(key)
+    return {"path": path, "image_url": ""}
 
 
 @app.get("/api/ai/settings")

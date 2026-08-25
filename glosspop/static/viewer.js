@@ -28,6 +28,94 @@ const docMeta = $("docMeta");
 const termsList = $("terms");
 const filesList = $("files");
 
+// **本文の行は「ものの名前」で束ねる**（読み上げ / 用語 / 関係 / 画像）。
+//
+// 機能を足すたびに行へボタンを 1 つ足していくと、**「いま何ができるか」が
+// 画面ごとに伸び縮みする**（相関図で 6〜11 個に伸びたのと同じ形）。名前で束ねて
+// おけば、用語に何か足しても行は伸びず、入る場所も迷わない。
+//
+// **⋯ ではなく名前にしてある** —— ⋯ は「たまに使う操作の置き場所」という意味しか
+// 持たないが、こちらは**何の機能群なのかが押す前に読める**（`menuButton` は
+// `label` を受けるので、部品は増えていない）。
+//
+// 上のバーの ⋯ は**「読むもの」＝フォルダの場所**（開き方・公開・執筆）。
+// **文書 1 つへの操作をあそこに置くと範囲が混ざる**ので、こちらの行に持つ。
+//
+// **ここで作る**（`paintDocGraphLink()` が中の項目に触るので、参照が先に要る）。
+const termMenu = menuButton({
+  label: "用語 ▾",
+  ref: "termMenu",
+  title: "この文書の用語",
+  items: [
+    {
+      label: "✨ 用語を抽出",
+      ref: "extract",
+      title: "この文書から辞書化する語を挙げる",
+      onSelect: () => {
+        if (!source) return;
+        // busy を出す先はメニューの項目そのもの（押した先はすぐ modal になる）
+        runExtract(termMenu.querySelector("[data-ref=extract]"), {
+          text: source.text, source: sourceLabel(),
+        });
+      },
+    },
+  ],
+});
+$("termMenu").replaceWith(termMenu);
+
+const relMenu = menuButton({
+  label: "関係 ▾",
+  ref: "relMenu",
+  title: "この文書の関係",
+  items: [
+    {
+      // 下書きが読むのは「いま開いている文書」。読むものが決まっている場所は
+      // ここだけなので、図の側ではなく本文の側に置く
+      label: "✨ 関係を下書き",
+      ref: "draftRelations",
+      title: "この文書から、登録済みの用語どうしの関係を探す",
+      onSelect: () => draftRelations(),
+    },
+    {
+      // **本物の `<a href>` のまま**にしてある —— 覆い (`overlay.js`) がそれを
+      // 拾って重ねて開き、中クリックや Ctrl+クリックはブラウザに任せられる。
+      // フォルダの中のファイルを開いているときだけ（`paintDocGraphLink()`）
+      label: "🕸 この文書の関係",
+      ref: "docGraph",
+      href: "/graph",
+      title: "この文書に出てくる語だけの関係",
+    },
+  ],
+});
+$("relMenu").replaceWith(relMenu);
+
+const imageMenu = menuButton({
+  label: "画像 ▾",
+  ref: "imageMenu",
+  title: "この文書の画像",
+  items: [
+    {
+      // ファイル一覧の行には足さない —— あそこは 2000 件まで並ぶので、行ごとに
+      // 操作を置くと隣を潰す（`.filelist button` は width: 100%）。
+      // **地図とは別物**で、座標も関係も持たない 1 枚
+      label: "🖼 画像を入れる…",
+      ref: "fileImage",
+      title: "本文の先頭とファイル一覧に出す絵を入れる / 差し替える",
+      onSelect: () => pickFileImage(),
+    },
+    { separator: true },
+    {
+      // **消える操作は区切り線の下**（→ CLAUDE.md の「操作の置き場所」）
+      label: "🖼 画像を消す",
+      ref: "fileImageDrop",
+      title: "絵だけを消す（本文には触りません）",
+      danger: true,
+      onSelect: () => dropFileImage(),
+    },
+  ],
+});
+$("imageMenu").replaceWith(imageMenu);
+
 /** 現在表示中のソース。保存後の再レンダリングに使う。 */
 let source = null; // { text, kind, filename, contentPath }
 
@@ -69,6 +157,7 @@ async function renderCurrent() {
     docHead.hidden = false;
     paintDocMeta(res);
     paintDocGraphLink();
+    paintDocCover();
     paintTerms(res.terms);
     // 段落の番号で覚えているので、描き直したら対応づけ直す
     paintToc(source.sections || []);
@@ -97,17 +186,40 @@ function paintDocMeta(res) {
 }
 
 /**
- * 「この文書の相関図」へのリンク。
+ * 「この文書の関係」へのリンク。
  *
  * サーバは `?doc=` を content の中のパスとして読み直すので、**フォルダの
  * ファイルを開いているときだけ**出せる（貼り付け・ドロップ・URL には
  * 読み直せる道が無い）。出しておいて絞れないより、出さないほうがまし。
  */
+//: いま一覧が持っている「ファイル → 絵の URL」。**自前で組み立てない** ——
+//: 一覧の URL には更新時刻 (`?v=`) が入っていて、差し替えたときに古い絵が
+//: 出ないのはそれのおかげ（顔・用語の画像と同じ約束）
+let fileImages = new Map();
+
+/**
+ * ファイルに付けた絵を本文の先頭に出す。**無ければ出さない。**
+ *
+ * 一覧から引くので、まだ一覧が届いていない間は出ない（届いた時点でここを
+ * もう一度通る）。**貼り付け・ドロップ・URL には鍵が無い**ので常に空。
+ */
+function paintDocCover() {
+  const cover = $("docCover");
+  const url = source?.contentPath ? fileImages.get(source.contentPath) || "" : "";
+  cover.hidden = !url;
+  if (url) cover.src = url;
+  else cover.removeAttribute("src");    // 残すと、消したあとも取りに行く
+}
+
 function paintDocGraphLink() {
-  const link = $("docGraph");
+  const link = relMenu.querySelector("[data-ref=docGraph]");
   const path = source?.contentPath || "";
   link.href = path ? `/graph?doc=${encodeURIComponent(path)}` : "/graph";
   link.hidden = !path;
+  // **画像のメニューは丸ごと消す。** 中身は 2 つとも鍵になる相対パスが要るので、
+  // 出しておいて押すと断られるより、出さないほうがまし（リンクと同じ判断）。
+  // 関係のほうは下書きが貼り付けでも効くので、**メニューは残して項目だけ消す**
+  imageMenu.hidden = !path;
 }
 
 function paintTerms(terms) {
@@ -121,7 +233,17 @@ function paintTerms(terms) {
         el("a", { href: t.url }, [
           el("span", { text: t.term }),
           el("span", { class: "cat", text: t.path_label }),
-        ]),
+          // **回数はサーバから受け取る**（本文を自前で数えない —— 数える口が
+          // 2 つになると、一覧に出る語と数が食い違う）。**1 回のときは出さない**
+          // ：全部に「1」が並ぶと、多い語が目立たなくなる
+          t.count > 1
+            ? el("span", {
+              class: "term-count",
+              text: String(t.count),
+              title: `この文書に ${t.count} 回`,
+            })
+            : null,
+        ].filter(Boolean)),
       ])
     )
   );
@@ -378,9 +500,13 @@ document.body.append(otherDialog);
 // 毎回使うもの（フォルダを選ぶ・パス・最近）と同じ行に常時並べると、いちばん
 // 使うパスの欄をそのぶん狭める（→ CLAUDE.md の「操作の置き場所」）。
 // **入口は減らしていない** —— ドロップは今までどおりウィンドウのどこでも効く
+//
+// **ここに入るのはフォルダ範囲のものだけ**（開き方・公開・執筆）。文書 1 つへの
+// 操作は本文の行の 用語 / 関係 / 画像 で、**題もその範囲を言うこと** ——
+// 「そのほかの開き方」のままにすると、開き方でない 2 つが題と食い違う
 $("sourceMenu").replaceWith(menuButton({
   ref: "sourceMenu",
-  title: "そのほかの開き方",
+  title: "このフォルダのそのほかの操作",
   items: [
     {
       label: "＋ その他の開き方…",
@@ -422,6 +548,16 @@ $("pick").addEventListener("click", () => $("file").click());
 const SERVER_ONLY = /\.(epub|pdf)$/i;
 
 async function openLocalFile(file) {
+  // **読めない形式は断る。** ここは `file.text()` を呼ぶ口なので、通すと
+  // **画像の中身がそのまま本文として描かれる**（PNG を落とすとバイナリが並ぶ）。
+  // **本文の絵を少しドラッグしただけでも起きる** —— ブラウザは画像のドラッグを
+  // ファイルとして渡すので、同じ窓の中で放すとこの口に入ってくる。
+  // 判定は `OPENABLE`（リンクを辿るかの判定と同じ 1 か所）
+  if (!SERVER_ONLY.test(file.name) && !OPENABLE.test(file.name)) {
+    docHead.hidden = false;
+    note(`${file.name} は開けません（.md / .txt / .html / .epub / .pdf）`, "error");
+    return;
+  }
   if (SERVER_ONLY.test(file.name)) {
     docHead.hidden = false;
     note(
@@ -544,19 +680,14 @@ async function runExtract(button, options) {
   }
 }
 
-$("extract").addEventListener("click", () => {
-  if (!source) return;
-  runExtract($("extract"), { text: source.text, source: sourceLabel() });
-});
-
 // 登録済みの用語どうしの関係を、**表示中の文書から**探す。
 //
 // 相関図には置かない —— あちらは辞書全体を出すので、下書きが読む範囲
 // （開いているもの）と一致しない（→ docs/open-questions.md の 7 番）。
 // 以前は抽出ダイアログの中にしか無く、読むたびに抽出と登録を通し直していた。
-$("draftRelations").addEventListener("click", async () => {
+async function draftRelations() {
   if (!source) return;
-  const button = $("draftRelations");
+  const button = relMenu.querySelector("[data-ref=draftRelations]");
   button.disabled = true;
   try {
     if (await openRelationsDialog({ text: source.text, source: sourceLabel() })) {
@@ -565,7 +696,7 @@ $("draftRelations").addEventListener("click", async () => {
   } finally {
     button.disabled = false;
   }
-});
+}
 
 // URL を開く (取得はサーバ側。CORS を踏まないため)
 async function openUrl(url) {
@@ -769,6 +900,70 @@ $("urlDictForm").addEventListener("submit", async (ev) => {
   }
 });
 
+// ------------------------------------------------- ファイルごとの画像
+//
+// **地図ではない。** 座標も関係も持たず、フォルダの一覧に出す 1 枚だけなので、
+// 相関図とも `Linker` とも無関係。**鍵は相対パス**なので、外でファイル名を
+// 変えれば絵はそこで切れる（そう決めた。対応表を持たない代わり）。
+
+const fileImageInput = el("input", {
+  type: "file",
+  // **SVG は入れない**（サーバ側も通さない。用語の画像と同じ線）
+  accept: "image/png,image/jpeg,image/webp,image/gif",
+  "data-ref": "fileImageFile",
+  hidden: true,
+});
+document.body.append(fileImageInput);
+
+fileImageInput.addEventListener("change", () => {
+  const picked = fileImageInput.files?.[0];
+  fileImageInput.value = "";            // 同じファイルをもう一度選べるように
+  const path = source?.contentPath || "";
+  if (picked && path) sendFileImage("POST", path, picked);
+});
+
+/**
+ * いま開いている文書の絵を選ぶ。**フォルダの中のファイルを開いているときだけ。**
+ *
+ * 貼り付け・ドロップ・URL には**鍵になる相対パスが無い**（`progress.js` が
+ * 読書位置を覚えないのとまったく同じ理由）ので、置き場所が決まらない。
+ */
+function pickFileImage() {
+  if (!source?.contentPath) {
+    noteRoot("フォルダの中のファイルを開いているときだけ置けます", "error");
+    return;
+  }
+  fileImageInput.click();
+}
+
+/** いま開いている文書の絵を消す。**本文には触らない。** */
+function dropFileImage() {
+  const path = source?.contentPath || "";
+  if (!path) {
+    noteRoot("フォルダの中のファイルを開いているときだけ消せます", "error");
+    return;
+  }
+  sendFileImage("DELETE", path);
+}
+
+async function sendFileImage(method, path, body = null) {
+  noteRoot(method === "DELETE" ? "消しています" : "入れています", "busy");
+  try {
+    const res = await fetch(`/api/file-image?path=${encodeURIComponent(path)}`, {
+      method,
+      body,
+      headers: body ? { "Content-Type": "application/octet-stream" } : {},
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `${res.status} ${res.statusText}`);
+    // 一覧を描き直すと、下の行（noteRoot）も本来の中身に戻る
+    await loadFileList();
+  } catch (err) {
+    noteRoot(err.message, "error");
+  }
+}
+
+
 async function loadFileList() {
   filesList.replaceChildren(el("li", { class: "empty", text: "読み込み中…" }));
   try {
@@ -797,6 +992,13 @@ function paintFileList(res) {
   paintFolderMenu();
   paintFoldedLabel();          // 畳んでいるときはそこが唯一の現在地
 
+  // **絵の URL はここで覚える。** 一覧が唯一の出どころで、置き直したあとは
+  // `loadFileList()` を通るので、本文の先頭の絵もそこで差し替わる
+  fileImages = new Map(
+    res.files.filter((f) => f.image_url).map((f) => [f.path, f.image_url])
+  );
+  paintDocCover();
+
   if (!res.files.length) {
     filesList.replaceChildren(
       el("li", { class: "empty", text: "このフォルダに .md / .txt / .html を置くとここに出ます" })
@@ -806,13 +1008,33 @@ function paintFileList(res) {
   filesList.replaceChildren(
     ...res.files.map((f) =>
       el("li", {}, [
-        el("button", {
-          type: "button",
-          title: f.path,
-          "data-path": f.path,
-          text: f.path,
-          onclick: () => openContent(f.path),
-        }),
+        // **絵があるときだけ形を変える。** `.filelist button` は ellipsis のために
+        // `display: block` にしてあるので、絵を横に並べるときは名前のほうを
+        // span に包んで切る（→ style.css のコメント）
+        f.image_url
+          ? el("button", {
+            type: "button",
+            class: "has-thumb",
+            title: f.path,
+            "data-path": f.path,
+            onclick: () => openContent(f.path),
+          }, [
+            // **一覧は 2000 件まで出る**ので lazy を外さないこと
+            // **掴ませない。** ブラウザは画像のドラッグをファイルとして渡すので、
+            // 同じ窓で放すとドロップの口に入る（あちらでも断ってはいる）
+            el("img", {
+              class: "file-thumb", src: f.image_url, alt: "",
+              loading: "lazy", draggable: "false",
+            }),
+            el("span", { text: f.path }),
+          ])
+          : el("button", {
+            type: "button",
+            title: f.path,
+            "data-path": f.path,
+            text: f.path,
+            onclick: () => openContent(f.path),
+          }),
       ])
     )
   );

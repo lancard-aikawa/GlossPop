@@ -417,6 +417,14 @@ ref はグローバルが `<カテゴリ>/<slug>`、ローカルが `.local/<カ
 - `INLINE_TAGS` の中だけテキストを連結する。ブロック要素と `<br>` は連結しない
   → `**冪**等` は繋がるが `<p>冪</p><p>等</p>` は繋がらない
 
+**本文に何回出てくるかは `annotate()` が数える**（`counts` を渡すと ref ごとに
+書き込む）。`occurrences()` は**素のテキスト用**なので、レンダリング済みの HTML に
+当てるとタグや属性の中まで数える —— **別に数えると、一覧に出る語と数が食い違う**
+（同じ辞書なのに違うことを言う図、と同じ壊れ方）。**`first_only` でも本当の回数を
+数える** —— あれは「最初の 1 回だけリンクする」という**見せ方**の指定で、その語が
+何回出てくるかは変わらない（数えるのを `first_only` の判定より後ろに置くと、
+その設定のとき全部 1 になる）。
+
 **照合の正規表現は表記を前方一致で木にまとめてある**（`_trie`）。`a|ab|abc` と
 並べると候補ごとに順に試すので、**本文の長さ × 候補数**で伸びる（実測: 3000 語で
 照合だけ 112 ms。木にすると 0.6 ms）。ここを素直な並びに戻さないこと。
@@ -666,6 +674,14 @@ DOTALL で書いたら 4 万字の作品でハングした（`.` が行をまた
 **ビューアで開ける拡張子は 2 か所にある。** `app.CONTENT_SUFFIXES`（一覧と読み出し）と
 `viewer.js` の `OPENABLE`（リンクを辿るかの判定）。片方だけ足すと、一覧には出るのに
 リンクからは開けない（またはその逆）という食い違いになる。
+
+**ドロップの口 (`openLocalFile`) も `OPENABLE` で断ること。** あそこは
+`file.text()` を呼ぶので、通すと**画像の中身がそのまま本文として描かれる**。
+`SERVER_ONLY`（epub / pdf）だけを見ていて実際に踏んだ ——
+**本文の絵を少しドラッグしただけで起きる**（ブラウザは画像のドラッグを
+ファイルとして渡すので、同じ窓で放すとこの口に入る）。絵の側にも
+`draggable="false"` を付けてあるが、**そちらは補助** —— 断るのは受ける側の仕事
+（デスクトップから PNG を落とされても同じことが起きる）。
 
 **ローカル `.html` には base_url が無い。** `htmlclean._safe_url()` は base_url が
 空のときだけ相対 href を残す（`allow_relative`）。ここを緩めて `src` も残すと、
@@ -1148,6 +1164,20 @@ renderer / gpu）も数に入るので、ブラウザ本体だけを見ること
 - **⋯ メニューは `base.js` の `menuButton()` だけ。** 画面ごとに書くと、Esc で
   閉じる・外を押すと閉じる・矢印キーで辿る・覆いを開き直したときに片付ける、の
   どれかが必ず抜ける（覆いは何度でも `mount()` を呼ぶ）
+- **メニューを分けるなら範囲で分ける。題もその範囲を言う。** ビューアには 4 つある
+  —— 上のバーの ⋯ が**フォルダ**（開き方・公開・執筆）、本文の行の
+  **用語 / 関係 / 画像**が**開いている文書 1 つ**。**文書への操作をフォルダの ⋯ に
+  置かないこと** —— 一度そうして、題が「そのほかの開き方」のまま中身が 3 つの
+  範囲に割れた
+- **本文の行は「ものの名前」で束ねる**（読み上げ / 用語 ▾ / 関係 ▾ / 画像 ▾）。
+  機能を足すたびに行へボタンを 1 つ足すと、**「いま何ができるか」が伸び縮みする**
+  （相関図が 6〜11 個に伸びたのと同じ形）。名前で束ねておけば**用語に何か足しても
+  行は伸びず**、入る場所も迷わない。**名前つきにしてあるのは ⋯ と意味が違うから**
+  —— ⋯ は「たまに使う操作の置き場所」でしかないが、こちらは**何の機能群なのかが
+  押す前に読める**（部品は同じ `menuButton()` で、`label` を渡すだけ）
+- **出し隠しは項目とメニューで使い分ける。** 画像はメニューごと消す（2 つとも鍵に
+  なる相対パスが要る）が、関係は**メニューを残して「🕸 この文書の関係」だけ消す**
+  —— 下書きは貼り付けたテキストでも効くので、丸ごと消すと押せる操作まで隠れる
 - **消える操作は ⋯ の中で、区切り線の下に置く**（用語ページの「まとめる」「削除」）。
   外に残すのは**戻せる操作だけ**。並びが意味を持たなくなると、削除が編集と同じ
   重さに見える
@@ -1273,8 +1303,10 @@ AI 設定は ⚙ に集めてある。守ること 9 つ:
   付けないこと —— あれは「リンクが名指ししてきた」印で、**覚えているほうを
   書き換えず注意書きを出す**という別の意味を持つ（自分でタブを押したのに
   「開いたリンクの指定で…にしています」と言われることになる）
-- **topbar には「図」を残す**（`/graph`）。一度外して**タブからしか行けない形**に
-  したら、**入口を見失われた**（実際に「リンクが表示できない」と報告が来た）。
+- **topbar には入口を残す**（`/graph`。ラベルは「関係」）。一度外して**タブからしか
+  行けない形**にしたら、**入口を見失われた**（実際に「リンクが表示できない」と報告が
+  来た）。**「図」とは呼ばない** —— 用語・地図・ファイルの 3 つに「画像」が付いた
+  ので、`図` は絵と読まれる（ビューアの「🕸 この文書の関係」も同じ理由で改名した）。
   同じ場所であることは、着いた先のタブ列が示せば足りる ——
   `overlay.js` の `nav` も `/graph` に合わせること（合わないと何も光らない）
 - **用語ページの中ではこの列を出さない**（`graph.mount(…, { tabs: false })`）。
@@ -1736,7 +1768,30 @@ AI 設定は ⚙ に集めてある。守ること 9 つ:
   何度も変わっていて**こちらから確かめる手段が無い**。代金はタグ数行で、落ちたときの
   代金は「カードが出ない」。**`og` と `twitter` は同じ URL を指す**（別々に組み立てない）
 
-**X に貼ったときの見え方は実測で決まっている。** 推測で触らないこと ——
+**カードは辞書の 1 枚だけのものではない。本文のページにも書く**（`_doc_og()`）。
+組み立ては `_meta()` **1 か所**を通す —— 写しを作ると、`twitter:*` を足したときの
+ように片方だけ古くなる。守ること 4 つ:
+
+- **絵はその文書のもの**（`.glosspop/files/`）。**辞書のカードで代用しない** ——
+  全部の文書が同じ絵になるうえ、貼った相手には「この文書の絵」に見える。
+  絵が無ければ `og:image` を書かず、`twitter:card` は `summary` に落とす
+- **絵はページの隣に同じ名前で置く**（`docs/章.html` の隣が `docs/章.png`）。
+  `doc_slug()` が重なりを番号で分けているので、こちらも自動的に一意になる。
+  **拡張子は中身から決める**（`sniff()`。**SVG は通さない** —— X が受け取らない）
+- **`_page_url()` はファイル名も encode する。** 本文のページの名前は元のファイル名
+  から作るので日本語になりうる（`doc_slug()` は禁止文字を落とすだけ）
+- **ページが 2 MB を超えたら断りを出す**（`CRAWLER_MAX_BYTES` / `_too_big()`）。
+  X のクローラの上限で、**ページは読めるのにカードだけ出ない** —— 切らずに、
+  超えたことを言う（打ち切りを必ず返す、と同じ約束）
+
+**規約は [docs/x-cards.md](docs/x-cards.md) に写してある。実測より先にそちらを見ること。**
+公式の Cards ドキュメントは**公開から引き上げられている**（現行 URL は `docs.x.com` へ
+307 で、全文ダンプに `twitter:image` は 1 件も無い）ので、一次資料は開発者フォーラムの
+固定投稿と保存版の 2 つだけ —— **孫引きを資料にしないこと**。そこで決着しているのは
+**形式（SVG 不可）と、クエリ（可。公式が指定する回避策そのもの）と、ページ 2 MB の
+上限**で、**拡張子の要否は書かれていない**。
+
+**そのうえで、X に貼ったときの見え方は実測で決まっている。** 推測で触らないこと ——
 以下は全部、実際に貼って見た結果。**ただし「見えた」と「確かめられた」を分けて
 書いてある** —— 切り分けられていないものを実測として渡すと、次に触る人が
 それを前提に組み立ててしまう（実際に何度もそうなった）:
@@ -2195,14 +2250,15 @@ Playwright を動かして確かめる。
 | 図の形の規則（段・孤立語・並び・帯の折り返し） | `graph-model.js`（**1 つの見せ方だけに写しを作らない** —— `graph.js` / `fabric.js` / `matrix.js` / `ego.js` / `timeline.js` が同じものを読む） |
 | 地図の形 (`pin` / `line` / `area`) | `models.EntryBase` と `map_shape`、`entryfile.FM_KEYS`、`relations._node`、`app.put_map_shape` の `kinds`、`map.js` の `LEAST` / `KIND_WORDS` / `fitToKind`、`entry.js` の `mapLink()`、`doctor` の地図の 4 つ、MANUAL の「地図に置く」と点検の表、SKILL.md の表。**`at` と `path` は名前に使えない**（時系列の文字位置・`_entry_payload` の保存先とぶつかる） |
 | 地図の絵の置き場所 / 配る口 | `core.imagefmt`（**画像の拡張子と見分け方と大きさの正**。`store` の `maps_dir` / `map_file` / `map_path` と `archivefmt.map_members` が読む）、`app.IMAGE_TYPES` と `_SVG_SIZED`、MANUAL の「地図に置く」。**配る口には `CSP: sandbox` と `nosniff` を付けたまま**にすること（SVG を通せる根拠がそこにしかない） |
-| 受け入れる画像形式（`IMAGE_SUFFIXES` / `MAP_SUFFIXES`） | `core.imagefmt` の `sniff()` **と `size()` の両方**（片方だけ足すと、その形式の絵で点検が静かに緩む）、`tests/test_imagefmt.py` の「拡張子と読める形式を揃える」、`ai-style.js` の `accept`、`graph.js` の絵ダイアログの `accept` |
+| 受け入れる画像形式（`IMAGE_SUFFIXES` / `MAP_SUFFIXES`） | `core.imagefmt` の `sniff()` **と `size()` と `MIME_TYPES` の 3 つとも**（片方だけ足すと、その形式の絵で点検が静かに緩む）、`tests/test_imagefmt.py` の「拡張子と読める形式を揃える」、`ai-style.js` の `accept`、`graph.js` の絵ダイアログの `accept` |
 | zip に入れるもの（辞書・マスター・地図の絵・用語ごとの画像） | `core.archivefmt`（**GlossPopApp と共有する形**）、`archive` の `_export_maps` / `_export_images` / `_write_maps` / `_write_images`、`settings.js` の下見の文言、MANUAL の「辞書の書き出し / 取り込み」。**取り込みで消える範囲を広げないこと** |
+| ファイルごとの画像 | `store` の `file_images_dir` / `file_image_file` / `file_image_path` / `list_file_images` / `clear_other_file_images` / `delete_file_image`、`app` の `/api/file-image` と `_file_image_key` / `_file_image_url` と `/api/content` の `image_url`、`viewer.js`（カバー・一覧のサムネ・画像 ▾）、`publish` の `_write_doc_image`、MANUAL の「ファイルに画像を付ける」。**鍵は相対パス（ファイル名が変われば切れる）で、基準は `local_root()`** |
 | 用語ごとの画像 | `store` の `images_dir` / `image_file` / `image_path` / `list_images` / `move_image` / `delete_image`、`app` の `/api/entry-image` と `_image_url` / `_image_index` / `_graph_images`、`popup.js` の `faceOf()`、`glossary.js` の `card()`、`entry.js` の `imagePanel()`、`map.js` の `FACE_R`（地図の点）、MANUAL の「用語ごとの画像」 |
 | 時系列の軸 / 並べるものを足した | `timeline.js` の `AXES` と `rows` の分岐、`graph.js` の `TIME_AXES` / `TIME_ROWS` と**覚えている値の検証**・`hasWhen()`・凡例と説明の 2 通り、MANUAL の「時系列」、`tests/test_smoke_ui.py` |
 | 図の見せ方を足した | **`dict-tabs.js` の `MODES` / `MODE_WORDS` / `MODE_HINTS`**（タブの正。`glossary.js` と `graph.js` の両方のタブ列に出る。**タブ列に並べるかは範囲で決める** ——辞書ぜんぶでないものは `OFF_TAB_MODES` へ）、`graph.js` の `draw()` の分岐と凡例、MANUAL の「見方は 6 つある」の表、CLAUDE.md のこの節。**書き出し (`graph-export.js`) は触らなくてよい**（`{ root, box }` を返す限り） |
 | 中心の図の深さ (`ego.js` の `DEPTHS`) | `graph.js` の `#egoDepth` と覚えている値の検証、`style.css` の `ego-ringN`（環が増えるなら）、MANUAL の「中心の図」の表、`tests/test_smoke_ui.py` |
 | 用語ページの見方を足した | `entry.js` の `entryTabs()` / `tabSearch()` / `paintTabBody()` と `render()` の `bodies`、MANUAL の用語ページのタブの表、`tests/test_smoke_ui.py`（`data-tab` で掴んでいる）。**辞書の見方のタブ (`dict-tabs.js`) とは別の列**（範囲が違う —— あちらは辞書、こちらは 1 語） |
-| 公開ページ / メタ画像 | `publish.py`（書き出しと安全規則）、`core.headline`（見出しの規則）、`core.card`（載せる中身）、`static/card.js`（絵。**入る数は測って決める**）、`static/publish.js`（押す口）、`settings.js` の「公開」タブ、MANUAL の「公開する」と環境変数の表、`tests/test_publish.py` と `tests/test_smoke_ui.py` |
+| 公開ページ / メタ画像 | `publish.py`（書き出しと安全規則）、`core.headline`（見出しの規則）、`core.card`（載せる中身）、`static/card.js`（絵。**入る数は測って決める**）、`static/publish.js`（押す口）、`settings.js` の「公開」タブ、MANUAL の「公開する」と環境変数の表、`tests/test_publish.py` と `tests/test_smoke_ui.py`、[docs/x-cards.md](docs/x-cards.md)（**X の規約はここ。実測より先に見る**） |
 | 依存の追加 / 動的 import・データファイルの追加 | `packaging/glosspop.spec`（ビルドして exe 起動まで確認） |
 | exe のアイコン | `packaging/icons/*.svg` を直して `uv run python packaging/make-icons.py`。**`.ico` も一緒にコミットする**（ビルド時には作らない）。アプリ側は `static/favicon.svg` と揃える |
 | 画面の見た目（ビューア・一覧・用語ページ・図・抽出ダイアログ） | `docs/images/` の該当スクショ（README と MANUAL が貼っている。撮り直しは content/ を開いて 1280×820 のライトで撮る） |

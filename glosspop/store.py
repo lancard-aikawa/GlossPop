@@ -335,6 +335,131 @@ def _prune_image_dir(directory: Path) -> None:
         pass
 
 
+# --------------------------------------------------------------------------- #
+# ファイルごとの画像（`.glosspop/files/<相対パス><拡張子>`）
+#
+# **地図でも用語の画像でもない。** 座標も関係も持たず、**フォルダの一覧に出す
+# 1 枚**でしかない —— だから `core` を 1 行も通らない（`Linker` も `relations` も
+# 無関係）。
+#
+# **鍵は相対パスで、置き場所はそれを写したもの。** 別に対応表を持たないので、
+# **ファイル名が変わればその時点で切れる**（それでよい、と決めた）。名前を
+# 潰した鍵にすると `a/b.md` と `a-b.md` がぶつかるし（`publish.doc_slug()` が
+# 番号を足しているのがその話）、ファイル名だけを鍵にすると**同名の別ファイルを
+# 同じ鍵で上書きする**（`progress.js` の `keyFor()` がそこを断っている）。
+#
+# **基準は辞書と同じ `local_root()`**（開いているフォルダではない）。1 巻 2 巻で
+# `.glosspop` を共有しているとき、開いたのが親でも子でも**同じ鍵になる** ——
+# 開いているフォルダ基準にすると、親を開いた日と子を開いた日で絵が入れ替わる。
+# --------------------------------------------------------------------------- #
+
+
+def file_images_dir() -> Path | None:
+    """ファイルごとの画像の置き場所。**URL を読んでいるときは ``None``。**
+
+    あちらには「フォルダの中のファイル」が無いので、扱うものがそもそも無い
+    （`local_root()` は `sites/` の下を返すため、先に弾かないと content_dir を
+    その下からの相対にしようとして落ちる）。
+    """
+    if config.reading_url():
+        return None
+    root = config.local_root()
+    return None if root is None else root / config.LOCAL_DIR_NAME / "files"
+
+
+def _file_image_base(key: str) -> Path | None:
+    """鍵に対応する画像のパス（拡張子なし）。**置き場所の外へ出る鍵は通さない。**
+
+    鍵は画面から来る文字列なので、組み立てた結果が中にあることを最後に必ず
+    確かめる（`_image_base()`・`map_file()`・`_backup_path` と同じ規則）。
+    """
+    directory = file_images_dir()
+    if directory is None or not key or key.startswith("/"):
+        return None
+    candidate = directory / key
+    try:
+        root, found = directory.resolve(), candidate.resolve()
+    except OSError:
+        return None
+    return candidate if root in found.parents else None
+
+
+def file_image_file(key: str) -> Path | None:
+    """そのファイルの画像。無ければ ``None``（探す順は `IMAGE_SUFFIXES`）。"""
+    base = _file_image_base(key)
+    if base is None:
+        return None
+    for suffix in IMAGE_SUFFIXES:
+        found = base.with_name(f"{base.name}{suffix}")
+        if found.is_file():
+            return found
+    return None
+
+
+def file_image_path(key: str, suffix: str) -> Path | None:
+    """書き込み先。まだ無くても返す（`file_image_file` と対で、こちらは書く側）。"""
+    base = _file_image_base(key)
+    if base is None or suffix not in IMAGE_SUFFIXES:
+        return None
+    return base.with_name(f"{base.name}{suffix}")
+
+
+def list_file_images() -> dict[str, Path]:
+    """置いてある画像を ``{鍵: パス}`` で全部返す。**走査は 1 回だけ。**
+
+    一覧はファイルの数だけ引くので、1 件ずつ `file_image_file()` を呼ぶと
+    **件数 × 拡張子の数**だけ stat が飛ぶ（`list_images()` と同じ判断。
+    ファイルの一覧は `MAX_CONTENT_FILES` = 2000 件まで出る）。
+    """
+    directory = file_images_dir()
+    if directory is None or not directory.is_dir():
+        return {}
+    found: dict[str, Path] = {}
+    for path in directory.rglob("*"):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in IMAGE_SUFFIXES:
+            continue
+        rel = path.relative_to(directory).as_posix()
+        key = rel[: -len(suffix)]
+        if not key:
+            continue
+        # 同じファイルに別の拡張子が残っていたら、探す順の先頭を採る
+        # （`file_image_file()` と同じ答えになるように）
+        current = found.get(key)
+        if current is None or IMAGE_SUFFIXES.index(suffix) <                 IMAGE_SUFFIXES.index(current.suffix.lower()):
+            found[key] = path
+    return found
+
+
+def clear_other_file_images(key: str, keep: Path) -> None:
+    """同じファイルの**別の拡張子**の画像を片付ける（`clear_other_images` と同じ）。"""
+    for suffix in IMAGE_SUFFIXES:
+        other = file_image_path(key, suffix)
+        if other is None or other == keep:
+            continue
+        try:
+            other.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def delete_file_image(key: str) -> None:
+    """そのファイルの画像を消す。**本文には触らない**（絵は別の場所にある）。"""
+    for suffix in IMAGE_SUFFIXES:
+        path = file_image_path(key, suffix)
+        if path is None:
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    base = _file_image_base(key)
+    if base is not None:
+        _prune_image_dir(base.parent)
+
+
 def local_available() -> bool:
     """ローカル辞書を使えるか。
 

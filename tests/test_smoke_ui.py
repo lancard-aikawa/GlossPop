@@ -2154,7 +2154,7 @@ def test_the_graph_can_be_panned_and_zoomed(page, server, seeded):
 
 
 def test_the_viewer_opens_a_graph_of_just_this_document(page, server, seeded):
-    """ビューア →「この文書の相関図」→ **その文書に出てくる語だけ**の図。
+    """ビューア →「この文書の関係」→ **その文書に出てくる語だけ**の図。
 
     以前は相関図が辞書全体しか出せず、読んでいるものに辿り着けなかった
     （→ docs/design-notes.md）。**何を出している図なのかを画面に書くこと**も
@@ -2175,7 +2175,7 @@ def test_the_viewer_opens_a_graph_of_just_this_document(page, server, seeded):
 
     page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
     page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
-    page.click("#docGraph")
+    click_menu_item(page, "relMenu", "この文書の関係")
 
     page.locator("svg.rel-graph").wait_for(timeout=SETTLE_MS)
     assert "銀河.md" in page.locator("#scopeNote").inner_text()
@@ -2258,7 +2258,7 @@ def test_the_viewer_comes_back_to_what_you_were_reading(page, server, seeded):
         ".filter(r => r.name.includes('/api/render')).length"
     )
 
-    page.click("#docGraph")
+    click_menu_item(page, "relMenu", "この文書の関係")
     page.locator("svg.rel-graph").wait_for(timeout=SETTLE_MS)
     page.click('.topnav a:has-text("ビューア")')
     page.locator("svg.rel-graph").wait_for(state="detached", timeout=SETTLE_MS)
@@ -2286,7 +2286,7 @@ def test_the_viewer_comes_back_to_what_you_were_reading(page, server, seeded):
 
 
 def test_the_topbar_can_reach_the_figures_directly(page, server, seeded):
-    """**図への入口を topbar に残す。**
+    """**関係への入口を topbar に残す。**
 
     一覧と図は同じ場所（タブで並ぶ）だが、**タブからしか行けない形にしたら
     入口を見失われた** —— 実際に「リンクが表示できない」と報告が来て戻した。
@@ -2299,7 +2299,7 @@ def test_the_topbar_can_reach_the_figures_directly(page, server, seeded):
         page.goto(f"{server}{path}")
         link = page.locator('.topnav a[href="/graph"]')
         link.wait_for(timeout=SETTLE_MS)
-        assert link.inner_text().strip() == "図", path
+        assert link.inner_text().strip() == "関係", path
 
     page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
     page.locator("a.gloss-link").first.wait_for(timeout=SETTLE_MS)
@@ -3547,7 +3547,7 @@ def test_extracting_offers_another_name_as_an_alias(page, server, seeded, monkey
 
     page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
     page.locator("a.gloss-link").first.wait_for(timeout=15000)
-    page.click("#extract")
+    click_menu_item(page, "termMenu", "用語を抽出")
     page.locator("dialog.sheet .kind-list .check").first.wait_for(timeout=10000)
     page.click("dialog.sheet button:has-text('種別で候補を抽出する')")
 
@@ -3597,7 +3597,7 @@ def test_extract_can_skip_the_review_and_save(page, server, seeded, monkeypatch)
 
     page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
     page.locator("a.gloss-link").first.wait_for(timeout=15000)
-    page.click("#extract")
+    click_menu_item(page, "termMenu", "用語を抽出")
     page.locator("dialog.sheet .kind-list .check").first.wait_for(timeout=10000)
     page.select_option("dialog.sheet [data-ref=spoiler]", "full")
     # **覚えない選択**なので、開くたびに「確認してから」に戻っている
@@ -3644,7 +3644,7 @@ def test_relations_can_be_drafted_then_continued(page, server, seeded, monkeypat
 
     page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
     page.locator("a.gloss-link").first.wait_for(timeout=15000)
-    page.click("#draftRelations")
+    click_menu_item(page, "relMenu", "関係を下書き")
     page.locator("dialog.sheet [data-ref=spoiler]").wait_for(timeout=10000)
     page.select_option("dialog.sheet [data-ref=spoiler]", "full")
     page.click("dialog.sheet [data-ref=go]")
@@ -4092,7 +4092,7 @@ def test_the_graph_can_show_only_what_has_been_read(page, server, seeded):
 
     page.goto(f"{server}/?open=%E9%8A%80%E6%B2%B3.md")
     page.locator("a.gloss-link").first.wait_for(timeout=15000)
-    page.click("#docGraph")
+    click_menu_item(page, "relMenu", "この文書の関係")
     page.locator(".overlay svg.rel-graph").wait_for(timeout=15000)
 
     box = page.locator("#readSoFarBox")

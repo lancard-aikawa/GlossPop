@@ -37,7 +37,7 @@ const ROUTES = [
     match: /^\/graph\/?$/,
     load: () => import("./graph.js"),
     nav: "/graph",
-    title: "辞書の図",
+    title: "辞書の関係",
     mount: (mod, host, url) => mod.mount(host, { search: url.search, embed: true }),
   },
   {

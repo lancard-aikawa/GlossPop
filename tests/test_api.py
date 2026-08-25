@@ -76,6 +76,22 @@ def test_create_then_render_adds_links(client):
     assert [t["ref"] for t in body["terms"]] == [ref]
 
 
+def test_render_reports_how_often_each_term_appears(client):
+    """一覧に**回数**を添える。**数える口は annotate の 1 つだけ。**
+
+    `occurrences()` は素のテキスト用なので、レンダリング済みの HTML に当てると
+    タグや属性の中まで数える —— 別に数えると、**一覧に出る語と数が食い違う**。
+    """
+    client.post("/api/entries", json=ENTRY)
+    res = client.post(
+        "/api/render",
+        json={"text": "冪等な操作は冪等である。`冪等`。", "kind": "markdown"},
+    )
+    terms = {t["term"]: t["count"] for t in res.json()["terms"]}
+    # 地の文 2 回 + インラインコード 1 回（コードは対象、`<pre>` だけが対象外）
+    assert terms == {"冪等": 3}
+
+
 def test_alias_also_links(client):
     client.post("/api/entries", json=ENTRY)
     res = client.post("/api/render", json={"text": "idempotent な設計", "kind": "text"})
