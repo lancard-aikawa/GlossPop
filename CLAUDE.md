@@ -55,7 +55,8 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen |
 `models` `htmlclean` `render` `linker` `relations` `documents` `timeline` `doctor`
 `entryfile`（エントリのファイル形式）`archivefmt`（zip の形と安全規則）
 `imagefmt`（画像の拡張子と見分け方と大きさ）`whenfmt`（作中の時刻の読み方）
-`booklet`（読ませる 1 枚の組み立て）`headline`（辞書から見出しを機械で作る）`card`（渡す 1 枚に載せる中身）の 15 個は
+`booklet`（読ませる 1 枚の組み立て）`headline`（辞書から見出しを機械で作る）`card`（渡す 1 枚に載せる中身）
+`figuresvg`（図の SVG の形と削り方）の 16 個は
 `glosspop/core/` にある。**入力から出力を作るだけ**で、辞書の置き場所 (`store`)・
 開いているフォルダ・設定ファイル (`config`) を一切知らない。
 
@@ -757,6 +758,46 @@ DOTALL で書いたら 4 万字の作品でハングした（`.` が行をまた
   `_image_index()` の走査が全リクエストで通る
 - **zip には入れるが、取り込みでは消さない**（地図とまったく同じ約束）。
   `images/` は 2 段、`maps/` は 1 段 —— **同じ prefix にまとめない**
+
+**用語ごとの画像は「作れる」（`core.figuresvg` と `static/figure.js`）。出どころは
+本文で、既存の図とは違う。** 相関図の 6 つも地図も年表もカードも、出どころは
+構造化された項目（`relations` / `when` / `map_shape`）なので**決定的に描ける**が、
+こちらが描くのは**本文が描写しているのに、どの項目にも入っていないもの**
+（地形・配置・構造・手順）—— 自由文しか材料が無いので AI が要り、毎回同じ絵には
+ならない。だからできた絵は**由来を持たない絵**（顔・写真）の側に入る。守ること 7 つ:
+
+- **保存は PNG 1 枚。SVG は手元に落とす道だけ**（相関図の ⋯ と同じ 2 択）。
+  置き場所は `<slug>.<拡張子>` で 1 鍵 1 枚と決まっていて、`clear_other_images()` が
+  別拡張子を能動的に消す（残すと `image_file()` の探索順で出る絵が決まり
+  「差し替えたのに変わらない」になる）。**SVG を辞書に持たせても開き直して直す口が
+  無い**（地図の絵も差し替えだけ）ので、焼く先と持ち方を分ける理由がそもそも無い。
+  **公開ページと `og:image` も SVG を通さない**ので、持ち方を変えても出す先は PNG
+- **PNG にするのはブラウザ**（`graph-export.figureBytes()`）。**サーバ側に
+  ラスタライザを足さないこと** —— `glosspop.spec` とビルド確認が付いてくる
+  （公開カードとまったく同じ道を通す）
+- **枠は人が宣言する**（`ai.FIGURE_KINDS` の 4 つ）。「この語の図を」とだけ頼むと
+  AI は**描きやすいもの**へ寄る（`EXTRACT_KINDS` で登場人物が丸ごと落ちたのと
+  同じ形）。**完全な自動判断を既定にしないこと** —— 外しても機械で気付けない
+- **`FIGURE_KINDS` に「関係図」を足さない。** 関係・時刻・座標の図は既に 7 種類
+  あり、あちらは決定的でこちらは違う ——同じものを 2 通りに描くと、どちらが正か
+  決まらない
+- **描けなければ描かない**（`FIGURE_NONE`）。`headline.pick()` が言い切れなければ
+  `None` を返すのと同じで、**外れた図は無いより悪い**。「描けないと答えた」と
+  「読めなかった」を**混ぜない**（混ぜると画面の文言が嘘になる）
+- **押す前に必ず見せる。** 形式は `core.figuresvg` が許可制で削るが、**絵が本文と
+  合っているかを確かめる手段はこちらに無い**（読みの「かなか」、時刻の「西暦として
+  読めるか」に当たるものが無い）。担保は見せることだけ
+- **文体を渡さない。** 効くのは人が読む文章だけ、という線をそのまま延ばす ——
+  混ぜると**絵の中の名前が本文と違うもの**になり、しかも `filter_relations()` の
+  ように落とす口が無いので気付けない
+
+**`core.figuresvg` は許可制。禁止する側を並べる形にしないこと**（数え落としが
+1 つあれば素通しになる）。削ったものは**種類で数えて返す**（`hidden` / `outside` /
+`tucked` と同じ約束）。すり抜けられるのは**通した属性の中身**だけなので、
+`url(...)` `javascript:` `data:` を含む値は属性ごと落とす。**DTD は取り出す前に見る**
+—— `extract()` は `<svg` より前を捨てるので、削ったあとで探すと内部実体の宣言だけが
+視界から消える。**`viewBox` を必須にする**のは、焼く側が `box` を必要とするから
+（無いものは 300x150 の既定で描かれ、**絵は出るので画面を見るまで気付けない**）。
 
 **語り手の顔 (`persona.*`) はエントリの居場所につく。文体とは基準が違う。**
 文体は「いま読んでいるフォルダ」（これから書くときの指定だから）、顔は
@@ -2252,6 +2293,7 @@ Playwright を動かして確かめる。
 | 地図の絵の置き場所 / 配る口 | `core.imagefmt`（**画像の拡張子と見分け方と大きさの正**。`store` の `maps_dir` / `map_file` / `map_path` と `archivefmt.map_members` が読む）、`app.IMAGE_TYPES` と `_SVG_SIZED`、MANUAL の「地図に置く」。**配る口には `CSP: sandbox` と `nosniff` を付けたまま**にすること（SVG を通せる根拠がそこにしかない） |
 | 受け入れる画像形式（`IMAGE_SUFFIXES` / `MAP_SUFFIXES`） | `core.imagefmt` の `sniff()` **と `size()` と `MIME_TYPES` の 3 つとも**（片方だけ足すと、その形式の絵で点検が静かに緩む）、`tests/test_imagefmt.py` の「拡張子と読める形式を揃える」、`ai-style.js` の `accept`、`graph.js` の絵ダイアログの `accept` |
 | zip に入れるもの（辞書・マスター・地図の絵・用語ごとの画像） | `core.archivefmt`（**GlossPopApp と共有する形**）、`archive` の `_export_maps` / `_export_images` / `_write_maps` / `_write_images`、`settings.js` の下見の文言、MANUAL の「辞書の書き出し / 取り込み」。**取り込みで消える範囲を広げないこと** |
+| 図を作る（枠・プロンプト・削り方） | `core.figuresvg`（**形と安全規則の正**）、`ai` の `FIGURE_KINDS` / `build_figure_prompt` / `filter_figure` / `draft_figure`、`llm.SECONDS_PER_ITEM` の `figure`、`app` の `/api/ai/figure-kinds` と `/api/ai/figure`、`static/figure.js`、`entry.js` の `imagePanel()`、`style.css` の `.figure-preview`、MANUAL の「図を作る」、`tests/test_figuresvg.py` と `tests/test_figure.py`、`tests/test_core_boundary.py` の顔ぶれ |
 | ファイルごとの画像 | `store` の `file_images_dir` / `file_image_file` / `file_image_path` / `list_file_images` / `clear_other_file_images` / `delete_file_image`、`app` の `/api/file-image` と `_file_image_key` / `_file_image_url` と `/api/content` の `image_url`、`viewer.js`（カバー・一覧のサムネ・画像 ▾）、`publish` の `_write_doc_image`、MANUAL の「ファイルに画像を付ける」。**鍵は相対パス（ファイル名が変われば切れる）で、基準は `local_root()`** |
 | 用語ごとの画像 | `store` の `images_dir` / `image_file` / `image_path` / `list_images` / `move_image` / `delete_image`、`app` の `/api/entry-image` と `_image_url` / `_image_index` / `_graph_images`、`popup.js` の `faceOf()`、`glossary.js` の `card()`、`entry.js` の `imagePanel()`、`map.js` の `FACE_R`（地図の点）、MANUAL の「用語ごとの画像」 |
 | 時系列の軸 / 並べるものを足した | `timeline.js` の `AXES` と `rows` の分岐、`graph.js` の `TIME_AXES` / `TIME_ROWS` と**覚えている値の検証**・`hasWhen()`・凡例と説明の 2 通り、MANUAL の「時系列」、`tests/test_smoke_ui.py` |

@@ -76,6 +76,7 @@ def test_core_has_the_modules_we_expect():
         "doctor",
         "documents",
         "entryfile",
+        "figuresvg",
         "headline",
         "htmlclean",
         "imagefmt",

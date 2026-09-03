@@ -129,9 +129,20 @@ class TransientError(LLMError):
 #: 持ち時間 180 秒の 86% で、もう少し長い文書なら 3 分待った末に全部消える）。
 #: 20 にして既定の 12 語で 300 秒 —— 関係の下書きで踏んだのと同じ形なので、
 #: **実測より短い見積もりを置かないこと**
+#: **`figure` はまだ実測が無い。** 出す長さから導いてある —— `samples/戦国時代` の
+#: 地図 2 枚が 1,229 字と 1,558 字（rect 1 + path 7〜12）で、`d` は ASCII なので
+#: 出力 1,000 トークン前後、毎秒 90 トークンなら 11 秒。他の項目が実測の 3 倍強を
+#: 見ている（`compose` は 150 字 ≒ 1.7 秒に 6）のに合わせて 40 にしてある。
+#: **実測が採れたら置き換えること**（そのとき、実測より短い見積もりを置かない）
 SECONDS_PER_ITEM: dict[str, dict[str, int]] = {
-    "claude": {"relation": 22, "needed": 14, "extract": 20, "compose": 6, "reading": 3},
-    "gemini": {"relation": 8, "needed": 5, "extract": 4, "compose": 2, "reading": 1},
+    "claude": {
+        "relation": 22, "needed": 14, "extract": 20, "compose": 6, "reading": 3,
+        "figure": 40,
+    },
+    "gemini": {
+        "relation": 8, "needed": 5, "extract": 4, "compose": 2, "reading": 1,
+        "figure": 15,
+    },
 }
 TIMEOUT_BASE = 60
 

@@ -18,7 +18,7 @@ from pathlib import Path
 from anyio import to_thread
 
 from . import config, llm, store
-from .core import imagefmt, relations, whenfmt
+from .core import figuresvg, imagefmt, relations, whenfmt
 from .core.linker import Linker, entry_url
 from .core.models import (
     GLOBAL_SCOPE,
@@ -2179,3 +2179,231 @@ async def propose_needed(
     raw = await to_thread.run_sync(ask, prompt, abandon_on_cancel=True)
     kept, dropped = filter_needed(parse_candidates(raw), text, limit=limit, kinds=kinds)
     return {"candidates": kept, "dropped": dropped, "kinds": kinds}
+
+
+# --------------------------------------------------------------------------- #
+# 図の下書き（本文が描写しているものを、図形と文字の 1 枚にする）
+#
+# **既存の図とは出どころが違う。** 相関図の 6 つの見せ方も地図も年表もカードも、
+# 出どころは**構造化された項目**（`relations` / `when` / `map_shape`）で、どれも
+# 決定的に描ける。ここが描くのは**本文が描写しているのに、どの項目にも入って
+# いないもの**（地形・配置・構造・手順）なので、出どころは自由文しかない ——
+# だから AI が要り、**毎回同じ絵にはならない**。
+#
+# その帰結として、できた絵は**由来を持たない絵**の側（顔・写真）に入る。
+# 保存は用語ごとの画像の口へ PNG 1 枚で、SVG は手元に落とす道だけを残す
+# （→ CLAUDE.md「用語ごとの画像」、`static/figure.js`）。
+#
+# **枠は人に宣言させる。実測から来ている決まり** —— `EXTRACT_KINDS` で
+# 「辞書化する価値のある語」とだけ頼んだら登場人物が丸ごと落ちたのと同じで、
+# 「この語の図を描いて」とだけ頼むと AI は**描きやすいもの**へ寄る。
+# **完全な自動判断を既定にしない**のは、外したときに機械で気付けないから ——
+# 読みや作中の時刻は「かなか」「西暦として読めるか」で検算できるが、
+# **図が本文と合っているかを確かめる手段はこちらに無い**（サーバに画像ライブラリが
+# 無い、という話より手前で、そもそも絵の意味は照合できない）。
+# 代わりに置いている担保が 2 つ: **押す前に必ず見せる**（`figure.js`）ことと、
+# **描けなければ描かない**（下の「描けないとき」の節）。
+# --------------------------------------------------------------------------- #
+
+#: 図の枠。**何の図かを先に決めてから描かせる**ための宣言。
+#:
+#: 4 つとも「**本文が描写しているのに、辞書の項目には入っていないもの**」で、
+#: 既存の 7 種類（段 / 交差しない / 行列 / 中心 / 時系列 / 地図 / カード）と
+#: 重ならない。関係・時刻・座標を図にしたいならそちらが既にあるので、
+#: **ここに「関係図」を足さないこと** —— 同じものを 2 通りに描くと、
+#: どちらが正か決まらないうえ、あちらは決定的でこちらは違う
+FIGURE_KINDS: dict[str, dict[str, str]] = {
+    "layout": {
+        "label": "配置・地形",
+        "hint": "どこに何があるかを、上から見た略図にする。土地・建物・部屋・盤面。"
+                "**正確な地図ではなく、位置関係が分かる程度の形**",
+    },
+    "structure": {
+        "label": "構造・部分の名前",
+        "hint": "ひとつのものを分解して、部分とその名前を示す。断面・部品・階層。"
+                "**部分どうしがどう接しているか**が読めること",
+    },
+    "flow": {
+        "label": "流れ・手順",
+        "hint": "順番のあるものを、箱と矢印で左から右（または上から下）へ並べる。"
+                "**分岐があるなら分岐も描く**",
+    },
+    "compare": {
+        "label": "対比・並べて比べる",
+        "hint": "2 つ以上のものを同じ形式で並べ、違うところが目で分かるようにする。"
+                "**同じ軸で並べること**（軸が違うと比べたことにならない）",
+    },
+}
+
+#: 既定の枠。**選ばせるので既定は 1 つだけ**（複数選べる `EXTRACT_KINDS` とは違う
+#: —— あちらは 1 回の抽出で 4 つの枠を同時に埋めるが、図は 1 枚に 1 つの枠）
+DEFAULT_FIGURE_KIND = "layout"
+
+#: 補足として受け付ける長さ。**文体の指定 (`STYLE_MAX`) と同じ考え方** ——
+#: 長い指示は枠の宣言より目立ち、出力形式の指示を押しのける
+FIGURE_NOTE_MAX = 200
+
+#: 図の画布。**こちらで決め打つ** —— 大きさを AI に決めさせると縦横比が毎回変わり、
+#: 用語ページに並べたときに大きさが揃わない。`card.js` が 1200x630 を持っている
+#: のと同じ扱いで、**数字は 1 か所**（プロンプトにも検算にもここから配る）
+FIGURE_W = 800
+FIGURE_H = 600
+
+#: 本文をどれだけ渡すか。図 1 枚の材料なので、抽出 (12,000 字) ほどは要らない
+FIGURE_TEXT_CHARS = 4000
+
+#: 描けないときに返させる合図。**「描けなければ描かない」を言葉で用意する** ——
+#: 用意しないと、AI は枠を埋めるために**本文に無いものを描く**
+#: （`propose_needed` で「枠を埋めるために語を作るな」を書かずに 4 件でっち上げ
+#: られたのと同じ形。今度は絵なので、でっち上げても文字列としては正しい）
+FIGURE_NONE = "なし"
+
+
+def figure_kind_label(kind: str) -> str:
+    """枠の表示名。知らない枠なら空。"""
+    spec = FIGURE_KINDS.get(kind)
+    return spec["label"] if spec else ""
+
+
+def plain_figure_hint(kind: str) -> str:
+    """枠の説明を UI 用の素の文にする（`plain_hint()` と同じ理由で ** を落とす）。"""
+    spec = FIGURE_KINDS.get(kind)
+    return spec["hint"].replace("**", "") if spec else ""
+
+
+def normalize_figure_kind(kind: str) -> str:
+    """知らない枠は既定に落とす（覚えている値が読めないときと同じ扱い）。"""
+    return kind if kind in FIGURE_KINDS else DEFAULT_FIGURE_KIND
+
+
+def figure_timeout() -> int:
+    """図 1 枚に許す秒数。**1 件ぶん**（`llm.estimate_timeout` の見積もりに乗せる）。"""
+    return llm.estimate_timeout("figure", 1)
+
+
+def build_figure_prompt(
+    term: str,
+    *,
+    kind: str = DEFAULT_FIGURE_KIND,
+    note: str = "",
+    summary: str = "",
+    definition: str = "",
+    category: str = "",
+) -> str:
+    """図を描かせるプロンプト。
+
+    **文体 (`style()`) は渡さない。** 効かせるのは「人が読む文章」だけ、という線を
+    そのまま延ばしている —— 図に載るのは本文からそのまま採る名前で、口調を混ぜても
+    得るものが無いうえ、**混ぜると名前が崩れる**（`filter_relations()` が一覧の表記と
+    一致しない行き先を落とすのと同じことが、ここでは「絵の中の名前が本文と違う」
+    という**機械で気付けない形**で起きる）。
+
+    **カテゴリは引用するだけで意味を読まない**（`headline` と同じ規則）。
+    辞書ごとに名前が違うので、「人物なら顔を描く」のような判断に使うと静かに外れる。
+    """
+    kind = normalize_figure_kind(kind)
+    spec = FIGURE_KINDS[kind]
+    body = sample_text(definition or "", FIGURE_TEXT_CHARS)
+    note = (note or "").strip()[:FIGURE_NOTE_MAX]
+
+    parts = [
+        f"「{term}」を説明する図を、SVG で 1 枚だけ描いてください。",
+        "",
+        "## 何の図か",
+        f"**{spec['label']}**: {spec['hint']}",
+    ]
+    if note:
+        parts += ["", "## 描くときの補足（人からの指定）", note]
+    parts += ["", "## 材料（この辞書に書かれていること）", f"用語: {term}"]
+    if category:
+        # **名前を引くだけ。** 意味は読ませない
+        parts.append(f"カテゴリ（この辞書での分類名。意味は問わない）: {category}")
+    if summary:
+        parts.append(f"要約: {summary}")
+    if body:
+        parts += ["", "本文:", body]
+
+    parts += [
+        "",
+        "## 描けないとき",
+        f"材料に、その図として描けるものが**書かれていない**なら、"
+        f"**`{FIGURE_NONE}` とだけ答えてください**。",
+        "書かれていないことを補って描いてはいけません —— "
+        "**外れた図は、無い図より悪い**（読む人には、確かめる手立てがありません）。",
+        "枠を埋めることが目的ではないので、描けないと答えて構いません。",
+        "",
+        "## SVG の決まり",
+        f"- ルートは `<svg xmlns=\"http://www.w3.org/2000/svg\" "
+        f"viewBox=\"0 0 {FIGURE_W} {FIGURE_H}\">`。**この viewBox のまま**にする",
+        "- 使ってよいタグは "
+        "`g` `rect` `circle` `ellipse` `line` `polyline` `polygon` `path` "
+        "`text` `tspan` **だけ**",
+        "- 見た目は**属性で書く**（`fill` `stroke` `stroke-width` `opacity` など）。"
+        "`<style>` も `style` 属性も `class` も使わない",
+        "- `<script>` `<image>` `<use>` `<foreignObject>` `<defs>` は使わない。"
+        "**外部のファイルを参照しない**（`url(...)` を書かない）",
+        "- 文字は `<text>` で。**図の中の名前と説明だけ**にとどめ、"
+        "本文をそのまま書き写さない",
+        "- 色は**明示する**（既定色に頼らない）。背景も `<rect>` で敷く —— "
+        "**貼られた先の地の色は分からない**",
+        "- 図形が 1 つも無いものは図として受け取りません",
+        "",
+        "## 出力",
+        f"`<svg ...>` から `</svg>` までだけを出してください"
+        f"（説明も、コードブロックの囲みも要りません）。描けないときは `{FIGURE_NONE}` だけ。",
+    ]
+    return "\n".join(parts)
+
+
+def filter_figure(raw: str) -> figuresvg.Figure:
+    """AI が返したものを、**図形と文字だけの SVG** に削る。
+
+    **申告を丸呑みしない**のは読み・時刻・候補語と同じだが、こちらで確かめられるのは
+    **形式だけ**（絵が本文と合っているかは照合できない）。だから削る側は
+    `core.figuresvg` の許可制に任せ、ここは「描けないと答えてきた」を見るだけにする。
+    """
+    text = (raw or "").strip()
+    # **「なし」で返ってきたぶんを、パーサの失敗と混ぜない。** 混ぜると
+    # 「描けないと答えた」が「読めなかった」に化けて、画面の文言が嘘になる
+    if not text or text.strip("`。 、.") == FIGURE_NONE:
+        return figuresvg.Figure(why="この語からは図を描けないと返ってきました")
+    return figuresvg.clean(text)
+
+
+async def draft_figure(
+    term: str,
+    *,
+    kind: str = DEFAULT_FIGURE_KIND,
+    note: str = "",
+    summary: str = "",
+    definition: str = "",
+    category: str = "",
+) -> dict:
+    """図を 1 枚下書きする。**保存はしない**（人が見てから入れる）。
+
+    返すのは削り終えた SVG と、落としたものの数。**PNG にするのはブラウザ側**
+    （サーバに画像ライブラリは無く、足すと `glosspop.spec` とビルド確認が付いてくる
+    —— 公開カードとまったく同じ道を通す）。
+    """
+    term = (term or "").strip()
+    if not term:
+        raise AIError("用語が空です")
+    kind = normalize_figure_kind(kind)
+    prompt = build_figure_prompt(
+        term, kind=kind, note=note, summary=summary,
+        definition=definition, category=category,
+    )
+    ask = partial(_generate, timeout=figure_timeout())
+    raw = await to_thread.run_sync(ask, prompt, abandon_on_cancel=True)
+    made = filter_figure(raw)
+    return {
+        "svg": made.svg,
+        "why": made.why,
+        "kind": kind,
+        "label": figure_kind_label(kind),
+        "box": list(made.box) if made.box else None,
+        "shapes": made.shapes,
+        "texts": made.texts,
+        # **落としたものは数えて返す**（黙って削った絵を出さない）
+        "dropped": list(made.dropped),
+    }

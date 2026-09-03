@@ -394,6 +394,94 @@ def test_an_existing_entry_can_be_rewritten_by_ai(page, server, seeded):
     assert page.input_value("dialog.sheet[open] [data-ref=definition]") == "主人公。"
 
 
+#: 差し替える AI の返事。**`core.figuresvg` が削ったあとの形**（サーバ側の削りは
+#: `test_figuresvg.py` が見ている）。ここで見たいのは**ブラウザ側の道**だけ
+FIGURE_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"'
+    ' width="800" height="600">'
+    '<rect width="800" height="600" fill="#eef"/>'
+    '<circle cx="400" cy="280" r="120" fill="#357"/>'
+    '<text x="400" y="470" text-anchor="middle" font-size="36">活版所</text>'
+    "</svg>"
+)
+
+
+def test_a_figure_can_be_drawn_and_becomes_the_term_image(page, server, seeded):
+    """図を描く → 見る → **PNG に焼いて**用語の画像として入る、まで通す。
+
+    **AI は呼ばない**（`/api/ai/figure` の応答を差し替える）。見たいのは
+    ブラウザ側の道 —— 受け取った SVG を DOM に置き、`graph-export` が PNG に
+    焼いて `/api/entry-image` へ送るところ。**ここでしか捕まらない** ——
+    サーバ側のテストは PNG を作れない（画像ライブラリが無い）。
+    """
+    page.route(
+        "**/api/ai/figure",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "svg": FIGURE_SVG, "why": "", "kind": "layout", "label": "配置・地形",
+                "box": [0, 0, 800, 600], "shapes": 2, "texts": 1, "dropped": ["script"],
+            }),
+        ),
+    )
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    page.locator("[data-ref=imageDraw]").wait_for(timeout=15000)
+    page.click("[data-ref=imageDraw]")
+
+    dialog = page.locator("dialog.sheet[open]")
+    dialog.locator("[data-ref=draw]").wait_for(timeout=10000)
+    # 枠は選ばせる（**宣言してから描かせる**）
+    assert dialog.locator("[data-ref=kind] option").count() >= 2
+    dialog.locator("[data-ref=draw]").click()
+
+    drawn = page.locator("dialog.sheet[open] .figure-preview svg")
+    drawn.wait_for(timeout=15000)
+    # **落としたものは画面に出す**（黙って削った絵を出さない）
+    assert "script" in page.inner_text("dialog.sheet[open] [data-ref=note2]")
+
+    put = page.locator("dialog.sheet[open] [data-ref=put]")
+    assert put.is_enabled()
+    put.click()
+
+    # 入ったら用語ページに絵が出て、置かれているのは **PNG**
+    page.locator("img.entry-photo").wait_for(timeout=15000)
+    found = store.image_file("登場人物/ジョバンニ")
+    assert found is not None and found.suffix == ".png"
+    # **中身も PNG**（口が中身から拡張子を決めるので、名前だけでは足りない）
+    assert found.read_bytes()[1:4] == b"PNG"
+
+
+def test_a_figure_that_cannot_be_drawn_says_so(page, server, seeded):
+    """**描けなかったのは失敗ではない。** 空の枠を出さずに理由を出す。"""
+    page.route(
+        "**/api/ai/figure",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "svg": "", "why": "この語からは図を描けないと返ってきました",
+                "kind": "layout", "label": "配置・地形",
+                "box": None, "shapes": 0, "texts": 0, "dropped": [],
+            }),
+        ),
+    )
+    page.goto(f"{server}/glossary/登場人物/ジョバンニ")
+    page.locator("[data-ref=imageDraw]").wait_for(timeout=15000)
+    page.click("[data-ref=imageDraw]")
+    dialog = page.locator("dialog.sheet[open]")
+    dialog.locator("[data-ref=draw]").wait_for(timeout=10000)
+    dialog.locator("[data-ref=draw]").click()
+
+    note = page.locator("dialog.sheet[open] [data-ref=note2]")
+    note.wait_for(timeout=15000)
+    assert "描けない" in note.inner_text()
+    # **入れるボタンは押せないまま**（入れるものが無い）
+    assert not page.locator("dialog.sheet[open] [data-ref=put]").is_enabled()
+    assert page.locator("dialog.sheet[open] .figure-preview").count() == 1
+    assert page.locator("dialog.sheet[open] .figure-preview svg").count() == 0
+
+
 def test_a_relation_can_be_added_and_shows_on_both_sides(page, server, seeded):
     """関係は片側にだけ書き、相手のページには逆引きで出る。"""
     page.goto(f"{server}/glossary/登場人物/ジョバンニ")

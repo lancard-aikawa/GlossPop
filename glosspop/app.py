@@ -136,6 +136,22 @@ class ExtractRequest(BaseModel):
     kinds: list[str] = []
 
 
+class FigureRequest(BaseModel):
+    """登録済みの語から**図**を 1 枚下書きさせる。
+
+    材料は ``ref`` からサーバが引く（本文も要約もカテゴリも辞書にある）ので、
+    人が渡すのは**枠と補足の 2 つだけ** —— `compose` が 3 つしか聞かないのと
+    同じ約束で、**文体の欄も保存先の欄も作らない**。
+    """
+
+    #: どの語の図か（`Entry.ref`）
+    ref: str = ""
+    #: 何の図か（`ai.FIGURE_KINDS` のキー）。読めない値は既定に落ちる
+    kind: str = ai.DEFAULT_FIGURE_KIND
+    #: 描くときの補足（自由入力）。空でよい
+    note: str = ""
+
+
 class ComposeRequest(BaseModel):
     """テーマから本文を 1 枚書かせる。**指定するのは 3 つだけ。**
 
@@ -2284,6 +2300,20 @@ def get_publish(name: str = "") -> dict:
             or os.environ.get("GLOSSPOP_PUBLISH_BASE_URL")
         ),
         "ready": root is not None,
+        # **既定の場所か**（開いているフォルダの `.publish/`）。既定のままだと
+        # そこはリポジトリではないので **URL が読めない ＝ 貼ってもカードが
+        # 出ない** —— 画面に出すために返す
+        "default": config.publish_dir_is_default(),
+        # **書き出し先から読めた URL**（推測ではなく `.git/config` と `CNAME`）。
+        # **決め打ちにはしない** —— 外すとページは出るのにカードだけ黙って出る。
+        # 候補として出して、確定するのは人。
+        #
+        # **既定の場所では読まない。** あそこは開いているフォルダの中なので、
+        # 遡ると**読んでいる作品のリポジトリ**に当たる —— そこは配信元では
+        # ないので、勧めた URL がそのまま外れる（いちばん質の悪い外し方）
+        "guessed_base_url": (
+            "" if config.publish_dir_is_default() else publish.guess_base_url()
+        ),
         # **何本の本文が書かれるかも先に出す。** 走るだけで読まないので安い
         "documents": _publish_doc_count(),
     }
@@ -2886,6 +2916,54 @@ def ai_kinds() -> dict:
         ],
         "default": list(ai.DEFAULT_KINDS),
     }
+
+
+@app.get("/api/ai/figure-kinds")
+def ai_figure_kinds() -> dict:
+    """図で選べる枠。**正はここではなく `ai.py`。**
+
+    枠を宣言させずに「この語の図を」とだけ頼むと、AI は**描きやすいもの**へ寄る
+    （`EXTRACT_KINDS` で登場人物が丸ごと落ちたのと同じ形）。UI はここを引いて
+    選択肢を出す。
+    """
+    return {
+        "kinds": [
+            {"key": key, "label": spec["label"], "hint": ai.plain_figure_hint(key)}
+            for key, spec in ai.FIGURE_KINDS.items()
+        ],
+        "default": ai.DEFAULT_FIGURE_KIND,
+        "note_max": ai.FIGURE_NOTE_MAX,
+    }
+
+
+@app.post("/api/ai/figure")
+async def ai_figure(req: FigureRequest) -> dict:
+    """登録済みの語から図を 1 枚下書きする。**保存も PNG 化もしない。**
+
+    返すのは削り終えた SVG だけで、**PNG にするのはブラウザ**（サーバに画像
+    ライブラリは無い —— 公開カードとまったく同じ道を通す）。入れるかどうかは
+    人が見てから決めるので、ここは `/api/entry-image` を呼ばない。
+
+    **描けなかったことは 502 にしない。** 「この語からは描けない」は AI が返して
+    よい正常な答えなので、``svg`` を空にして ``why`` で返す（`headline.pick()` が
+    言い切れないときに ``None`` を返すのと同じ扱い）。
+    """
+    if not ai.available():
+        raise HTTPException(503, "claude CLI が見つかりません。手動入力で登録してください。")
+    entry = store.get(req.ref)
+    if entry is None:
+        raise HTTPException(404, f"用語が見つかりません: {req.ref}")
+    try:
+        return await ai.draft_figure(
+            entry.term,
+            kind=req.kind,
+            note=req.note,
+            summary=entry.summary,
+            definition=entry.definition,
+            category=entry.category,
+        )
+    except ai.AIError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @app.post("/api/ai/extract")

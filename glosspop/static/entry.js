@@ -8,6 +8,7 @@ import { installSelectionAdd } from "./select-add.js";
 import { openEntryEditor, encodePath } from "./editor.js";
 import { openMerge } from "./merge.js";
 import { openRelationsDialog } from "./relations-draft.js";
+import { openFigureDialog } from "./figure.js";
 
 //: 描く先。`/glossary/<カテゴリ>/<slug>` を直接開いたときはそのページの器、
 //: ビューアに重ねるときは覆いの器。**`location` を直接読まない** —— 重ねると
@@ -459,6 +460,22 @@ function imagePanel(entry) {
       text: entry.image_url ? "画像を差し替え" : "🖼 画像を入れる",
       title: "PNG / JPEG / GIF / WebP（4 MB まで）",
       onclick: () => file.click(),
+    }),
+    // **「入れる」の隣に置く。** 同じ 1 枚の枠を埋める操作なので、押す場所が
+    // 離れていると「入れる」を押してから探すことになる。**⋯ に畳まない** ——
+    // ⋯ は「たまに使う操作の置き場所」で、こちらは「入れる」と対等な入口
+    el("button", {
+      type: "button",
+      "data-ref": "imageDraw",
+      text: "✏️ 図を作る…",
+      title: "本文から図形と文字だけの図を描いて、この語の画像にする",
+      onclick: () => openFigureDialog(entry, {
+        onSaved: async () => {
+          // **一覧も吹き出しも同じ絵を出す**ので、覚えているぶんを捨てる
+          invalidatePopupCache();
+          await reload(entry.ref);
+        },
+      }),
     }),
     entry.image_url ? el("button", {
       type: "button",

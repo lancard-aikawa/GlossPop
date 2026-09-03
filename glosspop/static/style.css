@@ -2010,3 +2010,10 @@ label.check.kind .hint { flex: 1 1 100%; margin: 0 0 0 22px; }
 .publish-card { margin: 12px 0; border: 1px solid var(--line); border-radius: 10px;
   overflow: hidden; background: var(--bg-soft, transparent); }
 .publish-card svg { display: block; width: 100%; height: auto; }
+
+/* 図の下書きを見せる枠（公開カードと同じ作り。**押す前に見せる**ための場所）。
+   高さを抑えるのは、下のボタン行が画面外へ出ないため —— 縦に長い図でも
+   footer が見えていないと「入れる」を押せない */
+.figure-preview { margin: 12px 0; border: 1px solid var(--line); border-radius: 10px;
+  overflow: auto; max-height: 46vh; background: var(--panel-2); }
+.figure-preview svg { display: block; width: 100%; height: auto; }
