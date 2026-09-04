@@ -19,5 +19,10 @@ sandbox/
 # カテゴリマスターも同じく手元だけのもの。data/glossary/ のサンプルとは別勘定
 content/.glosspop/
 
+# 公開の書き出し先の既定 (<開いているフォルダ>/.publish/)。**`.` 始まりで隠れるのは
+# GlossPop の走査だけで、git は普通に見る** —— content/ は追跡しているので、
+# 既定のまま公開すると生成物がそのままこのリポジトリに現れる
+content/.publish/
+
 # 専用ウィンドウ (glosspop app) のブラウザプロファイル。data/ 自体は追跡している
 data/window/

@@ -2290,7 +2290,7 @@ Playwright を動かして確かめる。
 | AI 呼び出しの同時数 (`base.js` の `AI_POOL`) | **理由のコメントごと**（6 接続 − 予備 2）、MANUAL の「まとめて登録する」の同時数のくだり、`tests/test_smoke_ui.py`。**選ばせる口を作らないこと**（速さだけが変わる ＝ 遅くする側を選ぶ理由が無い） |
 | 執筆（ジャンル / 語数の段 / 一節の入れ方） | `ai.py` の `COMPOSE_GENRES` / `COMPOSE_SIZES` / `CHARS_PER_TERM`（**正はここ 1 か所**）、`app.py` の `/api/ai/compose-options`、`static/compose.js` の**覚えている語数の検証**、MANUAL の「AI 執筆」、`tests/test_compose.py`。**`llm.SECONDS_PER_ITEM` に `compose` / `needed` がある**（持ち時間は語数から出る） |
 | 統合で選ばせる項目 (`merge.CONFLICT_FIELDS`) | `merge.js` の `FIELD_LABELS`（載っていない項目は英語の名前のまま画面に出る） |
-| 設定に足した項目 | MANUAL の「設定」、`settings.js` の `PATH_LABELS`（場所を足したとき） |
+| 設定に足した項目 | MANUAL の「設定」、`settings.js` の `PATH_LABELS`（場所を足したとき）、[docs/design-config.md](docs/design-config.md)（**設定がどこに散っているかの棚卸し**。置き場所を増やしたらそこも） |
 | 描画前に当てる設定（テーマ・文字の大きさ） | `base.js` のキーと値、**6 つの HTML の head のインライン script**（写しなので全部） |
 | 文字の大きさ（`--fs-base` と段階） | `style.css` の `:root`、`settings.js` の `<option>`、MANUAL の「文字の大きさ」の表。**周りの px は触らない** |
 | 一覧の束ね方を足した | `glossary.js` の `<option>`・`paint()` の分岐・**覚えている値の検証**（読めない値は既定に落とす）、MANUAL の「束ね方は 3 つ」の表、CLAUDE.md のこの節、`tests/test_smoke_ui.py` |
