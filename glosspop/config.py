@@ -97,24 +97,52 @@ DATA_ROOT = _data_root()
 #: 後方互換 (開発時は従来どおりリポジトリルート)
 PROJECT_ROOT = DATA_ROOT
 
-def publish_dir() -> Path | None:
-    """公開ページ（GitHub Pages 用）の書き出し先。**決めていなければ ``None``。**
+#: 決めていないときの書き出し先の名前。**`.` で始めるのが肝** ——
+#: `_iter_content_files()` は隠しディレクトリに降りないので、書き出したページが
+#: **一覧にも横断検索にも索引にも、次の公開の対象にも出てこない**。
+#: `.` を外すと**公開するたびに前回の出力を公開する**（自己再帰する）
+PUBLISH_DIR_NAME = ".publish"
 
-    優先順は **環境変数 > 設定ファイル**で、**既定を持たない** ——
-    勝手にどこかへ書くと、置いた覚えのないフォルダにファイルが増える
-    （「辞書の無いフォルダにマスターを作らない」と同じ約束）。
+
+def publish_dir() -> Path | None:
+    """公開ページ（GitHub Pages 用）の書き出し先。
+
+    優先順は **環境変数 > 設定ファイル > 開いているフォルダの ``.publish/``**。
+
+    **既定を持たせてある。** かつては持たず、決めるまで書けない形だった ——
+    理由は「置いた覚えのないフォルダにファイルが増える」。いまはその 3 つが
+    そろって薄まっている: **開いているフォルダの中**で、**`.` 始まりなので
+    走査にも一覧にも出ず**、**押す前に `plan()` が場所を出す**。
+
+    **出力先はいつでも 1 つ。** 「下見はここ、本番はあちら」という 2 段には
+    しない —— 同じものが 2 か所にあると、どちらが最新か決まらなくなる
+    （照合の口や数える口を 1 つに絞ってきたのと同じ話）。切り替えたときに
+    古いほうが残るのは「元を消さない」の側で、**消さずに場所を出す**。
 
     ``DATA_ROOT`` と違って**読むたびに解決する。** あちらが「次の起動から」
     なのは `store` のキャッシュと食い違うからで、こちらには乗っているものが
-    無い。待たせると「設定したのに書けない」になるだけ。
+    無い。待たせると「設定したのに書けない」になるだけ。**既定は開いている
+    フォルダに追従する**ので、ここを覚え込ませないこと。
     """
     raw = os.environ.get("GLOSSPOP_PUBLISH_DIR") or load_settings().get("publish_dir")
     if not raw:
-        return None
+        return content_dir() / PUBLISH_DIR_NAME
     try:
         return Path(str(raw)).expanduser().resolve()
     except OSError:
-        return None           # 壊れた設定で落ちない（load_settings と同じ扱い）
+        # 壊れた設定では既定に落ちる（`load_settings` と同じ扱い）
+        return content_dir() / PUBLISH_DIR_NAME
+
+
+def publish_dir_is_default() -> bool:
+    """いまの書き出し先が既定（開いているフォルダの ``.publish/``）か。
+
+    **画面に出すため**。既定のままだと URL が読めない（そこはリポジトリでは
+    ないので）＝**貼ってもカードが出ない**ので、そこは黙らない。
+    """
+    return not (
+        os.environ.get("GLOSSPOP_PUBLISH_DIR") or load_settings().get("publish_dir")
+    )
 
 
 def clean_base_url(value: str) -> str:

@@ -135,6 +135,66 @@ def _page_url(base: str, name: str, *, file: str = "") -> str:
     return f"{base.rstrip('/')}/{quote(safe_name(name))}{tail}"
 
 
+#: `.git/config` の remote から `<user>/<repo>` を取り出す。**GitHub だけ見る**
+#: —— Pages の URL の形が分かっているのはここだけで、他所（GitLab 等）は形が違う。
+#: https と ssh の両方を受ける
+_GIT_REMOTE = re.compile(
+    r"url\s*=\s*(?:https://github\.com/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+#: `.git` を探して遡る段数。書き出し先はリポジトリの中の 1〜2 段下（`docs/` など）
+#: にあることが多い
+_GIT_SEARCH_DEPTH = 4
+
+
+def guess_base_url(target: Path | None = None) -> str:
+    """書き出し先から公開先 URL を**読む**。読めなければ空。
+
+    **推測ではなく、置いてあるものを読む** —— `.git/config` の remote と、
+    リポジトリ直下の `CNAME`。決め打ちで組み立てると、外したときに
+    **ページは出るのにカードだけ黙って出ない**（この repo が 4 度誤診した形）。
+    だから**候補として出し、確定するのは人**。
+
+    読めないものははっきりしている: **Pages が有効か、どのブランチ・どのフォルダ
+    から配信しているか**は `.git` に書かれていない。GitHub 以外も形が違う。
+    """
+    try:
+        current = (target or config.publish_dir() or Path()).resolve()
+    except OSError:
+        return ""
+    for _ in range(_GIT_SEARCH_DEPTH + 1):
+        if (current / ".git").is_dir():
+            break
+        parent = current.parent
+        if parent == current:
+            return ""
+        current = parent
+    else:
+        return ""
+    # **独自ドメインが最優先。** CNAME があればそれが配信されている名前
+    try:
+        cname = (current / "CNAME").read_text(encoding="utf-8").strip()
+    except OSError:
+        cname = ""
+    if cname and config.clean_base_url(f"https://{cname}/"):
+        return f"https://{cname}/"
+    try:
+        conf = (current / ".git" / "config").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    found = _GIT_REMOTE.search(conf)
+    if not found:
+        return ""
+    user, repo = found.group(1), found.group(2)
+    # **ユーザ / 組織ページはリポジトリ名が付かない**（`<user>.github.io` がそれ）
+    if repo.lower() == f"{user.lower()}.github.io":
+        url = f"https://{repo}/"
+    else:
+        url = f"https://{user}.github.io/{repo}/"
+    return config.clean_base_url(url)
+
+
 def plan(name: str) -> dict:
     """書く前の下見。**上書きになるものを名前で返す。**"""
     target = site_dir(name)

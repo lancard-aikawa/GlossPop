@@ -273,11 +273,16 @@ function build() {
             <label class="field-inline" for="gp-pub-dir">書き出し先のフォルダ</label>
             <input id="gp-pub-dir" type="text" data-ref="pubDir"
                    placeholder="例: C:\\Repos\\mysite\\htmlize">
+            <!-- **手打ちさせない。** 「データの保存先」と同じ口 -->
+            <button type="button" data-ref="pubPick">📁 選ぶ…</button>
           </div>
           <div class="setting-row setting-row-plain">
             <label class="field-inline" for="gp-pub-base">公開先の URL</label>
             <input id="gp-pub-base" type="text" data-ref="pubBase"
                    placeholder="https://ユーザ名.github.io/リポジトリ/">
+            <!-- 書き出し先のリポジトリから**読めた**候補。**決め打ちにしない**
+                 （外すとカードだけ黙って出ない）ので、押して確定する -->
+            <button type="button" data-ref="pubGuess" hidden></button>
           </div>
           <p class="hint">
             <strong>URL を書かないと、貼ったときにカードの画像が出ません。</strong>
@@ -439,7 +444,15 @@ function paintPublish(info) {
       "環境変数 GLOSSPOP_PUBLISH_DIR / GLOSSPOP_PUBLISH_BASE_URL が設定されているので、" +
       "ここでの設定より優先されます。";
   }
-  for (const node of [refs.pubDir, refs.pubBase, refs.pubSave]) node.disabled = info.env_locked;
+  for (const node of [refs.pubDir, refs.pubBase, refs.pubSave, refs.pubPick]) {
+    node.disabled = info.env_locked;
+  }
+  // **読めた URL は候補として出すだけ。** 決め打ちにすると、外したときに
+  // ページは出るのにカードだけ黙って出ない（この repo が 4 度誤診した形）
+  const guessed = info.guessed_base_url || "";
+  refs.pubGuess.hidden = !guessed || guessed === (info.base_url || "") || info.env_locked;
+  refs.pubGuess.textContent = guessed ? `${guessed} を使う` : "";
+  refs.pubGuess.title = "書き出し先のリポジトリから読んだ URL です";
 
   const plan = info.plan;
   if (!plan) {
@@ -449,6 +462,11 @@ function paintPublish(info) {
   }
   const changed = plan.files.filter((f) => f.overwrite).map((f) => f.name);
   const lines = [`${plan.dir} に ${plan.files.map((f) => f.name).join(" と ")} を書きます。`];
+  // **既定の場所であることは言う。** そこはリポジトリではないので URL が読めず、
+  // 貼ってもカードが出ない（そのこと自体は warnings が言う）
+  if (info.default) {
+    lines.push("ここは開いているフォルダの中の既定の場所です（一覧には出ません）。");
+  }
   if (changed.length) lines.push(`${changed.join(" と ")} は上書きになります。`);
   if (plan.url) lines.push(`公開後の URL: ${plan.url}`);
   lines.push(...(plan.warnings || []));
@@ -949,6 +967,33 @@ export async function openSettingsDialog() {
     refs.pubSave.disabled = false;
   };
 
+  /** 書き出し先を選ぶ。**手打ちさせない**（「データの保存先」と同じ口）。 */
+  const onPubPick = async () => {
+    refs.pubPick.disabled = true;
+    try {
+      const res = await api("/api/pick-folder", {
+        method: "POST",
+        body: { initial: refs.pubDir.value || "" },
+      });
+      if (res.path) {
+        refs.pubDir.value = res.path;
+        // **選んだら URL を読み直す。** 候補はそのフォルダのリポジトリから出る
+        await onPubSave();
+      }
+    } catch (err) {
+      setStatus(refs.pubStatus, err.message, "error");
+    }
+    refs.pubPick.disabled = false;
+  };
+
+  /** 読めた URL を欄へ入れて保存する。**押して確定するのは人。** */
+  const onPubGuess = async () => {
+    const guessed = (refs.pubGuess.textContent || "").replace(" を使う", "");
+    if (!guessed) return;
+    refs.pubBase.value = guessed;
+    await onPubSave();
+  };
+
   const onAISaveClick = () => onAISave();
   const onAIKeyClear = () => onAISave({ gemini_api_key: "" });
   const onAIModelFetch = () => loadAIModels(refs.aiProvider.value);
@@ -1024,6 +1069,8 @@ export async function openSettingsDialog() {
   refs.tabs.addEventListener("keydown", onTabKey);
   refs.aiSave.addEventListener("click", onAISaveClick);
   refs.pubSave.addEventListener("click", onPubSave);
+  refs.pubPick.addEventListener("click", onPubPick);
+  refs.pubGuess.addEventListener("click", onPubGuess);
   refs.aiProvider.addEventListener("change", onAIProvider);
   refs.aiKeyClear.addEventListener("click", onAIKeyClear);
   refs.aiModelFetch.addEventListener("click", onAIModelFetch);
@@ -1101,6 +1148,8 @@ export async function openSettingsDialog() {
         refs.download.removeEventListener("click", onDownload);
         refs.updateCheck.removeEventListener("change", onUpdateToggle);
         refs.pubSave.removeEventListener("click", onPubSave);
+        refs.pubPick.removeEventListener("click", onPubPick);
+        refs.pubGuess.removeEventListener("click", onPubGuess);
         refs.path.removeEventListener("input", onMode);
         refs.pick.removeEventListener("click", onPick);
         refs.save.removeEventListener("click", onSave);

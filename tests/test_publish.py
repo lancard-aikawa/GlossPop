@@ -40,12 +40,114 @@ def based(out, monkeypatch):
 
 # --- どこへ書くか -------------------------------------------------------
 
-def test_出力先が決まっていなければ書かない(monkeypatch):
-    """**既定を持たない。** 置いた覚えのないフォルダにファイルを増やさない。"""
+def test_決めていなければ開いているフォルダの隠しフォルダへ書く(monkeypatch, tmp_path):
+    """**既定は `<開いているフォルダ>/.publish/`。**
+
+    かつては既定を持たず、決めるまで書けなかった（「置いた覚えのないフォルダに
+    ファイルが増える」）。いまはその理由が薄まっている —— 開いているフォルダの
+    中で、`.` 始まりなので走査にも一覧にも出ず、押す前に `plan()` が場所を出す。
+    """
     monkeypatch.delenv("GLOSSPOP_PUBLISH_DIR", raising=False)
-    assert config.publish_dir() is None
-    with pytest.raises(publish.PublishError):
-        publish.site_dir("辞書")
+    config.set_content_dir(tmp_path / "小説")
+    assert config.publish_dir() == tmp_path / "小説" / ".publish"
+    assert config.publish_dir_is_default()
+    assert publish.site_dir("辞書").parent == (tmp_path / "小説" / ".publish").resolve()
+
+
+def test_既定は開いているフォルダに追従する(monkeypatch, tmp_path):
+    """**覚え込ませない。** フォルダを切り替えたら書き出し先も動く。"""
+    monkeypatch.delenv("GLOSSPOP_PUBLISH_DIR", raising=False)
+    config.set_content_dir(tmp_path / "一巻")
+    first = config.publish_dir()
+    config.set_content_dir(tmp_path / "二巻")
+    assert config.publish_dir() != first
+
+
+def test_決めてあればそちらが勝つ(out):
+    """**出力先はいつでも 1 つ。** 選んだらそこだけになる（既定は使われない）。"""
+    assert not config.publish_dir_is_default()
+    assert publish.site_dir("辞書").parent == out.resolve()
+
+
+def test_隠しフォルダなので走査に出ない():
+    """**`.` を外すと自己再帰する** —— 公開のたびに前回の出力を公開する。"""
+    from glosspop.app import _iter_content_files
+
+    assert config.PUBLISH_DIR_NAME.startswith(".")
+    base = config.content_dir()
+    (base / config.PUBLISH_DIR_NAME).mkdir(parents=True, exist_ok=True)
+    (base / config.PUBLISH_DIR_NAME / "index.html").write_text("出力", encoding="utf-8")
+    (base / "本文.md").write_text("本文", encoding="utf-8")
+    assert [p.name for p in _iter_content_files(base)] == ["本文.md"]
+
+
+def _repo(root, url: str) -> None:
+    """`.git/config` を置くだけ（**git は動かさない**）。"""
+    (root / ".git").mkdir(parents=True, exist_ok=True)
+    (root / ".git" / "config").write_text(
+        '[remote "origin"]\n\turl = ' + url + '\n', encoding="utf-8"
+    )
+
+
+class TestURLを読む:
+    """**推測ではなく、置いてあるものを読む。** 決め打ちで外すと、
+    ページは出るのにカードだけ黙って出ない。"""
+
+    def test_httpsのremoteから組む(self, tmp_path):
+        _repo(tmp_path, "https://github.com/lancard-aikawa/GlossPop.git")
+        assert publish.guess_base_url(tmp_path) ==             "https://lancard-aikawa.github.io/GlossPop/"
+
+    def test_sshのremoteでも同じ(self, tmp_path):
+        _repo(tmp_path, "git@github.com:user/repo.git")
+        assert publish.guess_base_url(tmp_path) == "https://user.github.io/repo/"
+
+    def test_書き出し先がリポジトリの中でも遡って読む(self, tmp_path):
+        _repo(tmp_path, "https://github.com/user/repo")
+        deep = tmp_path / "docs" / "site"
+        deep.mkdir(parents=True)
+        assert publish.guess_base_url(deep) == "https://user.github.io/repo/"
+
+    def test_ユーザページはリポジトリ名が付かない(self, tmp_path):
+        _repo(tmp_path, "https://github.com/user/user.github.io.git")
+        assert publish.guess_base_url(tmp_path) == "https://user.github.io/"
+
+    def test_独自ドメインが最優先(self, tmp_path):
+        _repo(tmp_path, "https://github.com/user/repo.git")
+        (tmp_path / "CNAME").write_text("words.example.com\n", encoding="utf-8")
+        assert publish.guess_base_url(tmp_path) == "https://words.example.com/"
+
+    def test_ほかのホストは読まない(self, tmp_path):
+        """**形が分かっているのは GitHub だけ。** 他所は黙って空を返す。"""
+        _repo(tmp_path, "https://gitlab.com/user/repo.git")
+        assert publish.guess_base_url(tmp_path) == ""
+
+    def test_リポジトリでなければ空(self, tmp_path):
+        assert publish.guess_base_url(tmp_path) == ""
+
+
+def test_既定の場所ではURLを読まない(client, monkeypatch, tmp_path):
+    """**既定は開いているフォルダの中**なので、遡ると読んでいる作品のリポジトリに
+    当たる —— そこは配信元ではないので、勧めた URL がそのまま外れる。"""
+    monkeypatch.delenv("GLOSSPOP_PUBLISH_DIR", raising=False)
+    _repo(tmp_path, "https://github.com/user/novel.git")
+    config.set_content_dir(tmp_path)
+    got = client.get("/api/publish").json()
+    assert got["default"] is True
+    assert got["guessed_base_url"] == ""
+    # 場所そのものは読める（既定を使っていないときだけ候補に出す、という切り分け）
+    assert publish.guess_base_url(tmp_path) == "https://user.github.io/novel/"
+
+
+def test_選んだ先ならURLを候補に出す(client, monkeypatch, tmp_path):
+    monkeypatch.delenv("GLOSSPOP_PUBLISH_DIR", raising=False)
+    monkeypatch.delenv("GLOSSPOP_PUBLISH_BASE_URL", raising=False)
+    site = tmp_path / "pages"
+    site.mkdir()
+    _repo(site, "https://github.com/user/site.git")
+    client.put("/api/publish/settings", json={"dir": str(site), "base_url": ""})
+    got = client.get("/api/publish").json()
+    assert got["default"] is False
+    assert got["guessed_base_url"] == "https://user.github.io/site/"
 
 
 def test_名前が空になるものは受け付けない(out):
@@ -156,10 +258,17 @@ def client():
         yield c
 
 
-def test_決めていなければ下見も返さない(client, monkeypatch):
+def test_決めていなくても下見は返る(client, monkeypatch):
+    """既定（開いているフォルダの `.publish/`）があるので、いつでも書ける。
+
+    **既定であることは返す** —— そこはリポジトリではないので URL が読めず、
+    貼ってもカードは出ない（そのことは `warnings` が言う）。
+    """
     monkeypatch.delenv("GLOSSPOP_PUBLISH_DIR", raising=False)
     got = client.get("/api/publish").json()
-    assert got["ready"] is False and got["plan"] is None
+    assert got["ready"] is True and got["plan"] is not None
+    assert got["default"] is True
+    assert got["plan"]["dir"].endswith(config.PUBLISH_DIR_NAME + "\\" + got["name"])         or got["plan"]["dir"].endswith(config.PUBLISH_DIR_NAME + "/" + got["name"])
 
 
 def test_公開先を決めるとその場で効く(client, tmp_path, monkeypatch):
