@@ -131,6 +131,6 @@ try {
 finally {
     Stop-Process -Id $wProc.Id -Force -ErrorAction SilentlyContinue
     Get-NetTCPConnection -LocalPort $wPort -State Listen -ErrorAction SilentlyContinue |
-        ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+        ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
 }
 Write-Host '[exe] ok (2 本とも)'

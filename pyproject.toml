@@ -1,6 +1,6 @@
 [project]
 name = "glosspop"
-version = "0.15.0"
+version = "0.16.0"
 description = "選択したテキストを AI が辞書化し、以後の表示で自動リンク＋吹き出し表示するブラウザビューア"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ dependencies = [
     "linkify-it-py>=2.0",
     "pyyaml>=6.0",
     "httpx>=0.27",
-    "pypdf>=4.0",
+    "pypdf>=6.19.0",
 ]
 
 [project.scripts]
