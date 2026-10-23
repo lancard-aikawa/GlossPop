@@ -1,3 +1,3 @@
 """GlossPop — 用語辞書つきテキスト/Markdown ビューア。"""
 
-__version__ = "0.16.0"
+__version__ = "0.16.1"

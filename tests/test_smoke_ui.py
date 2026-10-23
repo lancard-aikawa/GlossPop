@@ -431,7 +431,9 @@ def test_a_figure_can_be_drawn_and_becomes_the_term_image(page, server, seeded):
 
     dialog = page.locator("dialog.sheet[open]")
     dialog.locator("[data-ref=draw]").wait_for(timeout=10000)
-    # 枠は選ばせる（**宣言してから描かせる**）
+    # 枠は選ばせる（**宣言してから描かせる**）。枠の一覧はダイアログを開いてから
+    # 取りに行くので、届くまで待つ —— 数えるだけだと負荷の高いときに 0 件を見る
+    dialog.locator("[data-ref=kind] option").nth(1).wait_for(state="attached", timeout=15000)
     assert dialog.locator("[data-ref=kind] option").count() >= 2
     dialog.locator("[data-ref=draw]").click()
 
