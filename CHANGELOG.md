@@ -16,8 +16,8 @@ GitHub Release に載る（[`.github/workflows/release.yml`](.github/workflows/r
 脆弱性が 7 件（すべて high）あり、細工した pdf を開くとメモリを使い切る・止まらなく
 なる、というもの。pdf を開く人は更新してください。
 
-ビルドに使う setuptools も 83.0.0 → 84.2.1 に上げた（low 1 件。配る exe の中では
-動かない）。
+setuptools も 83.0.0 → 84.2.1 に上げた（low 1 件）。PyInstaller が exe に同梱して
+いるが、アプリからは使っておらず、指摘の箇所（古い形式の wheel を入れるとき）も通らない。
 
 機能の変更はありません。
 
